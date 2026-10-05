@@ -689,3 +689,123 @@ input[type="range"]:active::-webkit-slider-thumb {
   border-top: 1px solid var(--line);
   background: var(--ivory);
 }
+
+/* ── Accounts, library, renders ────────────────────── */
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pill {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--ivory);
+  font-size: 13px;
+}
+
+.section-label {
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--stone);
+  margin-top: 6px;
+}
+
+.section-label span {
+  font-family: var(--font-sans), sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 12px;
+}
+
+.renders {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.render {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: rise 0.35s var(--ease);
+}
+
+.render video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: var(--paper);
+  border-radius: 8px;
+}
+
+.render-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--stone);
+  gap: 8px;
+}
+
+.render-actions {
+  display: flex;
+  gap: 14px;
+}
+
+.notice {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--ivory);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 13px;
+  animation: rise 0.35s var(--ease);
+  white-space: nowrap;
+}
+
+.composer.enhanced {
+  border-color: var(--clay);
+}
+
+.enhanced-tag {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  font-size: 12px;
+  color: var(--clay-deep);
+}
+
+.attach.enhance {
+  color: var(--clay-deep);
+  margin-left: auto;
+}
+
+.attach:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pill.ghost {
+  display: inline-flex;
+  align-items: center;
+  background: var(--paper);
+  color: var(--stone);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

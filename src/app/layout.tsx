@@ -1,8 +1,15 @@
 import type { Metadata } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
+import { AccountProvider } from "@/components/Account";
+import { CLERK_ENABLED } from "@/lib/authMode";
 
-const serif = Source_Serif_4({ variable: "--font-serif", subsets: ["latin"], style: ["normal", "italic"] });
+const serif = Source_Serif_4({
+  variable: "--font-serif",
+  subsets: ["latin"],
+  style: ["normal", "italic"],
+});
 const sans = Inter({ variable: "--font-sans", subsets: ["latin"] });
 const mono = JetBrains_Mono({ variable: "--font-mono", subsets: ["latin"] });
 
@@ -13,8 +20,29 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${serif.variable} ${sans.variable} ${mono.variable}`}>
-      <body>{children}</body>
+    <html
+      lang="en"
+      className={`${serif.variable} ${sans.variable} ${mono.variable}`}
+    >
+      <body>
+        {CLERK_ENABLED ? (
+          <ClerkProvider
+            appearance={{
+              variables: {
+                colorPrimary: "#141413",
+                colorBackground: "#FAF9F5",
+                colorForeground: "#141413",
+                borderRadius: "12px",
+                fontFamily: "var(--font-sans), system-ui, sans-serif",
+              },
+            }}
+          >
+            <AccountProvider>{children}</AccountProvider>
+          </ClerkProvider>
+        ) : (
+          <AccountProvider>{children}</AccountProvider>
+        )}
+      </body>
     </html>
   );
 }

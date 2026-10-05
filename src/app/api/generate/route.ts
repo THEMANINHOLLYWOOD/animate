@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { SYSTEM_PROMPT } from "@/lib/prompt";
+import { DIRECTOR_PROMPT, SYSTEM_PROMPT } from "@/lib/prompt";
+import { requireUser } from "@/lib/store";
 
 export const maxDuration = 300;
 
@@ -11,7 +12,9 @@ type InFile =
   | { kind: "text"; name: string; text: string };
 
 type Body = {
+  stage: "direct" | "animate";
   prompt: string;
+  treatment?: string;
   duration: number;
   aspect: string;
   files: InFile[];
@@ -20,17 +23,18 @@ type Body = {
 };
 
 export async function POST(req: Request) {
+  // The API key is shared, so generation is limited to signed-in users.
+  const userId = await requireUser();
+  if (!userId) return Response.json({ error: "Sign in to create animations." }, { status: 401 });
+
   const body = (await req.json()) as Body;
 
   const content: Anthropic.Beta.BetaContentBlockParam[] = [];
   const assetNames: string[] = [];
   for (const f of body.files ?? []) {
     if (f.kind === "image") {
-      content.push({ type: "text", text: `Image "${f.name}" (${f.asset ? "available as an asset" : "reference only, do not draw it"}):` });
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: f.mediaType as "image/png", data: f.data },
-      });
+      content.push({ type: "text", text: `Image "${f.name}" (${f.asset ? "available as an asset to draw" : "reference only: inform the style, do not draw it"}):` });
+      content.push({ type: "image", source: { type: "base64", media_type: f.mediaType as "image/png", data: f.data } });
       if (f.asset) assetNames.push(f.name);
     } else if (f.kind === "pdf") {
       content.push({ type: "document", title: f.name, source: { type: "base64", media_type: "application/pdf", data: f.data } });
@@ -41,20 +45,33 @@ export async function POST(req: Request) {
 
   const spec = [
     `Length: ${body.duration}s. Aspect: ${body.aspect}.`,
-    assetNames.length ? `Available assets (assets.byName): ${assetNames.map((n) => JSON.stringify(n)).join(", ")}.` : "No image assets.",
+    assetNames.length ? `Available image assets (assets.byName): ${assetNames.map((n) => JSON.stringify(n)).join(", ")}.` : "No image assets.",
   ].join("\n");
 
-  if (body.previousCode) {
+  let system: string;
+  if (body.stage === "direct") {
+    system = DIRECTOR_PROMPT;
     content.push({
       type: "text",
-      text: `${spec}\n\nCurrent scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\n${
-        body.error
-          ? `This scene throws at runtime: ${body.error}\nFix it while keeping the design.`
-          : `Revise the scene: ${body.prompt}\nKeep everything that the request doesn't ask to change.`
-      }`,
+      text: body.previousCode
+        ? `${spec}\n\nThe film currently exists as this scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\nWrite a revised treatment that applies this change request while keeping what works: ${body.prompt}`
+        : `${spec}\n\nBrief:\n${body.prompt}`,
     });
   } else {
-    content.push({ type: "text", text: `${spec}\n\nBrief:\n${body.prompt}` });
+    system = SYSTEM_PROMPT;
+    const treatment = body.treatment ? `\n\nTreatment:\n${body.treatment}` : "";
+    if (body.previousCode) {
+      content.push({
+        type: "text",
+        text: `${spec}${treatment}\n\nCurrent scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\n${
+          body.error
+            ? `This scene throws at runtime: ${body.error}\nFix it while keeping the design.`
+            : `Revise the scene: ${body.prompt}\nKeep everything the request doesn't ask to change.`
+        }`,
+      });
+    } else {
+      content.push({ type: "text", text: `${spec}\n\nOriginal brief:\n${body.prompt}${treatment}\n\nBuild this film.` });
+    }
   }
 
   const encoder = new TextEncoder();
@@ -71,7 +88,7 @@ export async function POST(req: Request) {
             output_config: { effort: "high" },
             betas: ["server-side-fallback-2026-07-01"],
             fallbacks: "default",
-            system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+            system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
             messages: [{ role: "user", content }],
           },
           { signal: req.signal },
@@ -81,7 +98,7 @@ export async function POST(req: Request) {
         if (msg.stop_reason === "refusal") {
           send(controller, { type: "error", message: "Claude declined this request." });
         } else if (msg.stop_reason === "max_tokens") {
-          send(controller, { type: "error", message: "The scene ran past the output limit. Try a simpler brief." });
+          send(controller, { type: "error", message: "The output ran past the limit. Try a simpler brief." });
         } else {
           send(controller, { type: "done" });
         }
@@ -91,11 +108,13 @@ export async function POST(req: Request) {
             ? "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
             : e instanceof Anthropic.RateLimitError
               ? "Rate limited. Try again in a moment."
-              : e instanceof Anthropic.APIError
-                ? `API error ${e.status ?? ""}: ${e.message}`
-                : e instanceof Error
-                  ? e.message
-                  : String(e);
+              : e instanceof Anthropic.APIError && /credit balance/i.test(e.message)
+                ? "The Anthropic account is out of credits. Add credits under Plans & Billing at console.anthropic.com."
+                : e instanceof Anthropic.APIError
+                  ? `API error ${e.status ?? ""}: ${e.message}`
+                  : e instanceof Error
+                    ? e.message
+                    : String(e);
         send(controller, { type: "error", message });
       } finally {
         controller.close();

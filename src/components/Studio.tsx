@@ -1,5 +1,7 @@
 "use client";
 
+import { AccountButton, SignIn, useAccount } from "@/components/Account";
+import { upload } from "@vercel/blob/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Fonts } from "@/lib/kit";
 import {
@@ -15,6 +17,8 @@ import {
 } from "@/lib/engine";
 import { GAIA_SCENE } from "@/lib/presets/gaia";
 
+type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number };
+
 type Project = {
   id: string;
   title: string;
@@ -22,6 +26,9 @@ type Project = {
   duration: number;
   aspect: Aspect;
   prompt?: string;
+  treatment?: string;
+  assets?: { name: string; pathname: string }[];
+  videos?: Render[];
   builtin?: boolean;
   createdAt: number;
 };
@@ -46,13 +53,15 @@ const GAIA: Project = {
   createdAt: 0,
 };
 
-const STORE = "animate.projects.v1";
-const uid = () => Math.random().toString(36).slice(2, 10);
+const LOCAL = "animate.projects.v1";
+const uid = () => Math.random().toString(36).slice(2, 12);
 const fmt = (s: number) => {
   const m = Math.floor(s / 60);
   const r = s - m * 60;
   return `${m}:${r.toFixed(1).padStart(4, "0")}`;
 };
+const media = (pathname: string, dl = false) => `/api/media?p=${encodeURIComponent(pathname)}${dl ? "&dl=1" : ""}`;
+const safeName = (s: string) => s.replace(/[^\w.\-]+/g, "_").slice(0, 80);
 
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|html|css|js|jsx|ts|tsx|py|yaml|yml|xml|srt|vtt)$/i;
 
@@ -92,68 +101,165 @@ function imagePayload(img: HTMLImageElement, type: string) {
   return { mediaType, data: c.toDataURL(mediaType, 0.9).split(",")[1] };
 }
 
-function parseReply(text: string) {
+function parseScene(text: string) {
   const title = text.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim();
   const blocks = [...text.matchAll(/```(?:js|javascript)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
   const code = blocks.sort((a, b) => b.length - a.length)[0];
   return { title, code };
 }
 
+async function streamStage(payload: object, signal: AbortSignal, onText: (s: string) => void) {
+  const res = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (res.status === 401) throw new Error("Sign in to create animations.");
+  if (!res.body) throw new Error(`Request failed (${res.status})`);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop()!;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const ev = JSON.parse(line);
+      if (ev.type === "delta") {
+        text += ev.text;
+        onText(text);
+      } else if (ev.type === "error") throw new Error(ev.message);
+    }
+  }
+  return text;
+}
+
 export default function Studio() {
+  const { isLoaded, isSignedIn, userId } = useAccount();
   const [projects, setProjects] = useState<Project[]>([GAIA]);
   const [currentId, setCurrentId] = useState("gaia");
   const [prompt, setPrompt] = useState("");
+  const [enhanced, setEnhanced] = useState<null | { brief: string }>(null);
   const [mode, setMode] = useState<"new" | "edit">("new");
   const [files, setFiles] = useState<Attached[]>([]);
+  const [projectImgs, setProjectImgs] = useState<Record<string, HTMLImageElement>>({});
   const [fps, setFps] = useState(30);
   const [fonts, setFonts] = useState<Fonts | null>(null);
   const [playing, setPlaying] = useState(true);
   const [time, setTime] = useState(0);
   const [busy, setBusy] = useState<null | { label: string; stream: string }>(null);
   const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [draftCode, setDraftCode] = useState("");
+  const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const tRef = useRef(0);
   const playingRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const project = projects.find((p) => p.id === currentId) ?? GAIA;
   const [W, H] = SIZES[project.aspect];
+  const cloud = !!isSignedIn;
 
-  // ── persistence ──
+  // ── load fonts + library ──
   useEffect(() => {
-    loadFonts().then((f) => {
-      try {
-        const saved = JSON.parse(localStorage.getItem(STORE) || "[]") as Project[];
-        if (saved.length) setProjects([GAIA, ...saved]);
-      } catch {}
-      setFonts(f);
-    });
+    loadFonts().then(setFonts);
   }, []);
 
-  const persist = useCallback((list: Project[]) => {
-    try {
-      localStorage.setItem(STORE, JSON.stringify(list.filter((p) => !p.builtin)));
-    } catch {}
-  }, []);
+  useEffect(() => {
+    if (!isLoaded) return;
+    let cancelled = false;
+    (async () => {
+      let list: Project[] = [];
+      if (isSignedIn) {
+        try {
+          const r = await fetch("/api/projects");
+          if (r.ok) list = (await r.json()).projects;
+        } catch {}
+      } else {
+        try {
+          list = JSON.parse(localStorage.getItem(LOCAL) || "[]");
+        } catch {}
+      }
+      if (cancelled) return;
+      setProjects([GAIA, ...list]);
+      setCurrentId((id) => (id === "gaia" || list.some((p) => p.id === id) ? id : "gaia"));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn]);
+
+  // ── persistence: cloud when signed in, this browser otherwise ──
+  const persist = useCallback(
+    (p: Project, list: Project[], immediate = false) => {
+      if (p.builtin) return;
+      if (!cloud) {
+        try {
+          localStorage.setItem(LOCAL, JSON.stringify(list.filter((x) => !x.builtin)));
+        } catch {}
+        return;
+      }
+      clearTimeout(saveTimers.current[p.id]);
+      const run = () =>
+        fetch("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) }).catch(
+          () => setError("Couldn't save to your library. Check your connection."),
+        );
+      if (immediate) return run();
+      saveTimers.current[p.id] = setTimeout(run, 700);
+    },
+    [cloud],
+  );
+
+  const upsert = useCallback(
+    (p: Project, immediate = false) => {
+      setProjects((list) => {
+        const next = list.some((x) => x.id === p.id) ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p];
+        persist(p, next, immediate);
+        return next;
+      });
+    },
+    [persist],
+  );
 
   const updateProject = useCallback(
     (patch: Partial<Project>) => {
       setProjects((list) => {
-        const next = list.map((p) => (p.id === currentId ? { ...p, ...patch } : p));
-        persist(next);
+        const cur = list.find((x) => x.id === currentId);
+        if (!cur) return list;
+        const p = { ...cur, ...patch };
+        const next = list.map((x) => (x.id === p.id ? p : x));
+        persist(p, next);
         return next;
       });
     },
     [currentId, persist],
   );
+
+  // ── images that belong to the current project ──
+  useEffect(() => {
+    const list = project.assets ?? [];
+    if (!cloud || !list.length) return;
+    let cancelled = false;
+    Promise.all(list.map((a) => loadImage(media(a.pathname)).then((img) => [a.name, img] as const).catch(() => null))).then((pairs) => {
+      if (!cancelled) setProjectImgs(Object.fromEntries(pairs.filter(Boolean) as [string, HTMLImageElement][]));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.assets, cloud]);
 
   // ── scene ──
   const compiled = useMemo<{ fn: SceneFn | null; err: string | null }>(() => {
@@ -165,19 +271,18 @@ export default function Studio() {
   }, [project.code]);
 
   const assets = useMemo<Assets>(() => {
-    const images = files.filter((f) => f.img && f.asset).map((f) => ({ name: f.name, img: f.img! }));
-    return { images, byName: Object.fromEntries(images.map((i) => [i.name, i.img])) };
-  }, [files]);
+    const byName: Record<string, HTMLImageElement> = project.assets?.length ? { ...projectImgs } : {};
+    for (const f of files) if (f.img && f.asset) byName[f.name] = f.img;
+    return { images: Object.entries(byName).map(([name, img]) => ({ name, img })), byName };
+  }, [files, projectImgs, project.assets]);
 
-  // Fit the canvas inside the stage for any aspect ratio.
+  // ── fit canvas inside the stage ──
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const pad = 48;
-      const aw = el.clientWidth - pad;
-      const ah = el.clientHeight - pad;
-      const s = Math.min(aw / W, ah / H);
+      const s = Math.min((el.clientWidth - pad) / W, (el.clientHeight - pad) / H);
       setFit({ w: Math.floor(W * s), h: Math.floor(H * s) });
     });
     ro.observe(el);
@@ -220,13 +325,14 @@ export default function Studio() {
       }
       raf = requestAnimationFrame(frame);
     };
-    setError(compiled.err);
     raf = requestAnimationFrame(frame);
     return () => {
       dead = true;
       cancelAnimationFrame(raf);
     };
   }, [compiled, fonts, W, H, project.duration, assets]);
+
+  const shownError = error ?? compiled.err;
 
   // ── files ──
   const addFiles = useCallback(async (list: FileList | File[]) => {
@@ -238,7 +344,7 @@ export default function Studio() {
         skipped.push(file.name);
         continue;
       }
-      const a: Attached = { id: uid(), name: file.name, kind, file, asset: kind === "image" };
+      const a: Attached = { id: uid(), name: safeName(file.name), kind, file, asset: kind === "image" };
       if (kind === "image") {
         a.url = URL.createObjectURL(file);
         try {
@@ -261,98 +367,127 @@ export default function Studio() {
       return list.filter((x) => x.id !== id);
     });
 
-  // ── generation ──
-  async function requestScene(payload: object, signal: AbortSignal, onText: (s: string) => void) {
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+  const filePayload = () =>
+    Promise.all(
+      files.map(async (f) => {
+        if (f.kind === "image") return { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type) };
+        if (f.kind === "pdf") return { kind: "pdf", name: f.name, data: await b64(f.file) };
+        return { kind: "text", name: f.name, text: (await f.file.text()).slice(0, 200_000) };
+      }),
+    );
+
+  // ── stage 1: direct (also the ✦ Enhance button) ──
+  async function direct(signal: AbortSignal, brief: string, payloadFiles: unknown[], editing: boolean) {
+    setBusy({ label: "Directing · writing the treatment", stream: "" });
+    return streamStage(
+      {
+        stage: "direct",
+        prompt: brief,
+        duration: project.duration,
+        aspect: project.aspect,
+        files: payloadFiles,
+        previousCode: editing ? project.code : undefined,
+      },
       signal,
-    });
-    if (!res.body) throw new Error(`Request failed (${res.status})`);
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    let text = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop()!;
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const ev = JSON.parse(line);
-        if (ev.type === "delta") {
-          text += ev.text;
-          onText(text);
-        } else if (ev.type === "error") throw new Error(ev.message);
-      }
-    }
-    return text;
+      (s) => setBusy((b) => b && { ...b, stream: s }),
+    );
   }
 
+  async function enhance() {
+    if (!prompt.trim() && !files.length) return;
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setError(null);
+    try {
+      const brief = prompt.trim() || "Make a film from the attached files.";
+      const treatment = await direct(ac.signal, brief, await filePayload(), mode === "edit" && !project.builtin);
+      setPrompt(treatment.trim());
+      setEnhanced({ brief });
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+    } finally {
+      setBusy(null);
+      abortRef.current = null;
+    }
+  }
+
+  // ── stage 2: animate ──
   async function generate() {
     if (!prompt.trim() && !files.length) return;
     const editing = mode === "edit";
     const ac = new AbortController();
     abortRef.current = ac;
     setError(null);
-    setBusy({ label: editing ? "Revising your animation" : "Composing your animation", stream: "" });
     try {
-      const payloadFiles = await Promise.all(
-        files.map(async (f) => {
-          if (f.kind === "image") return { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type) };
-          if (f.kind === "pdf") return { kind: "pdf", name: f.name, data: await b64(f.file) };
-          return { kind: "text", name: f.name, text: (await f.file.text()).slice(0, 200_000) };
-        }),
-      );
+      const payloadFiles = await filePayload();
+      const brief = enhanced?.brief ?? (prompt.trim() || "Make a film from the attached files.");
+      // Small edits go straight to the animator; new films always get a treatment first.
+      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false);
+
+      setBusy({ label: editing ? "Animating · revising the scene" : "Animating · writing the scene", stream: "" });
+      const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
       const base = {
-        prompt: prompt.trim() || "Make an animation from the attached files.",
+        stage: "animate",
+        prompt: brief,
+        treatment,
         duration: project.duration,
         aspect: project.aspect,
         files: payloadFiles,
         previousCode: editing ? project.code : undefined,
       };
-      const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
-      let reply = parseReply(await requestScene(base, ac.signal, onText));
+      let reply = parseScene(await streamStage(base, ac.signal, onText));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
 
-      // Dry-run the scene across the timeline; ask for one repair if it throws.
-      const [w, h] = SIZES[project.aspect];
+      // Dry-run across the timeline; ask for one repair if it throws.
       const check = (code: string) => {
         try {
-          return probeScene(compileScene(code), fonts!, w, h, assets, project.duration);
+          return probeScene(compileScene(code), fonts!, W, H, assets, project.duration);
         } catch (e) {
           return `Syntax error: ${(e as Error).message}`;
         }
       };
       const problem = check(reply.code);
       if (problem) {
-        setBusy({ label: "Fixing a runtime error", stream: "" });
-        const fixed = parseReply(
-          await requestScene({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText),
-        );
+        setBusy({ label: "Polishing · fixing a runtime error", stream: "" });
+        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText));
         if (fixed.code) reply = { title: reply.title, code: fixed.code };
       }
 
+      const id = editing && !project.builtin ? project.id : uid();
+      const prev = editing && !project.builtin ? project : null;
+      const assetFiles = files.filter((f) => f.kind === "image" && f.asset);
+      let assetRefs = prev?.assets ?? [];
+      if (cloud && userId && assetFiles.length) {
+        setBusy({ label: "Saving your images", stream: "" });
+        const up = await Promise.all(
+          assetFiles.map((f) =>
+            upload(`users/${userId}/assets/${id}/${f.name}`, f.file, { access: "private", handleUploadUrl: "/api/upload" }).then(
+              (b) => ({ name: f.name, pathname: b.pathname }),
+            ),
+          ),
+        );
+        assetRefs = [...assetRefs.filter((a) => !up.some((u) => u.name === a.name)), ...up];
+      }
+
       const p: Project = {
-        id: editing && !project.builtin ? project.id : uid(),
-        title: reply.title || (editing ? project.title : prompt.trim().slice(0, 40) || "Untitled"),
+        ...(prev ?? {}),
+        id,
+        title: reply.title || prev?.title || brief.slice(0, 40) || "Untitled",
         code: reply.code,
         duration: project.duration,
         aspect: project.aspect,
-        prompt: base.prompt,
-        createdAt: Date.now(),
+        prompt: brief,
+        treatment: treatment ?? prev?.treatment,
+        assets: assetRefs,
+        videos: prev?.videos ?? [],
+        builtin: false,
+        createdAt: prev?.createdAt ?? Date.now(),
       };
-      setProjects((list) => {
-        const next = list.some((x) => x.id === p.id) ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p];
-        persist(next);
-        return next;
-      });
+      upsert(p, true);
       setCurrentId(p.id);
       setMode("edit");
       setPrompt("");
+      setEnhanced(null);
       tRef.current = 0;
       setPlaying(true);
     } catch (e) {
@@ -363,10 +498,10 @@ export default function Studio() {
     }
   }
 
-  // ── export ──
+  // ── export (+ save to library) ──
   async function doExport() {
     if (!compiled.fn || !fonts) return;
-    setExporting(0);
+    setExporting({ label: "Rendering", k: 0 });
     setError(null);
     try {
       const { blob, ext } = await exportVideo({
@@ -377,13 +512,33 @@ export default function Studio() {
         H,
         T: project.duration,
         fps,
-        onProgress: setExporting,
+        onProgress: (k) => setExporting({ label: "Rendering", k }),
       });
+      const name = `${project.title.replace(/[^\w\- ]+/g, "").trim() || "animation"}.${ext}`;
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${project.title.replace(/[^\w\- ]+/g, "").trim() || "animation"}.${ext}`;
+      a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+
+      if (cloud && userId && !project.builtin) {
+        setExporting({ label: "Saving to your library", k: 0 });
+        const ts = Date.now();
+        const res = await upload(`users/${userId}/videos/${project.id}/${ts}.${ext}`, blob, {
+          access: "private",
+          handleUploadUrl: "/api/upload",
+          contentType: blob.type,
+          multipart: blob.size > 8 * 1024 * 1024,
+          onUploadProgress: ({ percentage }) => setExporting({ label: "Saving to your library", k: percentage / 100 }),
+        });
+        const render: Render = { pathname: res.pathname, fps, w: W, h: H, duration: project.duration, size: blob.size, createdAt: ts };
+        upsert({ ...project, videos: [render, ...(project.videos ?? [])] }, true);
+        setNotice("Saved to your library.");
+      } else if (cloud && project.builtin) {
+        setNotice("Downloaded. Examples aren't saved to your library; edit it to make your own copy.");
+      } else {
+        setNotice("Downloaded. Sign in to keep your videos in your library.");
+      }
     } catch (e) {
       setError(`Export failed: ${(e as Error).message}`);
     } finally {
@@ -392,8 +547,7 @@ export default function Studio() {
   }
 
   const setDuration = (d: number) => {
-    const p = tRef.current / project.duration;
-    tRef.current = p * d;
+    tRef.current = (tRef.current / project.duration) * d;
     updateProject({ duration: d });
   };
 
@@ -407,22 +561,29 @@ export default function Studio() {
     tRef.current = 0;
     setPlaying(true);
     setShowCode(false);
-    setMode("edit");
+    setMode(id === "gaia" ? "new" : "edit");
+    setProjectImgs({});
+    setError(null);
   };
 
-  const remove = (id: string) => {
+  const remove = async (id: string) => {
+    if (!confirm("Delete this animation and its saved videos?")) return;
     setProjects((list) => {
       const next = list.filter((p) => p.id !== id);
-      persist(next);
+      if (!cloud) persist({ ...GAIA, builtin: false, id: "_" }, next);
       return next;
     });
+    if (cloud) await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
     if (id === currentId) setCurrentId("gaia");
   };
 
-  // keyboard: space toggles playback outside of inputs
+  const deleteRender = (pathname: string) => {
+    upsert({ ...project, videos: (project.videos ?? []).filter((v) => v.pathname !== pathname) }, true);
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
+      const tag = (e.target as HTMLElement)?.tagName;
       if (e.code === "Space" && tag !== "TEXTAREA" && tag !== "INPUT") {
         e.preventDefault();
         setPlaying((p) => !p);
@@ -432,8 +593,25 @@ export default function Studio() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const streamTail = busy?.stream ? busy.stream.split("\n").slice(-14).join("\n") : "";
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const streamTail = busy?.stream ? busy.stream.split("\n").slice(-16).join("\n") : "";
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
+  const canAsk = !!prompt.trim() || files.length > 0;
+
+  const animateButton = !isSignedIn ? (
+    <SignIn>
+      <button className="primary">Sign in to animate</button>
+    </SignIn>
+  ) : (
+    <button className="primary" onClick={generate} disabled={!!busy || !canAsk || !fonts}>
+      {busy ? "Working…" : mode === "new" ? "Animate" : "Apply changes"}
+    </button>
+  );
 
   return (
     <div className="app">
@@ -442,7 +620,17 @@ export default function Studio() {
           <span className="brand-mark" />
           animate
         </div>
-        <div className="top-meta">{project.title}</div>
+        <div className="top-right">
+          <span className="top-meta">{project.title}</span>
+          {isLoaded &&
+            (isSignedIn ? (
+              <AccountButton />
+            ) : (
+              <SignIn>
+                <button className="pill">Sign in</button>
+              </SignIn>
+            ))}
+        </div>
       </header>
 
       <main className="main">
@@ -466,14 +654,15 @@ export default function Studio() {
                 <div className="stream">{streamTail}</div>
               </>
             )}
-            {error && !busy && (
+            {shownError && !busy && (
               <div className="error-card">
-                <span>{error}</span>
+                <span>{shownError}</span>
                 <button className="linkish" onClick={() => setError(null)}>
                   dismiss
                 </button>
               </div>
             )}
+            {notice && !shownError && !busy && <div className="notice">{notice}</div>}
           </div>
 
           <div className="transport">
@@ -505,12 +694,17 @@ export default function Studio() {
             </span>
           </div>
 
+          <div className="section-label">
+            {cloud ? "Your library" : "On this device"}
+            {!cloud && isLoaded && <span> · sign in to keep animations and videos in the cloud</span>}
+          </div>
           <div className="library">
             {projects.map((p) => (
               <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}`} onClick={() => select(p.id)}>
                 <div className="lib-title">{p.title}</div>
                 <div className="lib-meta">
                   {p.aspect} · {p.duration}s{p.builtin ? " · example" : ""}
+                  {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
                 </div>
                 {!p.builtin && (
                   <span
@@ -528,6 +722,35 @@ export default function Studio() {
               </button>
             ))}
           </div>
+
+          {!!project.videos?.length && (
+            <>
+              <div className="section-label">Saved videos</div>
+              <div className="renders">
+                {project.videos.map((v) => (
+                  <div className="render" key={v.pathname}>
+                    <video src={media(v.pathname)} preload="metadata" muted playsInline controls />
+                    <div className="render-meta">
+                      <span>
+                        {new Date(v.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                      </span>
+                      <span>
+                        {v.w}×{v.h} · {v.fps}fps · {(v.size / 1e6).toFixed(1)} MB
+                      </span>
+                    </div>
+                    <div className="render-actions">
+                      <a className="linkish" href={media(v.pathname, true)}>
+                        Download
+                      </a>
+                      <button className="linkish" onClick={() => deleteRender(v.pathname)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </section>
 
         <aside className="panel">
@@ -535,19 +758,17 @@ export default function Studio() {
             Describe it. Drop in your files. <em>Get a film.</em>
           </h1>
 
-          <div className="field">
-            <div className="seg">
-              <button className={mode === "new" ? "on" : ""} onClick={() => setMode("new")}>
-                New animation
-              </button>
-              <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>
-                Edit this one
-              </button>
-            </div>
+          <div className="seg">
+            <button className={mode === "new" ? "on" : ""} onClick={() => setMode("new")}>
+              New animation
+            </button>
+            <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>
+              Edit this one
+            </button>
           </div>
 
           <div
-            className={`composer${drag ? " drag" : ""}`}
+            className={`composer${drag ? " drag" : ""}${enhanced ? " enhanced" : ""}`}
             onDragOver={(e) => {
               e.preventDefault();
               setDrag(true);
@@ -559,12 +780,27 @@ export default function Studio() {
               if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
             }}
           >
+            {enhanced && (
+              <div className="enhanced-tag">
+                <span>✦ Treatment ready. Edit it freely, then animate.</span>
+                <button
+                  className="linkish"
+                  onClick={() => {
+                    setPrompt(enhanced.brief);
+                    setEnhanced(null);
+                  }}
+                >
+                  undo
+                </button>
+              </div>
+            )}
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate();
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && isSignedIn) generate();
               }}
+              style={enhanced ? { minHeight: 300 } : undefined}
               placeholder={
                 mode === "new"
                   ? "A launch film for our app: start on the logo, three features, end on the URL…"
@@ -603,7 +839,16 @@ export default function Studio() {
                 </svg>
                 Files & references
               </button>
-              <span className="hint">⌘↵</span>
+              {isSignedIn && !enhanced && (
+                <button
+                  className="attach enhance"
+                  onClick={enhance}
+                  disabled={!!busy || !canAsk}
+                  title="Expand your brief into a full creative treatment you can edit"
+                >
+                  ✦ Enhance
+                </button>
+              )}
               <input
                 ref={fileInput}
                 type="file"
@@ -618,9 +863,7 @@ export default function Studio() {
             </div>
           </div>
 
-          <button className="primary" onClick={generate} disabled={!!busy || (!prompt.trim() && !files.length) || !fonts}>
-            {busy ? "Animating…" : mode === "new" ? "Animate" : "Apply changes"}
-          </button>
+          {animateButton}
 
           <div className="divider" />
 
@@ -665,8 +908,12 @@ export default function Studio() {
           </div>
 
           <button className="secondary" onClick={doExport} disabled={exporting !== null || !compiled.fn || !!busy}>
-            {exporting !== null && <span className="progress-fill" style={{ width: `${exporting * 100}%` }} />}
-            <span>{exporting !== null ? `Rendering ${Math.round(exporting * 100)}%` : `Export MP4 · ${W}×${H}`}</span>
+            {exporting && <span className="progress-fill" style={{ width: `${exporting.k * 100}%` }} />}
+            <span>
+              {exporting
+                ? `${exporting.label} ${Math.round(exporting.k * 100)}%`
+                : `Export MP4 · ${W}×${H}${cloud && !project.builtin ? " · saves to library" : ""}`}
+            </span>
           </button>
 
           <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -679,6 +926,18 @@ export default function Studio() {
             >
               {showCode ? "Hide scene code" : "View scene code"}
             </button>
+            {project.treatment && (
+              <button
+                className="linkish"
+                onClick={() => {
+                  setPrompt(project.treatment!);
+                  setEnhanced({ brief: project.prompt ?? "" });
+                  setMode("new");
+                }}
+              >
+                Reuse treatment
+              </button>
+            )}
             {project.builtin && <span className="hint">Example · edits save as a copy</span>}
           </div>
 
@@ -692,11 +951,7 @@ export default function Studio() {
                   onClick={() => {
                     if (project.builtin) {
                       const p = { ...project, id: uid(), builtin: false, title: project.title + " (copy)", code: draftCode, createdAt: Date.now() };
-                      setProjects((l) => {
-                        const next = [...l, p];
-                        persist(next);
-                        return next;
-                      });
+                      upsert(p, true);
                       setCurrentId(p.id);
                     } else updateProject({ code: draftCode });
                   }}

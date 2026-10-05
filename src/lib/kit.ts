@@ -420,7 +420,66 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     ctx.restore();
   }
 
+  // Smooth deterministic 3D value noise in [-1, 1].
+  function noise(x: number, y = 0, z = 0) {
+    const h = (i: number, j: number, k: number) => rand(i * 374761 + j * 668265 + k * 1274126) * 2 - 1;
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const s = (v: number) => v * v * v * (v * (v * 6 - 15) + 10);
+    const fx = s(x - xi), fy = s(y - yi), fz = s(z - zi);
+    const l = (a: number, b: number, k: number) => a + (b - a) * k;
+    const plane = (k: number) =>
+      l(l(h(xi, yi, k), h(xi + 1, yi, k), fx), l(h(xi, yi + 1, k), h(xi + 1, yi + 1, k), fx), fy);
+    return l(plane(zi), plane(zi + 1), fz);
+  }
+
+  // Damped spring from 0 to 1 with natural overshoot. k is progress 0..1.
+  function spring(k: number, o: any = {}) {
+    if (k <= 0) return 0;
+    if (k >= 1) return 1;
+    const damping = o.damping ?? 0.45;
+    const freq = o.freq ?? 3.2;
+    return 1 - Math.exp(-damping * 10 * k) * Math.cos(freq * Math.PI * 2 * k * (1 - damping * 0.3));
+  }
+
+  // Per-item progress for n staggered items sharing one progress value k.
+  function stagger(k: number, i: number, n: number, spread = 0.6, e: Ease = ease.outQuint) {
+    const start = n > 1 ? (i / (n - 1)) * spread : 0;
+    return e(clamp((k - start) / (1 - spread)));
+  }
+
+  // Virtual camera: zoom / pan / rotate around the frame centre, then draw.
+  function camera(ctx: CanvasRenderingContext2D, o: any, draw: () => void) {
+    ctx.save();
+    const cx = o.cx ?? W / 2;
+    const cy = o.cy ?? H / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(((o.rot ?? 0) * Math.PI) / 180);
+    ctx.scale(o.zoom ?? 1, o.zoom ?? 1);
+    ctx.translate(-cx + (o.x ?? 0), -cy + (o.y ?? 0));
+    draw();
+    ctx.restore();
+  }
+
+  // Clip drawing to a path built by shape(ctx).
+  function mask(ctx: CanvasRenderingContext2D, shape: (c: CanvasRenderingContext2D) => void, draw: () => void) {
+    ctx.save();
+    ctx.beginPath();
+    shape(ctx);
+    ctx.clip();
+    draw();
+    ctx.restore();
+  }
+
+  const count = (k: number, from: number, to: number, decimals = 0) =>
+    lerp(from, to, clamp(k)).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+
   return {
+    noise,
+    spring,
+    stagger,
+    camera,
+    mask,
+    count,
     C: PALETTE,
     F: fonts,
     u,
