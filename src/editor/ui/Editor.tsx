@@ -96,7 +96,13 @@ export default function Editor({ id }: { id: string }) {
   useEffect(() => {
     let cancelled = false;
     loadDoc(id)
-      .then((doc) => !cancelled && setStore(() => createEditorStore(doc)))
+      .then((doc) => {
+        if (cancelled) return;
+        const st = createEditorStore(doc);
+        // Open on a meaningful frame rather than the (often empty) first one.
+        st.getState().setTime(Math.min(3, doc.meta.duration * 0.1));
+        setStore(() => st);
+      })
       .catch((e) => !cancelled && setError((e as Error).message));
     return () => {
       cancelled = true;
@@ -369,7 +375,7 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
           </div>
         </div>
 
-        <aside className="ed-inspector">
+        <aside className={`ed-inspector${selected ? " open" : ""}`}>
           {selected ? (
             <Inspector store={store} layer={selected} time={time} />
           ) : (
@@ -440,6 +446,9 @@ function Inspector({ store, layer, time }: { store: Store; layer: Layer; time: n
 
   return (
     <div className="ed-insp">
+      <button className="ed-sheet-close" onClick={() => store.getState().select([])}>
+        Done
+      </button>
       <input
         className="ed-name"
         value={layer.name}

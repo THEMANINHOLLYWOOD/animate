@@ -118,7 +118,7 @@ export async function POST(req: Request) {
             {
               model: "claude-opus-5-5",
               max_tokens: 64000,
-              thinking: { type: "adaptive" },
+              thinking: { type: "adaptive", display: "summarized" },
               output_config: { effort: "high" },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
@@ -129,6 +129,8 @@ export async function POST(req: Request) {
             { signal: req.signal },
           );
           s.on("text", (delta) => send(controller, { type: "delta", text: delta }));
+          // Summarised reasoning, shown in the progress panel so users can watch Claude think.
+          s.on("thinking", (delta) => send(controller, { type: "thinking", text: delta }));
           s.on("contentBlock", (block) => {
             if (block.type !== "server_tool_use") return;
             const input = block.input as { query?: string; url?: string };

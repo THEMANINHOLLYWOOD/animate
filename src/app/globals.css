@@ -872,3 +872,42 @@ input[type="range"]:active::-webkit-slider-thumb {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+@media (max-width: 760px) {
+  .composer textarea,
+  .code textarea {
+    font-size: 16px;
+  }
+
+  .panel {
+    position: static;
+  }
+
+  .stage {
+    height: max(260px, 64vw);
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .headline {
+    font-size: 26px;
+  }
+
+  .top-meta {
+    display: none;
+  }
+
+  .row {
+    grid-template-columns: 1fr;
+  }
+
+  .status {
+    max-width: calc(100% - 24px);
+    white-space: normal;
+    text-align: center;
+  }
+
+  .renders {
+    grid-template-columns: 1fr;
+  }
+}

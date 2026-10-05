@@ -9,7 +9,6 @@ import type { createEditorStore } from "../store/store";
 type Store = ReturnType<typeof createEditorStore>;
 export type KeySel = { layerId: string; path: string; keyId: string };
 
-const LABEL_W = 240;
 const ROW_H = 28;
 const PROP_H = 22;
 const SNAP_PX = 6;
@@ -30,12 +29,14 @@ export default function Timeline({ store, keySel, setKeySel }: { store: Store; k
   const time = useStore(store, (s) => s.time);
   const selection = useStore(store, (s) => s.selection);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [zoom, setZoom] = useState(1);
+  // Phones start zoomed in so clips are big enough to grab; scroll sideways to move.
+  const [zoom, setZoom] = useState(() => (typeof window !== "undefined" && window.innerWidth < 640 ? 3 : 1));
   const [width, setWidth] = useState(800);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const D = doc.meta.duration;
-  const pps = ((width - LABEL_W - 24) / D) * zoom; // pixels per second
+  const labelW = width < 640 ? 132 : 240; // narrower layer column on phones
+  const pps = ((width - labelW - 24) / D) * zoom; // pixels per second
   const X = (t: number) => t * pps;
   const rows = [...doc.layers].reverse(); // top of stack first, like AE / Premiere
 
@@ -183,21 +184,29 @@ export default function Timeline({ store, keySel, setKeySel }: { store: Store; k
       </div>
 
       <div className="tl-scroll" ref={scrollRef}>
-        <div className="tl-inner" style={{ width: LABEL_W + trackW }}>
+        <div className="tl-inner" style={{ width: labelW + trackW, ["--label-w" as string]: `${labelW}px` }}>
           {/* Ruler */}
           <div className="tl-row tl-ruler-row">
             <div className="tl-label tl-corner">{doc.layers.length} layers</div>
             <div className="tl-ruler" style={{ width: trackW }} onPointerDown={scrub}>
-              {ticks.map((t) => (
-                <div key={t} className={`tl-tick${Number.isInteger(t) ? "" : " minor"}`} style={{ left: X(t) }}>
-                  {Number.isInteger(t) && <span>{t}s</span>}
-                </div>
-              ))}
-              {doc.markers.map((m) => (
-                <div key={m.id} className="tl-marker" style={{ left: X(m.t) }} title={m.label}>
-                  <span>{m.label}</span>
-                </div>
-              ))}
+              <div className="tl-marker-lane">
+                {doc.markers.map((m, i) => {
+                  const next = doc.markers[i + 1];
+                  const room = (next ? X(next.t) : trackW) - X(m.t) - 8;
+                  return (
+                    <div key={m.id} className="tl-marker" style={{ left: X(m.t) }} title={m.label}>
+                      {room > 18 && <span style={{ maxWidth: room }}>{m.label}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="tl-tick-lane">
+                {ticks.map((t) => (
+                  <div key={t} className={`tl-tick${Number.isInteger(t) ? "" : " minor"}`} style={{ left: X(t) }}>
+                    {Number.isInteger(t) && <span>{t}s</span>}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -223,14 +232,14 @@ export default function Timeline({ store, keySel, setKeySel }: { store: Store; k
                       title={l.hidden ? "Show" : "Hide"}
                       onClick={(e) => (e.stopPropagation(), store.getState().apply(setLayerFlags(l.id, { hidden: !l.hidden }), "Toggle visibility"))}
                     >
-                      {l.hidden ? "◌" : "●"}
+                      <Icon name={l.hidden ? "eye-off" : "eye"} />
                     </button>
                     <button
-                      className={`tl-flag${l.locked ? " on" : ""}`}
+                      className={`tl-flag tl-lock${l.locked ? " on" : ""}`}
                       title={l.locked ? "Unlock" : "Lock"}
                       onClick={(e) => (e.stopPropagation(), store.getState().apply(setLayerFlags(l.id, { locked: !l.locked }), "Toggle lock"))}
                     >
-                      {l.locked ? "🔒" : "🔓"}
+                      <Icon name={l.locked ? "lock" : "unlock"} />
                     </button>
                   </div>
                   <div className="tl-track" style={{ width: trackW }} onPointerDown={scrub}>
@@ -238,10 +247,16 @@ export default function Timeline({ store, keySel, setKeySel }: { store: Store; k
                       <span className="tl-handle left" onPointerDown={(e) => dragClip(e, l, "start")} />
                       <span className="tl-clip-name">{l.name}</span>
                       <span className="tl-handle right" onPointerDown={(e) => dragClip(e, l, "end")} />
-                      {!open &&
-                        allKeys.map(({ p, k }) => (
-                          <span key={p + k.id} className="tl-dot" style={{ left: X(l.start + k.t - l.start) }} />
-                        ))}
+                      {!open && (
+                        <span className="tl-dots">
+                          {[...new Set(allKeys.map(({ k }) => Math.round(k.t * 100) / 100))]
+                            .filter((t) => t >= 0 && t <= l.end - l.start)
+                            .map((t) => {
+                              const w = Math.max(4, X(l.end - l.start));
+                              return <span key={t} className="tl-dot" style={{ left: Math.min(w - 6, Math.max(6, X(t))) }} />;
+                            })}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -274,9 +289,27 @@ export default function Timeline({ store, keySel, setKeySel }: { store: Store; k
           })}
 
           {/* Playhead */}
-          <div className="tl-playhead" style={{ left: LABEL_W + X(time) }} />
+          <div className="tl-playhead" style={{ left: labelW + X(time) }} />
         </div>
       </div>
     </div>
+  );
+}
+
+function Icon({ name }: { name: "eye" | "eye-off" | "lock" | "unlock" }) {
+  const common = { width: 13, height: 13, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (name === "eye" || name === "eye-off")
+    return (
+      <svg {...common}>
+        <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" />
+        <circle cx="8" cy="8" r="1.8" />
+        {name === "eye-off" && <path d="M2.5 13.5l11-11" />}
+      </svg>
+    );
+  return (
+    <svg {...common}>
+      <rect x="3" y="7" width="10" height="7" rx="1.5" />
+      <path d={name === "lock" ? "M5 7V5a3 3 0 0 1 6 0v2" : "M5 7V5a3 3 0 0 1 5.6-1.5"} />
+    </svg>
   );
 }

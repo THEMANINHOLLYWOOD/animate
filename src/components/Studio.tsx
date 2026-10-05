@@ -300,8 +300,8 @@ export default function Studio() {
     const el = stageRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const pad = 48;
-      const s = Math.min((el.clientWidth - pad) / W, (el.clientHeight - pad) / H);
+      const pad = parseFloat(getComputedStyle(el).paddingLeft) * 2 || 48;
+      const s = Math.max(0.01, Math.min((el.clientWidth - pad) / W, (el.clientHeight - pad) / H));
       setFit({ w: Math.floor(W * s), h: Math.floor(H * s) });
     });
     ro.observe(el);
