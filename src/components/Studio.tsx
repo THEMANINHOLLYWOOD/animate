@@ -645,6 +645,30 @@ export default function Studio() {
     upsert({ ...project, videos: (project.videos ?? []).filter((v) => v.pathname !== pathname) }, true);
   };
 
+  // Paste anywhere: files/images become attachments; text or links pasted
+  // outside an input are added to the brief (links then get researched).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const cd = e.clipboardData;
+      if (!cd) return;
+      const pasted = Array.from(cd.files);
+      if (pasted.length) {
+        e.preventDefault();
+        addFiles(pasted).then(() => setNotice(`Added ${pasted.length} file${pasted.length > 1 ? "s" : ""} to your references.`));
+        return;
+      }
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT") return;
+      const text = cd.getData("text/plain").trim();
+      if (!text) return;
+      e.preventDefault();
+      setPrompt((p) => (p ? `${p}\n${text}` : text));
+      setNotice(linksIn(text).length ? "Link added. Reading the site…" : "Added to your brief.");
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addFiles]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -926,7 +950,7 @@ export default function Studio() {
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                   <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
-                Files & references
+                Add, drop or paste files
               </button>
               {isSignedIn && !enhanced && (
                 <button
@@ -1027,7 +1051,9 @@ export default function Studio() {
                 Reuse treatment
               </button>
             )}
-            {project.builtin && <span className="hint">Example · edits save as a copy</span>}
+            <a className="linkish" href={`/editor/${project.id}`}>
+              Open in editor →
+            </a>
           </div>
 
           {showCode && (
