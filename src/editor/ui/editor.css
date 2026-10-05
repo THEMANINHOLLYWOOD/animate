@@ -116,8 +116,215 @@
 
 .ed-inspector {
   border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ed-panel-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
+}
+
+.ed-panel-body[hidden] {
+  display: none;
+}
+
+.ed-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ed-tabs button {
+  padding: 6px 10px 8px;
+  font-size: 13px;
+  color: var(--stone);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.ed-tabs button.on {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.ed-btn.agent-btn {
+  color: var(--clay-deep);
+  border-color: color-mix(in srgb, var(--clay) 45%, #fff);
+}
+
+/* ── Agent ── */
+
+.agent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  margin: -16px;
+}
+
+.agent-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-empty b {
+  font-family: var(--font-serif), serif;
+  font-weight: 400;
+  font-size: 20px;
+}
+
+.agent-empty p {
+  color: var(--stone);
+  font-size: 13px;
+  margin: 4px 0 12px;
+}
+
+.agent-sugs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-sugs button {
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.agent-sugs button:hover {
+  border-color: var(--ink);
+}
+
+.agent-msg {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agent-msg.user {
+  align-self: flex-end;
+  background: var(--ink);
+  color: var(--ivory);
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  max-width: 85%;
+}
+
+.agent-msg.bot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-think {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--stone);
+}
+
+.agent-think span:last-child {
+  margin-left: auto;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-think-body {
+  font-family: var(--font-serif), serif;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--slate);
+  background: var(--paper);
+  border-radius: 10px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.agent-actions {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  color: var(--olive, #788c5d);
+}
+
+.agent-actions li.err {
+  color: var(--clay-deep);
+}
+
+.agent-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--stone);
+  font-size: 12px;
+}
+
+.agent-applied {
+  font-size: 12px;
+  color: var(--stone);
+}
+
+.agent-error {
+  font-size: 12px;
+  color: var(--clay-deep);
+  background: color-mix(in srgb, var(--clay) 10%, #fff);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.agent-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  background: var(--ivory);
+}
+
+.agent-input textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  outline: 0;
+}
+
+.agent-input textarea:focus {
+  border-color: var(--ink);
+}
+
+.agent-send {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--ivory);
+  font-size: 13px;
+}
+
+.agent-send:disabled {
+  opacity: 0.4;
 }
 
 .ed-hint {
@@ -720,7 +927,17 @@ kbd {
     display: none;
   }
 
+  .ed-inspector {
+    height: 70dvh;
+    max-height: none;
+  }
+
+  .ed-top .ed-btn:not(.primary):not(.agent-btn) {
+    display: none;
+  }
+
   /* iOS zooms into inputs under 16px; keep them at 16 on phones. */
+  .agent-input textarea,
   .ed-field input,
   .ed-field textarea,
   .ed-name {

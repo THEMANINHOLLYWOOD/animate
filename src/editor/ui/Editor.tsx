@@ -11,6 +11,7 @@ import { Doc, type Layer, type Value } from "../doc/schema";
 import { buildGaiaDoc } from "../presets/gaiaDoc";
 import { docScene, renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
+import AgentPanel from "./AgentPanel";
 import Timeline, { type KeySel } from "./Timeline";
 import "./editor.css";
 
@@ -130,6 +131,7 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
   const [keySel, setKeySel] = useState<KeySel[]>([]);
   const [exporting, setExporting] = useState<number | null>(null);
   const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
+  const [panel, setPanel] = useState<"inspect" | "agent">("inspect");
 
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -357,6 +359,9 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
           <button className="ed-btn" disabled={!canRedo} onClick={() => store.getState().redo()} title="Redo (⇧⌘Z)">
             Redo
           </button>
+          <button className="ed-btn agent-btn" onClick={() => setPanel((p) => (p === "agent" ? "inspect" : "agent"))}>
+            ✦ Ask Claude
+          </button>
           <button className="ed-btn" onClick={reset}>
             Reset
           </button>
@@ -375,7 +380,28 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
           </div>
         </div>
 
-        <aside className={`ed-inspector${selected ? " open" : ""}`}>
+        <aside className={`ed-inspector${selected || panel === "agent" ? " open" : ""}`}>
+          <div className="ed-tabs">
+            <button className={panel === "inspect" ? "on" : ""} onClick={() => setPanel("inspect")}>
+              Inspect
+            </button>
+            <button className={panel === "agent" ? "on" : ""} onClick={() => setPanel("agent")}>
+              ✦ Agent
+            </button>
+            <button
+              className="ed-sheet-close"
+              onClick={() => {
+                setPanel("inspect");
+                store.getState().select([]);
+              }}
+            >
+              Close
+            </button>
+          </div>
+          <div className="ed-panel-body" hidden={panel !== "agent"}>
+            <AgentPanel store={store} />
+          </div>
+          <div className="ed-panel-body" hidden={panel !== "inspect"}>
           {selected ? (
             <Inspector store={store} layer={selected} time={time} />
           ) : (
@@ -399,6 +425,7 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
               </ul>
             </div>
           )}
+          </div>
         </aside>
       </div>
 
@@ -446,9 +473,6 @@ function Inspector({ store, layer, time }: { store: Store; layer: Layer; time: n
 
   return (
     <div className="ed-insp">
-      <button className="ed-sheet-close" onClick={() => store.getState().select([])}>
-        Done
-      </button>
       <input
         className="ed-name"
         value={layer.name}
