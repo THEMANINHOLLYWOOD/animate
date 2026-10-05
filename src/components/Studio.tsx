@@ -16,10 +16,11 @@ import {
   SIZES,
 } from "@/lib/engine";
 import { GAIA_SCENE } from "@/lib/presets/gaia";
+import Progress, { type Step } from "@/components/Progress";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 
-type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number };
+type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number; shareId?: string };
 
 type Project = {
   id: string;
@@ -32,6 +33,8 @@ type Project = {
   assets?: { name: string; pathname: string }[];
   videos?: Render[];
   builtin?: boolean;
+  favorite?: boolean;
+  share?: { id: string; createdAt: number };
   createdAt: number;
 };
 
@@ -121,7 +124,13 @@ function parseScene(text: string) {
   return { title, code };
 }
 
-async function streamStage(payload: object, signal: AbortSignal, onText: (s: string) => void, onStatus?: (s: string) => void) {
+async function streamStage(
+  payload: object,
+  signal: AbortSignal,
+  onText: (s: string) => void,
+  onStatus?: (s: string) => void,
+  onThinking?: (delta: string) => void,
+) {
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -150,6 +159,7 @@ async function streamStage(payload: object, signal: AbortSignal, onText: (s: str
         text = "";
         onText(text);
       } else if (ev.type === "status") onStatus?.(ev.text);
+      else if (ev.type === "thinking") onThinking?.(ev.text);
       else if (ev.type === "error") throw new Error(ev.message);
     }
   }
@@ -175,6 +185,8 @@ export default function Studio() {
   const [time, setTime] = useState(0);
   const [busy, setBusy] = useState<null | { label: string; stream: string }>(null);
   const [error, setError] = useState<string | null>(null);
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [favOnly, setFavOnly] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
@@ -530,9 +542,27 @@ export default function Studio() {
     return () => clearTimeout(t);
   }, [prompt, isSignedIn, importImage, grabXVideo]);
 
+  // ── Progress steps: what Claude is doing right now, with its reasoning ──
+  const phase = (label: string) => {
+    const at = Date.now();
+    setBusy({ label, stream: "" });
+    setSteps((list) => [
+      ...list.map((x) => (x.status === "active" ? { ...x, status: "done" as const, endedAt: at } : x)),
+      { id: uid(), label, status: "active", startedAt: at, thinking: "", notes: [] },
+    ]);
+  };
+  const note = (n: string) => setSteps((l) => l.map((x, i) => (i === l.length - 1 ? { ...x, notes: [...x.notes, n] } : x)));
+  const think = (d: string) => setSteps((l) => l.map((x, i) => (i === l.length - 1 ? { ...x, thinking: x.thinking + d } : x)));
+  const finishSteps = (ok: boolean) => {
+    const at = Date.now();
+    setSteps((l) => l.map((x) => (x.status === "active" ? { ...x, status: ok ? ("done" as const) : ("error" as const), endedAt: at } : x)));
+  };
+
   // ── stage 1: direct (also the ✦ Enhance button) ──
   async function direct(signal: AbortSignal, brief: string, payloadFiles: unknown[], editing: boolean) {
-    setBusy({ label: brands.length || linksIn(brief).length ? "Directing · researching" : "Directing · writing the treatment", stream: "" });
+    const researching = brands.length > 0 || linksIn(brief).length > 0;
+    phase(researching ? "Researching the company" : "Writing the creative treatment");
+    let writing = !researching;
     return streamStage(
       {
         stage: "direct",
@@ -544,8 +574,15 @@ export default function Studio() {
         previousCode: editing ? project.code : undefined,
       },
       signal,
-      (s) => setBusy((b) => b && { ...b, stream: s }),
-      (status) => setBusy((b) => b && { ...b, label: `Researching · ${status}` }),
+      (s) => {
+        if (!writing && s.trim()) {
+          writing = true;
+          phase("Writing the creative treatment");
+        }
+        setBusy((b) => b && { ...b, stream: s });
+      },
+      note,
+      think,
     );
   }
 
@@ -554,14 +591,18 @@ export default function Studio() {
     const ac = new AbortController();
     abortRef.current = ac;
     setError(null);
+    setSteps([]);
+    let ok = false;
     try {
       const brief = prompt.trim() || "Make a film from the attached files.";
       const treatment = await direct(ac.signal, brief, await filePayload(), mode === "edit" && !project.builtin);
       setPrompt(treatment.trim());
       setEnhanced({ brief });
+      ok = true;
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
+      finishSteps(ok);
       setBusy(null);
       abortRef.current = null;
     }
@@ -574,13 +615,15 @@ export default function Studio() {
     const ac = new AbortController();
     abortRef.current = ac;
     setError(null);
+    setSteps([]);
+    let ok = false;
     try {
       const payloadFiles = await filePayload();
       const brief = enhanced?.brief ?? (prompt.trim() || "Make a film from the attached files.");
       // Small edits go straight to the animator; new films always get a treatment first.
       const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false);
 
-      setBusy({ label: editing ? "Animating · revising the scene" : "Animating · writing the scene", stream: "" });
+      phase(editing ? "Revising the animation" : "Animating the scene");
       const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
       const base = {
         stage: "animate",
@@ -592,7 +635,7 @@ export default function Studio() {
         files: payloadFiles,
         previousCode: editing ? project.code : undefined,
       };
-      let reply = parseScene(await streamStage(base, ac.signal, onText));
+      let reply = parseScene(await streamStage(base, ac.signal, onText, undefined, think));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
 
       // Dry-run across the timeline; ask for one repair if it throws.
@@ -603,10 +646,12 @@ export default function Studio() {
           return `Syntax error: ${(e as Error).message}`;
         }
       };
+      phase("Checking every frame");
       const problem = check(reply.code);
       if (problem) {
-        setBusy({ label: "Polishing · fixing a runtime error", stream: "" });
-        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText));
+        note(problem);
+        phase("Fixing a runtime error");
+        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText, undefined, think));
         if (fixed.code) reply = { title: reply.title, code: fixed.code };
       }
 
@@ -615,7 +660,7 @@ export default function Studio() {
       const assetFiles = files.filter((f) => f.kind === "image" && f.asset);
       let assetRefs = prev?.assets ?? [];
       if (cloud && userId && assetFiles.length) {
-        setBusy({ label: "Saving your images", stream: "" });
+        phase("Saving your images");
         const up = await Promise.all(
           assetFiles.map((f) =>
             upload(`users/${userId}/assets/${id}/${f.name}`, f.file, { access: "private", handleUploadUrl: "/api/upload" }).then(
@@ -647,9 +692,11 @@ export default function Studio() {
       setEnhanced(null);
       tRef.current = 0;
       setPlaying(true);
+      ok = true;
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
+      finishSteps(ok);
       setBusy(null);
       abortRef.current = null;
     }
@@ -730,11 +777,47 @@ export default function Studio() {
       if (!cloud) persist({ ...GAIA, builtin: false, id: "_" }, next);
       return next;
     });
-    if (cloud) await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
+    if (cloud) {
+      const gone = projects.find((p) => p.id === id);
+      await Promise.all((gone?.videos ?? []).filter((v) => v.shareId).map((v) => fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" }).catch(() => {})));
+      await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
+    }
     if (id === currentId) setCurrentId("gaia");
   };
 
+  // ── Share: a public page for a rendered MP4 (never scene code) ──
+  const shareRender = async (v: Render) => {
+    try {
+      let id = v.shareId;
+      if (!id) {
+        const r = await fetch("/api/share", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pathname: v.pathname, title: project.title, w: v.w, h: v.h, duration: v.duration }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error ?? "Couldn't create a share link.");
+        id = j.id as string;
+        upsert({ ...project, videos: (project.videos ?? []).map((x) => (x.pathname === v.pathname ? { ...x, shareId: id } : x)) }, true);
+      }
+      const url = `${location.origin}/watch/${id}`;
+      await navigator.clipboard.writeText(url).catch(() => {});
+      setNotice(`Share link copied: ${url}`);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const unshareRender = async (v: Render) => {
+    if (!v.shareId) return;
+    await fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" });
+    upsert({ ...project, videos: (project.videos ?? []).map((x) => (x.pathname === v.pathname ? { ...x, shareId: undefined } : x)) }, true);
+    setNotice("Link turned off.");
+  };
+
   const deleteRender = (pathname: string) => {
+    const shared = project.videos?.find((v) => v.pathname === pathname)?.shareId;
+    if (shared) fetch(`/api/share?id=${shared}`, { method: "DELETE" }).catch(() => {});
     upsert({ ...project, videos: (project.videos ?? []).filter((v) => v.pathname !== pathname) }, true);
   };
 
@@ -780,7 +863,6 @@ export default function Studio() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const streamTail = busy?.stream ? busy.stream.split("\n").slice(-16).join("\n") : "";
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0;
 
@@ -822,19 +904,13 @@ export default function Studio() {
               style={fit ? { width: fit.w, height: fit.h } : { visibility: "hidden" }}
               onClick={() => setPlaying((p) => !p)}
             />
-            {busy && (
-              <>
-                <div className="status">
-                  <span className="dot" />
-                  {busy.label}
-                  {busy.stream && <span style={{ color: "var(--stone)" }}>· {busy.stream.length.toLocaleString()} chars</span>}
-                  <button className="linkish" onClick={() => abortRef.current?.abort()}>
-                    cancel
-                  </button>
-                </div>
-                <div className="stream">{streamTail}</div>
-              </>
-            )}
+            <Progress
+              steps={steps}
+              running={!!busy}
+              output={busy?.stream ?? ""}
+              onCancel={() => abortRef.current?.abort()}
+              onDismiss={() => setSteps([])}
+            />
             {shownError && !busy && (
               <div className="error-card">
                 <span>{shownError}</span>
@@ -875,14 +951,46 @@ export default function Studio() {
             </span>
           </div>
 
-          <div className="section-label">
-            {cloud ? "Your library" : "On this device"}
-            {!cloud && isLoaded && <span> · sign in to keep animations and videos in the cloud</span>}
+          <div className="section-label lib-head">
+            <span className="lib-head-title">
+              {cloud ? "Your library" : "On this device"}
+              {!cloud && isLoaded && <span> · sign in to keep animations and videos in the cloud</span>}
+            </span>
+            {projects.some((p) => p.favorite) && (
+              <span className="lib-filter">
+                <button className={favOnly ? "" : "on"} onClick={() => setFavOnly(false)}>
+                  All
+                </button>
+                <button className={favOnly ? "on" : ""} onClick={() => setFavOnly(true)}>
+                  ★ Favorites
+                </button>
+              </span>
+            )}
           </div>
           <div className="library">
-            {projects.map((p) => (
-              <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}`} onClick={() => select(p.id)}>
-                <div className="lib-title">{p.title}</div>
+            {[...projects]
+              .filter((p) => !favOnly || p.favorite)
+              // Example first, then favorites, then everything else (newest last).
+              .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin) || Number(!!b.favorite) - Number(!!a.favorite))
+              .map((p) => (
+              <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}`} onClick={() => select(p.id)}>
+                <div className="lib-title">
+                  {!p.builtin && (
+                    <span
+                      className={`lib-star${p.favorite ? " on" : ""}`}
+                      role="button"
+                      aria-label={p.favorite ? "Remove from favorites" : "Add to favorites"}
+                      title={p.favorite ? "Remove from favorites" : "Add to favorites"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        upsert({ ...p, favorite: !p.favorite }, true);
+                      }}
+                    >
+                      {p.favorite ? "★" : "☆"}
+                    </span>
+                  )}
+                  {p.title}
+                </div>
                 <div className="lib-meta">
                   {p.aspect} · {p.duration}s{p.builtin ? " · example" : ""}
                   {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
@@ -923,6 +1031,14 @@ export default function Studio() {
                       <a className="linkish" href={media(v.pathname, true)}>
                         Download
                       </a>
+                      <button className="linkish" onClick={() => shareRender(v)}>
+                        {v.shareId ? "Copy link" : "Share"}
+                      </button>
+                      {v.shareId && (
+                        <button className="linkish" onClick={() => unshareRender(v)}>
+                          Stop sharing
+                        </button>
+                      )}
                       <button className="linkish" onClick={() => deleteRender(v.pathname)}>
                         Remove
                       </button>

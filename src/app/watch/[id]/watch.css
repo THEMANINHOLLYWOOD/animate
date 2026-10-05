@@ -1,0 +1,91 @@
+.watch {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 16px 40px;
+}
+
+.watch-top {
+  width: 100%;
+  max-width: 1100px;
+}
+
+.watch-top .brand {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.watch-frame {
+  width: 100%;
+  max-width: 1100px;
+  max-height: 72dvh;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.watch-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.watch-meta {
+  width: 100%;
+  max-width: 1100px;
+}
+
+.watch-meta h1 {
+  font-family: var(--font-serif), serif;
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+}
+
+.watch-meta p {
+  color: var(--stone);
+  font-size: 13px;
+  margin: 4px 0 16px;
+}
+
+.watch-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.watch-btn {
+  height: 42px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--ivory);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.watch-cta {
+  height: 42px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 14px;
+  background: #fff;
+}
+
+.watch-missing {
+  margin-top: 30vh;
+  color: var(--stone);
+}
