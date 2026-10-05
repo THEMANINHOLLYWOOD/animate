@@ -12,7 +12,7 @@ describe("agent tools on the Gaia film", () => {
   it("declares strict, valid schemas for every tool", () => {
     for (const t of AGENT_TOOLS) {
       expect(t.strict).toBe(true);
-      const schema = t.input_schema as { properties: object; required: string[]; additionalProperties: boolean };
+      const schema = t.input_schema as unknown as { properties: object; required: string[]; additionalProperties: boolean };
       expect(schema.additionalProperties).toBe(false);
       expect(schema.required.sort()).toEqual(Object.keys(schema.properties).sort());
     }
