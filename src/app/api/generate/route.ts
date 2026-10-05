@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { DIRECTOR_PROMPT, SYSTEM_PROMPT } from "@/lib/prompt";
 import { requireUser } from "@/lib/store";
+import type { BrandKit } from "@/lib/brand";
 
 export const maxDuration = 300;
 
@@ -20,7 +21,27 @@ type Body = {
   files: InFile[];
   previousCode?: string;
   error?: string;
+  brands?: BrandKit[];
 };
+
+const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
+
+function brandNotes(brands: BrandKit[]) {
+  return brands
+    .map((b) =>
+      [
+        `Brand kit read from ${b.url}:`,
+        `- Name: ${b.name}`,
+        b.description && `- Says about itself: ${b.description}`,
+        b.themeColor && `- Theme colour: ${b.themeColor}`,
+        b.colors.length && `- Most used colours on the site (by frequency): ${b.colors.join(", ")}`,
+        b.fonts.length && `- Site fonts: ${b.fonts.join(", ")} (approximate with serif / sans / mono)`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .join("\n\n");
+}
 
 export async function POST(req: Request) {
   // The API key is shared, so generation is limited to signed-in users.
@@ -57,6 +78,7 @@ export async function POST(req: Request) {
         ? `${spec}\n\nThe film currently exists as this scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\nWrite a revised treatment that applies this change request while keeping what works: ${body.prompt}`
         : `${spec}\n\nBrief:\n${body.prompt}`,
     });
+    if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
   } else {
     system = SYSTEM_PROMPT;
     const treatment = body.treatment ? `\n\nTreatment:\n${body.treatment}` : "";
@@ -72,6 +94,7 @@ export async function POST(req: Request) {
     } else {
       content.push({ type: "text", text: `${spec}\n\nOriginal brief:\n${body.prompt}${treatment}\n\nBuild this film.` });
     }
+    if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
   }
 
   const encoder = new TextEncoder();
@@ -80,21 +103,48 @@ export async function POST(req: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const s = client.beta.messages.stream(
-          {
-            model: "claude-opus-5-5",
-            max_tokens: 64000,
-            thinking: { type: "adaptive" },
-            output_config: { effort: "high" },
-            betas: ["server-side-fallback-2026-07-01"],
-            fallbacks: "default",
-            system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-            messages: [{ role: "user", content }],
-          },
-          { signal: req.signal },
-        );
-        s.on("text", (delta) => send(controller, { type: "delta", text: delta }));
-        const msg = await s.finalMessage();
+        // The director researches any company or link in the brief with web search + fetch.
+        const research = body.stage === "direct" && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
+        const tools: Anthropic.Beta.BetaToolUnion[] = research
+          ? [
+              { type: "web_search_20260209", name: "web_search", max_uses: 6 },
+              { type: "web_fetch_20260209", name: "web_fetch", max_uses: 10 },
+            ]
+          : [];
+        const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
+        let msg: Anthropic.Beta.BetaMessage;
+        for (let turn = 0; ; turn++) {
+          const s = client.beta.messages.stream(
+            {
+              model: "claude-opus-5-5",
+              max_tokens: 64000,
+              thinking: { type: "adaptive" },
+              output_config: { effort: "high" },
+              betas: ["server-side-fallback-2026-07-01"],
+              fallbacks: "default",
+              system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+              messages,
+              ...(tools.length ? { tools } : {}),
+            },
+            { signal: req.signal },
+          );
+          s.on("text", (delta) => send(controller, { type: "delta", text: delta }));
+          s.on("contentBlock", (block) => {
+            if (block.type !== "server_tool_use") return;
+            const input = block.input as { query?: string; url?: string };
+            // Anything written before a tool call is scratch work, not the treatment.
+            send(controller, { type: "reset" });
+            send(controller, {
+              type: "status",
+              text: block.name === "web_search" ? `Searching “${input.query ?? ""}”` : `Reading ${(input.url ?? "").replace(/^https?:\/\/(www\.)?/, "").slice(0, 48)}`,
+            });
+          });
+          msg = await s.finalMessage();
+          if (msg.stop_reason !== "pause_turn" || turn >= 4) break;
+          // Resume a paused server-tool turn: resend the assistant content so far.
+          const prior = messages[1]?.content;
+          messages.splice(1, 1, { role: "assistant", content: [...(Array.isArray(prior) ? prior : []), ...msg.content] as Anthropic.Beta.BetaContentBlockParam[] });
+        }
         if (msg.stop_reason === "refusal") {
           send(controller, { type: "error", message: "Claude declined this request." });
         } else if (msg.stop_reason === "max_tokens") {

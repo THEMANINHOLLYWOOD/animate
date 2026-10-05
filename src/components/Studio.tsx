@@ -16,6 +16,7 @@ import {
   SIZES,
 } from "@/lib/engine";
 import { GAIA_SCENE } from "@/lib/presets/gaia";
+import type { BrandKit } from "@/lib/brand";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number };
 
@@ -63,6 +64,17 @@ const fmt = (s: number) => {
 const media = (pathname: string, dl = false) => `/api/media?p=${encodeURIComponent(pathname)}${dl ? "&dl=1" : ""}`;
 const safeName = (s: string) => s.replace(/[^\w.\-]+/g, "_").slice(0, 80);
 
+const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
+const linksIn = (s: string) =>
+  [...new Set((s.match(URL_RE) ?? []).map((u) => (u.startsWith("http") ? u : `https://${u}`).replace(/[.,;:!?]+$/, "")))].slice(0, 3);
+const hostOf = (u: string) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "");
+  } catch {
+    return u;
+  }
+};
+
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|html|css|js|jsx|ts|tsx|py|yaml|yml|xml|srt|vtt)$/i;
 
 function kindOf(f: File): Attached["kind"] | null {
@@ -108,7 +120,7 @@ function parseScene(text: string) {
   return { title, code };
 }
 
-async function streamStage(payload: object, signal: AbortSignal, onText: (s: string) => void) {
+async function streamStage(payload: object, signal: AbortSignal, onText: (s: string) => void, onStatus?: (s: string) => void) {
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,7 +145,11 @@ async function streamStage(payload: object, signal: AbortSignal, onText: (s: str
       if (ev.type === "delta") {
         text += ev.text;
         onText(text);
-      } else if (ev.type === "error") throw new Error(ev.message);
+      } else if (ev.type === "reset") {
+        text = "";
+        onText(text);
+      } else if (ev.type === "status") onStatus?.(ev.text);
+      else if (ev.type === "error") throw new Error(ev.message);
     }
   }
   return text;
@@ -147,6 +163,9 @@ export default function Studio() {
   const [enhanced, setEnhanced] = useState<null | { brief: string }>(null);
   const [mode, setMode] = useState<"new" | "edit">("new");
   const [files, setFiles] = useState<Attached[]>([]);
+  const [brands, setBrands] = useState<BrandKit[]>([]);
+  const [reading, setReading] = useState<string[]>([]);
+  const triedLinks = useRef(new Set<string>());
   const [projectImgs, setProjectImgs] = useState<Record<string, HTMLImageElement>>({});
   const [fps, setFps] = useState(30);
   const [fonts, setFonts] = useState<Fonts | null>(null);
@@ -376,9 +395,51 @@ export default function Studio() {
       }),
     );
 
+  // ── paste a link: read the brand kit, attach the logo and preview image ──
+  const importImage = useCallback(
+    async (src: string, name: string, asset: boolean) => {
+      const r = await fetch(`/api/brand?image=${encodeURIComponent(src)}`);
+      if (!r.ok) return;
+      const blob = await r.blob();
+      const ext = blob.type.split("/")[1]?.replace("svg+xml", "svg").replace("jpeg", "jpg") || "png";
+      const file = new File([blob], `${name}.${ext}`, { type: blob.type });
+      await addFiles([file]);
+      if (!asset) setFiles((l) => l.map((f) => (f.name === safeName(file.name) ? { ...f, asset: false } : f)));
+    },
+    [addFiles],
+  );
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const fresh = linksIn(prompt).filter((u) => !triedLinks.current.has(hostOf(u)));
+    if (!fresh.length) return;
+    const t = setTimeout(() => {
+      for (const u of fresh) {
+        const host = hostOf(u);
+        if (triedLinks.current.has(host)) continue;
+        triedLinks.current.add(host);
+        setReading((r) => [...r, host]);
+        fetch(`/api/brand?url=${encodeURIComponent(u)}`)
+          .then(async (r) => {
+            if (!r.ok) return;
+            const kit = (await r.json()) as BrandKit;
+            setBrands((b) => [...b.filter((x) => x.host !== kit.host), kit]);
+            const logo = kit.logo ?? kit.icon;
+            await Promise.all([
+              logo && importImage(logo, `${kit.host}-logo`, true),
+              kit.ogImage && importImage(kit.ogImage, `${kit.host}-preview`, false),
+            ]);
+          })
+          .catch(() => {})
+          .finally(() => setReading((r) => r.filter((h) => h !== host)));
+      }
+    }, 700);
+    return () => clearTimeout(t);
+  }, [prompt, isSignedIn, importImage]);
+
   // ── stage 1: direct (also the ✦ Enhance button) ──
   async function direct(signal: AbortSignal, brief: string, payloadFiles: unknown[], editing: boolean) {
-    setBusy({ label: "Directing · writing the treatment", stream: "" });
+    setBusy({ label: brands.length || linksIn(brief).length ? "Directing · researching" : "Directing · writing the treatment", stream: "" });
     return streamStage(
       {
         stage: "direct",
@@ -386,10 +447,12 @@ export default function Studio() {
         duration: project.duration,
         aspect: project.aspect,
         files: payloadFiles,
+        brands,
         previousCode: editing ? project.code : undefined,
       },
       signal,
       (s) => setBusy((b) => b && { ...b, stream: s }),
+      (status) => setBusy((b) => b && { ...b, label: `Researching · ${status}` }),
     );
   }
 
@@ -430,6 +493,7 @@ export default function Studio() {
         stage: "animate",
         prompt: brief,
         treatment,
+        brands,
         duration: project.duration,
         aspect: project.aspect,
         files: payloadFiles,
@@ -803,10 +867,35 @@ export default function Studio() {
               style={enhanced ? { minHeight: 300 } : undefined}
               placeholder={
                 mode === "new"
-                  ? "A launch film for our app: start on the logo, three features, end on the URL…"
+                  ? "Paste a company link, or describe your film: a launch film for our app, start on the logo, three features, end on the URL…"
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />
+            {(brands.length > 0 || reading.length > 0) && (
+              <div className="brands">
+                {reading.map((h) => (
+                  <div className="brand-card loading" key={`r-${h}`}>
+                    <span className="dot" /> Reading {h}…
+                  </div>
+                ))}
+                {brands.map((b) => (
+                  <div className="brand-card" key={b.host} title={b.description}>
+                    <div className="brand-swatches">
+                      {(b.themeColor ? [b.themeColor, ...b.colors] : b.colors).slice(0, 6).map((c, i) => (
+                        <span key={c + i} style={{ background: c }} />
+                      ))}
+                    </div>
+                    <div className="brand-text">
+                      <b>{b.name}</b>
+                      <span>{b.host} · Claude will research this</span>
+                    </div>
+                    <button className="chip-x" aria-label={`Remove ${b.name}`} onClick={() => setBrands((l) => l.filter((x) => x.host !== b.host))}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {files.length > 0 && (
               <div className="chips">
                 {files.map((f) => (

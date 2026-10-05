@@ -2,7 +2,7 @@
 
 import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
 import { createContext, useContext, type ReactNode } from "react";
-import { CLERK_ENABLED, LOCAL_USER } from "@/lib/authMode";
+import { CLERK_ENABLED, LOCAL_MODE, LOCAL_USER } from "@/lib/authMode";
 
 type Account = {
   isLoaded: boolean;
@@ -11,7 +11,12 @@ type Account = {
   local: boolean;
 };
 
-const Ctx = createContext<Account>({ isLoaded: true, isSignedIn: true, userId: LOCAL_USER, local: true });
+const Ctx = createContext<Account>({
+  isLoaded: true,
+  isSignedIn: LOCAL_MODE,
+  userId: LOCAL_MODE ? LOCAL_USER : null,
+  local: LOCAL_MODE,
+});
 
 function ClerkBridge({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn, userId } = useAuth();
@@ -26,9 +31,15 @@ export function AccountProvider({ children }: { children: ReactNode }) {
 export const useAccount = () => useContext(Ctx);
 
 export function SignIn({ children }: { children: ReactNode }) {
-  return CLERK_ENABLED ? <SignInButton mode="modal">{children}</SignInButton> : <>{children}</>;
+  if (CLERK_ENABLED) return <SignInButton mode="modal">{children}</SignInButton>;
+  return (
+    <span title="Accounts are being set up" style={{ opacity: 0.5, pointerEvents: "none", display: "contents" }}>
+      {children}
+    </span>
+  );
 }
 
 export function AccountButton() {
-  return CLERK_ENABLED ? <UserButton /> : <span className="pill ghost">Local mode</span>;
+  if (CLERK_ENABLED) return <UserButton />;
+  return LOCAL_MODE ? <span className="pill ghost">Local mode</span> : null;
 }
