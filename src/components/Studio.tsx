@@ -17,6 +17,7 @@ import {
 } from "@/lib/engine";
 import { GAIA_SCENE } from "@/lib/presets/gaia";
 import type { BrandKit } from "@/lib/brand";
+import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number };
 
@@ -165,6 +166,7 @@ export default function Studio() {
   const [files, setFiles] = useState<Attached[]>([]);
   const [brands, setBrands] = useState<BrandKit[]>([]);
   const [reading, setReading] = useState<string[]>([]);
+  const [xRefs, setXRefs] = useState<(XVideoRef & { frames: number; status: string })[]>([]);
   const triedLinks = useRef(new Set<string>());
   const [projectImgs, setProjectImgs] = useState<Record<string, HTMLImageElement>>({});
   const [fps, setFps] = useState(30);
@@ -409,12 +411,103 @@ export default function Studio() {
     [addFiles],
   );
 
+  // ── paste an X post with a video: grab it and turn it into reference frames ──
+  const grabXVideo = useCallback(
+    async (link: string) => {
+      const id = xStatusId(link)!;
+      const update = (patch: Partial<XVideoRef & { frames: number; status: string }>) =>
+        setXRefs((l) => l.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+      setReading((r) => [...r, `x.com post ${id}`]);
+      try {
+        const r = await fetch(`/api/reference?x=${encodeURIComponent(link)}`);
+        const meta = await r.json();
+        if (!r.ok) throw new Error(meta.error ?? "Couldn't read that post.");
+        const ref = meta as XVideoRef;
+        setXRefs((l) => [...l.filter((x) => x.id !== id), { ...ref, frames: 0, status: "Downloading video…" }]);
+        setReading((rd) => rd.filter((h) => h !== `x.com post ${id}`));
+
+        const vr = await fetch(`/api/reference?media=${encodeURIComponent(ref.video)}`);
+        if (!vr.ok) throw new Error("Couldn't download the video.");
+        const blobUrl = URL.createObjectURL(await vr.blob());
+
+        // Sample frames evenly across the clip; Claude studies these as style references.
+        update({ status: "Grabbing frames…" });
+        const video = document.createElement("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "auto";
+        video.src = blobUrl;
+        await new Promise<void>((res, rej) => {
+          video.onloadedmetadata = () => res();
+          video.onerror = () => rej(new Error("The video couldn't be decoded."));
+        });
+        const n = Math.min(8, Math.max(4, Math.round(video.duration / 2)));
+        const scale = Math.min(1, 768 / Math.max(video.videoWidth, video.videoHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.round(video.videoWidth * scale);
+        c.height = Math.round(video.videoHeight * scale);
+        const g = c.getContext("2d")!;
+        const frames: File[] = [];
+        const stamps: string[] = [];
+        for (let i = 0; i < n; i++) {
+          const t = ((i + 0.5) / n) * video.duration;
+          await new Promise<void>((res) => {
+            video.onseeked = () => res();
+            video.currentTime = t;
+          });
+          g.drawImage(video, 0, 0, c.width, c.height);
+          const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
+          if (blob) {
+            frames.push(new File([blob], `x-${id}-frame-${i + 1}-${t.toFixed(1)}s.jpg`, { type: "image/jpeg" }));
+            stamps.push(`frame ${i + 1} at ${t.toFixed(1)}s`);
+          }
+          update({ frames: frames.length });
+        }
+        URL.revokeObjectURL(blobUrl);
+
+        const note = new File(
+          [
+            [
+              `Reference video from X: ${ref.url}`,
+              `Posted by ${ref.author} (@${ref.handle})`,
+              ref.text && `Post text: ${ref.text}`,
+              `Length: ${(ref.durationMs / 1000).toFixed(1)}s${ref.aspect ? ` · aspect ${ref.aspect[0]}:${ref.aspect[1]}` : ""}`,
+              `Attached frames (in order): ${stamps.join(", ")}.`,
+              "Use this video as a style and motion reference: study its pacing, transitions, composition, typography and colour, and how it changes from frame to frame. Make an original film in that spirit; don't reproduce its footage, logos or characters.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          ],
+          `x-${id}-reference.txt`,
+          { type: "text/plain" },
+        );
+        await addFiles([...frames, note]);
+        const names = new Set(frames.map((f) => safeName(f.name)));
+        setFiles((l) => l.map((f) => (names.has(f.name) ? { ...f, asset: false } : f)));
+        update({ status: `${frames.length} frames added as references` });
+      } catch (e) {
+        setReading((rd) => rd.filter((h) => h !== `x.com post ${id}`));
+        setXRefs((l) => l.filter((x) => x.id !== id));
+        setError((e as Error).message);
+      }
+    },
+    [addFiles],
+  );
+
   useEffect(() => {
     if (!isSignedIn) return;
-    const fresh = linksIn(prompt).filter((u) => !triedLinks.current.has(hostOf(u)));
+    const keyOf = (u: string) => (isXStatus(u) ? `x:${xStatusId(u)}` : hostOf(u));
+    const fresh = linksIn(prompt).filter((u) => !triedLinks.current.has(keyOf(u)));
     if (!fresh.length) return;
     const t = setTimeout(() => {
       for (const u of fresh) {
+        if (isXStatus(u)) {
+          if (triedLinks.current.has(keyOf(u))) continue;
+          triedLinks.current.add(keyOf(u));
+          grabXVideo(u);
+          continue;
+        }
+        if (/^(x|twitter)\.com$/.test(hostOf(u))) continue;
         const host = hostOf(u);
         if (triedLinks.current.has(host)) continue;
         triedLinks.current.add(host);
@@ -435,7 +528,7 @@ export default function Studio() {
       }
     }, 700);
     return () => clearTimeout(t);
-  }, [prompt, isSignedIn, importImage]);
+  }, [prompt, isSignedIn, importImage, grabXVideo]);
 
   // ── stage 1: direct (also the ✦ Enhance button) ──
   async function direct(signal: AbortSignal, brief: string, payloadFiles: unknown[], editing: boolean) {
@@ -895,8 +988,34 @@ export default function Studio() {
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />
-            {(brands.length > 0 || reading.length > 0) && (
+            {(brands.length > 0 || reading.length > 0 || xRefs.length > 0) && (
               <div className="brands">
+                {xRefs.map((x) => (
+                  <div className="brand-card xref" key={`x-${x.id}`} title={x.text}>
+                    {x.poster && (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={`/api/reference?media=${encodeURIComponent(x.poster)}`} alt="" />
+                    )}
+                    <div className="brand-text">
+                      <b>
+                        {x.author || "X post"} <span>@{x.handle}</span>
+                      </b>
+                      <span>
+                        {(x.durationMs / 1000).toFixed(1)}s video · {x.status}
+                      </span>
+                    </div>
+                    <a
+                      className="linkish"
+                      href={`/api/reference?media=${encodeURIComponent(x.video)}&dl=1&name=x-${x.id}`}
+                      title="Download the original video"
+                    >
+                      Download
+                    </a>
+                    <button className="chip-x" aria-label="Remove reference" onClick={() => setXRefs((l) => l.filter((r) => r.id !== x.id))}>
+                      ×
+                    </button>
+                  </div>
+                ))}
                 {reading.map((h) => (
                   <div className="brand-card loading" key={`r-${h}`}>
                     <span className="dot" /> Reading {h}…

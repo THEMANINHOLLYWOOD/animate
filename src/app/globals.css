@@ -911,3 +911,17 @@ input[type="range"]:active::-webkit-slider-thumb {
     grid-template-columns: 1fr;
   }
 }
+
+.brand-card.xref img {
+  width: 54px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex: none;
+  background: var(--paper);
+}
+
+.brand-card.xref b span {
+  font-weight: 400;
+  color: var(--stone);
+}
