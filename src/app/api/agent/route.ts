@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { anthropicClient } from "@/lib/anthropic";
 import { AGENT_SYSTEM, AGENT_TOOLS, runTool, summarizeDoc } from "@/editor/ai/tools";
 import { Doc } from "@/editor/doc/schema";
 import { requireUser, unauthorized } from "@/lib/store";
 
 export const maxDuration = 300;
 
-const client = new Anthropic();
+const client = anthropicClient();
 const MAX_TURNS = 24;
 
 type Body = {

@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { anthropicClient } from "@/lib/anthropic";
 import { DIRECTOR_PROMPT, SYSTEM_PROMPT } from "@/lib/prompt";
 import { requireUser } from "@/lib/store";
 import type { BrandKit } from "@/lib/brand";
 
 export const maxDuration = 300;
 
-const client = new Anthropic();
+const client = anthropicClient();
 
 type InFile =
   | { kind: "image"; name: string; mediaType: string; data: string; asset: boolean }
