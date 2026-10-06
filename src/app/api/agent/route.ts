@@ -45,6 +45,10 @@ export async function POST(req: Request) {
       });
 
       let changes = 0;
+      // Stop a little before the 300s function limit and hand back what's done.
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), 285_000);
+      const signal = AbortSignal.any([req.signal, deadline.signal]);
       try {
         for (let turn = 0; turn < MAX_TURNS; turn++) {
           const s = client.messages.stream(
@@ -57,7 +61,7 @@ export async function POST(req: Request) {
               tools: AGENT_TOOLS,
               messages,
             },
-            { signal: req.signal },
+            { signal },
           );
           s.on("text", (t) => send({ type: "text", text: t }));
           s.on("thinking", (t) => send({ type: "thinking", text: t }));
@@ -84,6 +88,11 @@ export async function POST(req: Request) {
         }
         send({ type: "done", doc, changes, seek: playhead });
       } catch (e) {
+        if (deadline.signal.aborted) {
+          send({ type: "text", text: changes ? "\n\nI ran out of time; here's what I finished." : "" });
+          send(changes ? { type: "done", doc, changes, seek: playhead } : { type: "error", message: "That took longer than the 5-minute limit. Try a smaller request." });
+          return;
+        }
         const message =
           e instanceof Anthropic.APIError && /credit balance/i.test(e.message)
             ? "The Anthropic account is out of credits. Add credits under Plans & Billing at console.anthropic.com."
@@ -95,6 +104,7 @@ export async function POST(req: Request) {
         // Return whatever was already applied so work isn't lost.
         send({ type: "error", message, doc: changes ? doc : undefined });
       } finally {
+        clearTimeout(timer);
         controller.close();
       }
     },

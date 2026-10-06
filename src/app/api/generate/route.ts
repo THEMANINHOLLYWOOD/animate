@@ -103,6 +103,10 @@ export async function POST(req: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Hobby-plan functions stop at 300s; end cleanly a little before that.
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), 285_000);
+      const signal = AbortSignal.any([req.signal, deadline.signal]);
       try {
         // The director researches any company or link in the brief with web search + fetch.
         const research = body.stage === "direct" && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
@@ -120,14 +124,16 @@ export async function POST(req: Request) {
               model: "claude-opus-5-5",
               max_tokens: 64000,
               thinking: { type: "adaptive", display: "summarized" },
-              output_config: { effort: "high" },
+              // Director plans at high effort (~1 min); the animator writes code at medium
+              // so a full film fits inside the function time limit.
+              output_config: { effort: body.stage === "direct" ? "high" : "medium" },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
               system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
               messages,
               ...(tools.length ? { tools } : {}),
             },
-            { signal: req.signal },
+            { signal },
           );
           s.on("text", (delta) => send(controller, { type: "delta", text: delta }));
           // Summarised reasoning, shown in the progress panel so users can watch Claude think.
@@ -156,8 +162,9 @@ export async function POST(req: Request) {
           send(controller, { type: "done" });
         }
       } catch (e) {
-        const message =
-          e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))
+        const message = deadline.signal.aborted
+          ? "This one took longer than the 5-minute limit. Try again, or shorten the brief or the film length."
+          : e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))
             ? "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
             : e instanceof Anthropic.RateLimitError
               ? "Rate limited. Try again in a moment."
@@ -170,6 +177,7 @@ export async function POST(req: Request) {
                     : String(e);
         send(controller, { type: "error", message });
       } finally {
+        clearTimeout(timer);
         controller.close();
       }
     },
