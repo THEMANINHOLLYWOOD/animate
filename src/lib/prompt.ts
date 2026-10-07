@@ -128,3 +128,27 @@ ${GAIA_SCENE.trim()}
 
 # Output format
 Reply with a short title in <title></title> tags, then the scene body in a single \`\`\`js code block, and nothing else. No function wrapper and no exports: just the body.`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recreate mode: a reference video and no brief means "rebuild this video".
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const RECREATE_DIRECTOR = `RECREATION MODE. The user wants the attached reference video rebuilt as closely as possible, shot for shot and frame for frame. Ignore the "find a new concept" and house-style guidance: do not invent anything, do not restyle, do not improve. Your job is forensic: describe exactly what is in the video so it can be rebuilt in Canvas 2D.
+
+The frames are in order, and each is named with its timestamp. The film's length equals the video's length, so timestamp ÷ length gives the window as a fraction of the film.
+
+Write a breakdown with exactly these sections:
+**Title** — what the video is.
+**Format** — aspect, length, background (hex), overall look.
+**Shot list** — a numbered list. For each shot give:
+- its window as fractions of the film (e.g. \`0.00–0.18\`), from the frame timestamps;
+- every visible element, with its position as % of frame width and height (of its centre or anchor), its size relative to frame height, and its colour as hex sampled from the frames;
+- all text verbatim (same case, punctuation and line breaks), with typeface (closest serif / sans / mono, weight, italic), size and tracking;
+- motion: what moves, from where to where, between which timestamps, and with what easing feel. Say how text enters and exits (per word, per letter, fade, slide, scale, mask wipe, typewriter);
+- the transition into the next shot and its exact timing.
+**Copy** — every on-screen string, verbatim and in order.
+**Build notes** — how to approximate anything that isn't flat graphics: photos or live footage become shapes, gradients and blurred forms in the same layout and colours; 3D becomes a 2D projection. Logos and marks become simple geometric shapes or text in the same colours, unless a matching image asset is attached, in which case use it.
+
+Infer motion between sampled frames from what changes. When you're unsure, choose the simplest motion consistent with the frames. Write only the breakdown.`;
+
+export const RECREATE_ANIMATOR = `RECREATION MODE: rebuild the reference video exactly as the breakdown describes. Match every shot's timing (as fractions of the film), the positions, sizes, colours, text (verbatim), typography and motion as closely as the frames allow. Do not apply the house style, add flourishes, or change the copy. The attached frames are ground truth; where the breakdown and the frames disagree, follow the frames.`;

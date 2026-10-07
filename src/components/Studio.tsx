@@ -19,6 +19,7 @@ import { GAIA_SCENE } from "@/lib/presets/gaia";
 import Progress, { type Step } from "@/components/Progress";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
+import { aspectFor, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number; shareId?: string };
 
@@ -80,6 +81,8 @@ const hostOf = (u: string) => {
 };
 
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|html|css|js|jsx|ts|tsx|py|yaml|yml|xml|srt|vtt)$/i;
+
+const isVideoFile = (f: File) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm)$/i.test(f.name);
 
 function kindOf(f: File): Attached["kind"] | null {
   if (f.type.startsWith("image/")) return "image";
@@ -171,12 +174,12 @@ export default function Studio() {
   const [projects, setProjects] = useState<Project[]>([GAIA]);
   const [currentId, setCurrentId] = useState("gaia");
   const [prompt, setPrompt] = useState("");
-  const [enhanced, setEnhanced] = useState<null | { brief: string }>(null);
+  const [enhanced, setEnhanced] = useState<null | { brief: string; recreate?: boolean }>(null);
   const [mode, setMode] = useState<"new" | "edit">("new");
   const [files, setFiles] = useState<Attached[]>([]);
   const [brands, setBrands] = useState<BrandKit[]>([]);
   const [reading, setReading] = useState<string[]>([]);
-  const [xRefs, setXRefs] = useState<(XVideoRef & { frames: number; status: string })[]>([]);
+  const [videos, setVideos] = useState<(VideoRef & { status: string })[]>([]);
   const triedLinks = useRef(new Set<string>());
   const [projectImgs, setProjectImgs] = useState<Record<string, HTMLImageElement>>({});
   const [fps, setFps] = useState(30);
@@ -205,6 +208,8 @@ export default function Studio() {
   const project = projects.find((p) => p.id === currentId) ?? GAIA;
   const [W, H] = SIZES[project.aspect];
   const cloud = !!isSignedIn;
+  // No brief + a reference video = recreate that video as closely as possible.
+  const recreate = mode === "new" && !prompt.trim() && videos.length > 0;
 
   // ── load fonts + library ──
   useEffect(() => {
@@ -372,6 +377,17 @@ export default function Studio() {
     const added: Attached[] = [];
     const skipped: string[] = [];
     for (const file of Array.from(list)) {
+      if (isVideoFile(file)) {
+        const blobUrl = URL.createObjectURL(file);
+        try {
+          const info = await probeVideo(blobUrl);
+          setVideos((v) => [...v, { id: uid(), source: "file", name: file.name, blobUrl, ...info, status: "Ready" }]);
+        } catch (e) {
+          URL.revokeObjectURL(blobUrl);
+          skipped.push(`${file.name} (${(e as Error).message})`);
+        }
+        continue;
+      }
       const kind = kindOf(file);
       if (!kind) {
         skipped.push(file.name);
@@ -390,7 +406,7 @@ export default function Studio() {
       added.push(a);
     }
     setFiles((f) => [...f, ...added]);
-    if (skipped.length) setError(`Skipped unsupported files: ${skipped.join(", ")}. Use images, PDFs or text.`);
+    if (skipped.length) setError(`Skipped: ${skipped.join(", ")}. Use images, videos, PDFs or text.`);
   }, []);
 
   const removeFile = (id: string) =>
@@ -423,88 +439,84 @@ export default function Studio() {
     [addFiles],
   );
 
-  // ── paste an X post with a video: grab it and turn it into reference frames ──
-  const grabXVideo = useCallback(
-    async (link: string) => {
-      const id = xStatusId(link)!;
-      const update = (patch: Partial<XVideoRef & { frames: number; status: string }>) =>
-        setXRefs((l) => l.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-      setReading((r) => [...r, `x.com post ${id}`]);
-      try {
-        const r = await fetch(`/api/reference?x=${encodeURIComponent(link)}`);
-        const meta = await r.json();
-        if (!r.ok) throw new Error(meta.error ?? "Couldn't read that post.");
-        const ref = meta as XVideoRef;
-        setXRefs((l) => [...l.filter((x) => x.id !== id), { ...ref, frames: 0, status: "Downloading video…" }]);
-        setReading((rd) => rd.filter((h) => h !== `x.com post ${id}`));
+  // ── paste an X post with a video: download it as a reference video ──
+  const grabXVideo = useCallback(async (link: string) => {
+    const id = xStatusId(link)!;
+    const label = `x.com post ${id}`;
+    setReading((r) => [...r, label]);
+    try {
+      const r = await fetch(`/api/reference?x=${encodeURIComponent(link)}`);
+      const meta = await r.json();
+      if (!r.ok) throw new Error(meta.error ?? "Couldn't read that post.");
+      const ref = meta as XVideoRef;
+      const vr = await fetch(`/api/reference?media=${encodeURIComponent(ref.video)}`);
+      if (!vr.ok) throw new Error("Couldn't download that video.");
+      const blobUrl = URL.createObjectURL(await vr.blob());
+      const info = await probeVideo(blobUrl);
+      setVideos((v) => [
+        ...v.filter((x) => x.id !== `x-${id}`),
+        {
+          id: `x-${id}`,
+          source: "x",
+          name: `${ref.author || "X post"} (@${ref.handle})`,
+          blobUrl,
+          ...info,
+          poster: ref.poster ? `/api/reference?media=${encodeURIComponent(ref.poster)}` : info.poster,
+          url: ref.url,
+          author: ref.author,
+          handle: ref.handle,
+          text: ref.text,
+          download: `/api/reference?media=${encodeURIComponent(ref.video)}&dl=1&name=x-${id}`,
+          status: "Ready",
+        },
+      ]);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReading((rd) => rd.filter((h) => h !== label));
+    }
+  }, []);
 
-        const vr = await fetch(`/api/reference?media=${encodeURIComponent(ref.video)}`);
-        if (!vr.ok) throw new Error("Couldn't download the video.");
-        const blobUrl = URL.createObjectURL(await vr.blob());
+  const removeVideo = (id: string) =>
+    setVideos((list) => {
+      const v = list.find((x) => x.id === id);
+      if (v) URL.revokeObjectURL(v.blobUrl);
+      return list.filter((x) => x.id !== id);
+    });
 
-        // Sample frames evenly across the clip; Claude studies these as style references.
-        update({ status: "Grabbing frames…" });
-        const video = document.createElement("video");
-        video.muted = true;
-        video.playsInline = true;
-        video.preload = "auto";
-        video.src = blobUrl;
-        await new Promise<void>((res, rej) => {
-          video.onloadedmetadata = () => res();
-          video.onerror = () => rej(new Error("The video couldn't be decoded."));
-        });
-        const n = Math.min(8, Math.max(4, Math.round(video.duration / 2)));
-        const scale = Math.min(1, 768 / Math.max(video.videoWidth, video.videoHeight));
-        const c = document.createElement("canvas");
-        c.width = Math.round(video.videoWidth * scale);
-        c.height = Math.round(video.videoHeight * scale);
-        const g = c.getContext("2d")!;
-        const frames: File[] = [];
-        const stamps: string[] = [];
-        for (let i = 0; i < n; i++) {
-          const t = ((i + 0.5) / n) * video.duration;
-          await new Promise<void>((res) => {
-            video.onseeked = () => res();
-            video.currentTime = t;
-          });
-          g.drawImage(video, 0, 0, c.width, c.height);
-          const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
-          if (blob) {
-            frames.push(new File([blob], `x-${id}-frame-${i + 1}-${t.toFixed(1)}s.jpg`, { type: "image/jpeg" }));
-            stamps.push(`frame ${i + 1} at ${t.toFixed(1)}s`);
-          }
-          update({ frames: frames.length });
-        }
-        URL.revokeObjectURL(blobUrl);
-
-        const note = new File(
-          [
-            [
-              `Reference video from X: ${ref.url}`,
-              `Posted by ${ref.author} (@${ref.handle})`,
-              ref.text && `Post text: ${ref.text}`,
-              `Length: ${(ref.durationMs / 1000).toFixed(1)}s${ref.aspect ? ` · aspect ${ref.aspect[0]}:${ref.aspect[1]}` : ""}`,
-              `Attached frames (in order): ${stamps.join(", ")}.`,
-              "Use this video as a style and motion reference: study its pacing, transitions, composition, typography and colour, and how it changes from frame to frame. Make an original film in that spirit; don't reproduce its footage, logos or characters.",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          ],
-          `x-${id}-reference.txt`,
-          { type: "text/plain" },
-        );
-        await addFiles([...frames, note]);
-        const names = new Set(frames.map((f) => safeName(f.name)));
-        setFiles((l) => l.map((f) => (names.has(f.name) ? { ...f, asset: false } : f)));
-        update({ status: `${frames.length} frames added as references` });
-      } catch (e) {
-        setReading((rd) => rd.filter((h) => h !== `x.com post ${id}`));
-        setXRefs((l) => l.filter((x) => x.id !== id));
-        setError((e as Error).message);
-      }
-    },
-    [addFiles],
-  );
+  // Frames from reference videos, as image attachments plus a note with timestamps.
+  // Recreate mode samples densely (~2 fps, up to 32 per film) so motion can be matched.
+  const videoPayload = async (recreate: boolean) => {
+    const out: unknown[] = [];
+    const budget = recreate ? 32 : 8;
+    for (const v of videos) {
+      const n = recreate ? Math.max(8, Math.min(Math.ceil(v.duration * 2), Math.floor(budget / videos.length))) : Math.max(4, Math.floor(budget / videos.length));
+      setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: "Sampling frames…" } : x)));
+      const frames = await sampleFrames(v.blobUrl, n, 768, (i) =>
+        setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `Sampling frames ${i}/${n}` } : x))),
+      );
+      setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `${frames.length} frames sent` } : x)));
+      const tag = v.id.replace(/[^\w-]/g, "");
+      out.push({
+        kind: "text",
+        name: `${tag}-reference.txt`,
+        text: [
+          `Reference video: ${v.source === "x" ? v.url : v.name}`,
+          v.author && `Posted by ${v.author} (@${v.handle})`,
+          v.text && `Post text: ${v.text}`,
+          `Length ${v.duration.toFixed(2)}s · ${v.w}×${v.h} (${aspectFor(v.w, v.h)}).`,
+          `Frames follow in order, each named with its timestamp: ${frames.map((f) => `${f.t.toFixed(2)}s`).join(", ")}.`,
+          recreate
+            ? "RECREATE this video as closely as possible: same shots, timing, layout, colours, type and motion."
+            : "Use this video as a style and motion reference; make an original film in its spirit, without copying its footage, logos or characters.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      });
+      for (const f of frames) out.push({ kind: "image", name: `${tag}-${f.t.toFixed(2)}s.jpg`, asset: false, mediaType: "image/jpeg", data: f.data });
+    }
+    return out;
+  };
 
   useEffect(() => {
     if (!isSignedIn) return;
@@ -559,16 +571,23 @@ export default function Studio() {
   };
 
   // ── stage 1: direct (also the ✦ Enhance button) ──
-  async function direct(signal: AbortSignal, brief: string, payloadFiles: unknown[], editing: boolean) {
-    const researching = brands.length > 0 || linksIn(brief).length > 0;
-    phase(researching ? "Researching the company" : "Writing the creative treatment");
+  async function direct(
+    signal: AbortSignal,
+    brief: string,
+    payloadFiles: unknown[],
+    editing: boolean,
+    film: { duration: number; aspect: Aspect; recreate: boolean } = { duration: project.duration, aspect: project.aspect, recreate: false },
+  ) {
+    const researching = !film.recreate && (brands.length > 0 || linksIn(brief).length > 0);
+    phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
     let writing = !researching;
     return streamStage(
       {
         stage: "direct",
         prompt: brief,
-        duration: project.duration,
-        aspect: project.aspect,
+        duration: film.duration,
+        aspect: film.aspect,
+        recreate: film.recreate,
         files: payloadFiles,
         brands,
         previousCode: editing ? project.code : undefined,
@@ -586,18 +605,34 @@ export default function Studio() {
     );
   }
 
+  // Recreate mode: a reference video and no brief means "copy this video".
+  const filmFor = (recreating: boolean) => {
+    const v = videos[0];
+    return recreating && v
+      ? { duration: Math.min(90, Math.max(3, Math.round(v.duration * 10) / 10)), aspect: aspectFor(v.w, v.h), recreate: true }
+      : { duration: project.duration, aspect: project.aspect, recreate: false };
+  };
+  const collectFiles = async (recreating: boolean) => {
+    if (videos.length) phase(recreating ? "Sampling the video frame by frame" : "Sampling the reference video");
+    const vids = await videoPayload(recreating);
+    if (videos.length) note(`${vids.filter((x) => (x as { kind: string }).kind === "image").length} frames from ${videos.length} video${videos.length > 1 ? "s" : ""}`);
+    return [...(await filePayload()), ...vids];
+  };
+
   async function enhance() {
-    if (!prompt.trim() && !files.length) return;
+    if (!prompt.trim() && !files.length && !videos.length) return;
     const ac = new AbortController();
     abortRef.current = ac;
     setError(null);
     setSteps([]);
     let ok = false;
     try {
-      const brief = prompt.trim() || "Make a film from the attached files.";
-      const treatment = await direct(ac.signal, brief, await filePayload(), mode === "edit" && !project.builtin);
+      const recreating = recreate;
+      const brief = prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.");
+      const film = filmFor(recreating);
+      const treatment = await direct(ac.signal, brief, await collectFiles(recreating), mode === "edit" && !project.builtin, film);
       setPrompt(treatment.trim());
-      setEnhanced({ brief });
+      setEnhanced({ brief, recreate: recreating });
       ok = true;
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
@@ -610,7 +645,7 @@ export default function Studio() {
 
   // ── stage 2: animate ──
   async function generate() {
-    if (!prompt.trim() && !files.length) return;
+    if (!prompt.trim() && !files.length && !videos.length) return;
     const editing = mode === "edit";
     const ac = new AbortController();
     abortRef.current = ac;
@@ -618,10 +653,13 @@ export default function Studio() {
     setSteps([]);
     let ok = false;
     try {
-      const payloadFiles = await filePayload();
-      const brief = enhanced?.brief ?? (prompt.trim() || "Make a film from the attached files.");
+      const recreating = enhanced?.recreate ?? recreate;
+      const film = filmFor(recreating);
+      const [fw, fh] = SIZES[film.aspect];
+      const payloadFiles = await collectFiles(recreating);
+      const brief = enhanced?.brief ?? (prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       // Small edits go straight to the animator; new films always get a treatment first.
-      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false);
+      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false, film);
 
       phase(editing ? "Revising the animation" : "Animating the scene");
       const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
@@ -630,8 +668,9 @@ export default function Studio() {
         prompt: brief,
         treatment,
         brands,
-        duration: project.duration,
-        aspect: project.aspect,
+        recreate: film.recreate,
+        duration: film.duration,
+        aspect: film.aspect,
         files: payloadFiles,
         previousCode: editing ? project.code : undefined,
       };
@@ -641,7 +680,7 @@ export default function Studio() {
       // Dry-run across the timeline; ask for one repair if it throws.
       const check = (code: string) => {
         try {
-          return probeScene(compileScene(code), fonts!, W, H, assets, project.duration);
+          return probeScene(compileScene(code), fonts!, fw, fh, assets, film.duration);
         } catch (e) {
           return `Syntax error: ${(e as Error).message}`;
         }
@@ -676,8 +715,8 @@ export default function Studio() {
         id,
         title: reply.title || prev?.title || brief.slice(0, 40) || "Untitled",
         code: reply.code,
-        duration: project.duration,
-        aspect: project.aspect,
+        duration: film.duration,
+        aspect: film.aspect,
         prompt: brief,
         treatment: treatment ?? prev?.treatment,
         assets: assetRefs,
@@ -864,7 +903,7 @@ export default function Studio() {
   }, [notice]);
 
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
-  const canAsk = !!prompt.trim() || files.length > 0;
+  const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
   const animateButton = !isSignedIn ? (
     <SignIn>
@@ -872,7 +911,7 @@ export default function Studio() {
     </SignIn>
   ) : (
     <button className="primary" onClick={generate} disabled={!!busy || !canAsk || !fonts}>
-      {busy ? "Working…" : mode === "new" ? "Animate" : "Apply changes"}
+      {busy ? "Working…" : recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Apply changes"}
     </button>
   );
 
@@ -1104,30 +1143,26 @@ export default function Studio() {
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />
-            {(brands.length > 0 || reading.length > 0 || xRefs.length > 0) && (
+            {(brands.length > 0 || reading.length > 0 || videos.length > 0) && (
               <div className="brands">
-                {xRefs.map((x) => (
-                  <div className="brand-card xref" key={`x-${x.id}`} title={x.text}>
-                    {x.poster && (
+                {videos.map((v) => (
+                  <div className="brand-card xref" key={v.id} title={v.text ?? v.name}>
+                    {v.poster && (
                       /* eslint-disable-next-line @next/next/no-img-element */
-                      <img src={`/api/reference?media=${encodeURIComponent(x.poster)}`} alt="" />
+                      <img src={v.poster} alt="" />
                     )}
                     <div className="brand-text">
-                      <b>
-                        {x.author || "X post"} <span>@{x.handle}</span>
-                      </b>
+                      <b>{v.name}</b>
                       <span>
-                        {(x.durationMs / 1000).toFixed(1)}s video · {x.status}
+                        {v.duration.toFixed(1)}s · {v.w}×{v.h} · {recreate ? "will be recreated" : "style reference"} · {v.status}
                       </span>
                     </div>
-                    <a
-                      className="linkish"
-                      href={`/api/reference?media=${encodeURIComponent(x.video)}&dl=1&name=x-${x.id}`}
-                      title="Download the original video"
-                    >
-                      Download
-                    </a>
-                    <button className="chip-x" aria-label="Remove reference" onClick={() => setXRefs((l) => l.filter((r) => r.id !== x.id))}>
+                    {v.download && (
+                      <a className="linkish" href={v.download} title="Download the original video">
+                        Download
+                      </a>
+                    )}
+                    <button className="chip-x" aria-label="Remove video" onClick={() => removeVideo(v.id)}>
                       ×
                     </button>
                   </div>
@@ -1202,7 +1237,7 @@ export default function Studio() {
                 type="file"
                 multiple
                 hidden
-                accept="image/*,application/pdf,text/*,.md,.json,.csv"
+                accept="image/*,video/*,application/pdf,text/*,.md,.json,.csv"
                 onChange={(e) => {
                   if (e.target.files) addFiles(e.target.files);
                   e.target.value = "";
@@ -1212,6 +1247,12 @@ export default function Studio() {
           </div>
 
           {animateButton}
+          {(recreate || enhanced?.recreate) && videos[0] && (
+            <p className="hint recreate-hint">
+              No brief, so animate will recreate this video as closely as it can: {filmFor(true).duration}s · {filmFor(true).aspect}. Type a brief
+              instead to use it only as a style reference. Live footage is approximated with shapes; make sure you have the rights to publish a copy.
+            </p>
+          )}
 
           <div className="divider" />
 

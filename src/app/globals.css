@@ -1126,3 +1126,8 @@ input[type="range"]:active::-webkit-slider-thumb {
 .lib-star.on {
   color: var(--clay);
 }
+
+.recreate-hint {
+  margin-top: -10px;
+  line-height: 1.5;
+}

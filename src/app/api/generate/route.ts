@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
-import { DIRECTOR_PROMPT, SYSTEM_PROMPT } from "@/lib/prompt";
+import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
 import { requireUser } from "@/lib/store";
 import type { BrandKit } from "@/lib/brand";
 
@@ -23,6 +23,7 @@ type Body = {
   previousCode?: string;
   error?: string;
   brands?: BrandKit[];
+  recreate?: boolean;
 };
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
@@ -80,6 +81,7 @@ export async function POST(req: Request) {
         : `${spec}\n\nBrief:\n${body.prompt}`,
     });
     if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
+    if (body.recreate) content.push({ type: "text", text: RECREATE_DIRECTOR });
   } else {
     system = SYSTEM_PROMPT;
     const treatment = body.treatment ? `\n\nTreatment:\n${body.treatment}` : "";
@@ -96,6 +98,7 @@ export async function POST(req: Request) {
       content.push({ type: "text", text: `${spec}\n\nOriginal brief:\n${body.prompt}${treatment}\n\nBuild this film.` });
     }
     if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
+    if (body.recreate) content.push({ type: "text", text: RECREATE_ANIMATOR });
   }
 
   const encoder = new TextEncoder();
@@ -109,7 +112,7 @@ export async function POST(req: Request) {
       const signal = AbortSignal.any([req.signal, deadline.signal]);
       try {
         // The director researches any company or link in the brief with web search + fetch.
-        const research = body.stage === "direct" && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
+        const research = body.stage === "direct" && !body.recreate && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
         const tools: Anthropic.Beta.BetaToolUnion[] = research
           ? [
               { type: "web_search_20260209", name: "web_search", max_uses: 6 },
