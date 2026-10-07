@@ -1458,3 +1458,22 @@ input[type="range"]:active::-webkit-slider-thumb {
   align-items: center;
   gap: 8px;
 }
+
+/* ── Films in progress ─────────────────────────────── */
+
+.lib-item.building {
+  border-style: dashed;
+}
+
+.lib-building {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--clay-deep);
+  margin-bottom: 2px;
+}
+
+.lib-building .dot {
+  width: 6px;
+  height: 6px;
+}

@@ -50,10 +50,52 @@ type Project = {
   audio?: AudioClip[];
   // Films stripped into elements are documents: layers + keyframes, with code only for leftovers.
   doc?: DocT;
+  // Set while a run is building this film (the run id); the tile shows progress.
+  building?: string;
   builtin?: boolean;
   favorite?: boolean;
   share?: { id: string; createdAt: number };
   createdAt: number;
+};
+
+// One generation in flight (or finished): its own steps, stream and stop button.
+type Run = {
+  id: string;
+  projectId: string;
+  kind: "new" | "edit" | "enhance" | "score";
+  title: string;
+  steps: Step[];
+  stream: string;
+  status: "running" | "done" | "error";
+  error?: string;
+  abort: AbortController;
+  startedAt: number;
+  endedAt?: number;
+};
+type RunApi = { id: string; signal: AbortSignal; phase: (label: string) => void; note: (n: string) => void; think: (d: string) => void; stream: (s: string) => void; finish: (ok: boolean, error?: string) => void };
+
+// ElevenLabs allows a handful of concurrent requests; share that budget across runs.
+const elSlots = { active: 0, queue: [] as (() => void)[] };
+const elFetch = async (input: RequestInfo, init?: RequestInit) => {
+  if (elSlots.active >= 3) await new Promise<void>((res) => elSlots.queue.push(res));
+  elSlots.active++;
+  try {
+    return await fetch(input, init);
+  } finally {
+    elSlots.active--;
+    elSlots.queue.shift()?.();
+  }
+};
+
+// What a film looks like while it's being built.
+const buildingScene = (brief: string): SceneFn => (ctx, W, H, t, _T, _p, lib) => {
+  const { C, u } = lib;
+  lib.bg(ctx, W, H, C.ivory);
+  const r = 46 * u;
+  lib.ring(ctx, W / 2, H / 2 - 40 * u, r, 0.28, { color: C.clay, width: 3 * u, start: (t * 140) % 360 });
+  lib.ring(ctx, W / 2, H / 2 - 40 * u, r, 1, { color: C.cloud, width: 1.5 * u });
+  lib.text(ctx, "Building", W / 2, H / 2 + 60 * u, { size: 30 * u, family: "mono", color: C.stone, align: "center", tracking: 0.12 });
+  lib.text(ctx, brief, W / 2, H / 2 + 120 * u, { size: 34 * u, family: "sans", color: C.slate, align: "center", maxWidth: W * 0.6, lineHeight: 1.4 });
 };
 
 type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string; docBefore?: DocT };
@@ -80,6 +122,8 @@ const GAIA: Project = {
 
 const LOCAL = "animate.projects.v1";
 const uid = () => Math.random().toString(36).slice(2, 12);
+const friendlyError = (m: string) =>
+  /credit balance/i.test(m) ? "The Anthropic account is out of credits. Add credits at console.anthropic.com → Plans & Billing, then try again." : m;
 const nowMs = () => Date.now();
 const fmt = (s: number) => {
   const m = Math.floor(s / 60);
@@ -245,9 +289,8 @@ export default function Studio() {
   const [fonts, setFonts] = useState<Fonts | null>(null);
   const [playing, setPlaying] = useState(true);
   const [time, setTime] = useState(0);
-  const [busy, setBusy] = useState<null | { label: string; stream: string }>(null);
+  const [runs, setRuns] = useState<Record<string, Run>>({});
   const [error, setError] = useState<string | null>(null);
-  const [steps, setSteps] = useState<Step[]>([]);
   const [favOnly, setFavOnly] = useState(false);
   const [audioBlobs, setAudioBlobs] = useState<Record<string, Blob>>({});
   const [audioBusy, setAudioBusy] = useState<string | null>(null);
@@ -268,7 +311,6 @@ export default function Studio() {
   const fileInput = useRef<HTMLInputElement>(null);
   const tRef = useRef(0);
   const playingRef = useRef(true);
-  const abortRef = useRef<AbortController | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const project = projects.find((p) => p.id === currentId) ?? GAIA;
@@ -368,12 +410,13 @@ export default function Studio() {
   // ── scene ──
   const compiled = useMemo<{ fn: SceneFn | null; err: string | null }>(() => {
     try {
+      if (project.building && !project.code) return { fn: buildingScene(project.title), err: null };
       if (project.doc) return { fn: docScene(project.doc), err: null };
       return { fn: compileScene(project.code), err: null };
     } catch (e) {
       return { fn: null, err: (e as Error).message };
     }
-  }, [project.code, project.doc]);
+  }, [project.code, project.doc, project.building, project.title]);
 
   const assets = useMemo<Assets>(() => {
     const byName: Record<string, HTMLImageElement> = project.assets?.length ? { ...projectImgs } : {};
@@ -654,32 +697,54 @@ export default function Studio() {
     return () => clearTimeout(t);
   }, [prompt, isSignedIn, importImage, grabXVideo]);
 
-  // ── Progress steps: what Claude is doing right now, with its reasoning ──
-  const phase = (label: string) => {
-    const at = Date.now();
-    setBusy({ label, stream: "" });
-    setSteps((list) => [
-      ...list.map((x) => (x.status === "active" ? { ...x, status: "done" as const, endedAt: at } : x)),
-      { id: uid(), label, status: "active", startedAt: at, thinking: "", notes: [] },
-    ]);
+  // ── Runs: every generation has its own steps, stream and stop button ──
+  const patchRun = (id: string, f: (r: Run) => Run) => setRuns((rs) => (rs[id] ? { ...rs, [id]: f(rs[id]) } : rs));
+  const runApi = (id: string, abort: AbortController): RunApi => ({
+    id,
+    signal: abort.signal,
+    phase: (label) => {
+      const at = nowMs();
+      patchRun(id, (r) => ({
+        ...r,
+        stream: "",
+        steps: [...r.steps.map((x) => (x.status === "active" ? { ...x, status: "done" as const, endedAt: at } : x)), { id: uid(), label, status: "active", startedAt: at, thinking: "", notes: [] }],
+      }));
+    },
+    note: (n) => patchRun(id, (r) => ({ ...r, steps: r.steps.map((x, i) => (i === r.steps.length - 1 ? { ...x, notes: [...x.notes, n] } : x)) })),
+    think: (d) => patchRun(id, (r) => ({ ...r, steps: r.steps.map((x, i) => (i === r.steps.length - 1 ? { ...x, thinking: x.thinking + d } : x)) })),
+    stream: (text) => patchRun(id, (r) => ({ ...r, stream: text })),
+    finish: (ok, error) => {
+      const at = nowMs();
+      patchRun(id, (r) => ({
+        ...r,
+        status: ok ? "done" : "error",
+        error,
+        endedAt: at,
+        steps: r.steps.map((x) => (x.status === "active" ? { ...x, status: ok ? ("done" as const) : ("error" as const), endedAt: at } : x)),
+      }));
+    },
+  });
+  const startRun = (projectId: string, kind: Run["kind"], title: string) => {
+    const id = uid();
+    const abort = new AbortController();
+    setRuns((rs) => ({ ...rs, [id]: { id, projectId, kind, title, steps: [], stream: "", status: "running", abort, startedAt: nowMs() } }));
+    return runApi(id, abort);
   };
-  const note = (n: string) => setSteps((l) => l.map((x, i) => (i === l.length - 1 ? { ...x, notes: [...x.notes, n] } : x)));
-  const think = (d: string) => setSteps((l) => l.map((x, i) => (i === l.length - 1 ? { ...x, thinking: x.thinking + d } : x)));
-  const finishSteps = (ok: boolean) => {
-    const at = Date.now();
-    setSteps((l) => l.map((x) => (x.status === "active" ? { ...x, status: ok ? ("done" as const) : ("error" as const), endedAt: at } : x)));
-  };
+  const runsFor = (projectId: string) => Object.values(runs).filter((r) => r.projectId === projectId).sort((a, b) => a.startedAt - b.startedAt);
+  const currentRun = runsFor(currentId).at(-1) ?? null;
+  const isBuilding = !!project.building || currentRun?.status === "running";
+  const dismissRun = (id: string) => setRuns((rs) => Object.fromEntries(Object.entries(rs).filter(([k]) => k !== id)));
 
   // ── stage 1: direct (also the ✦ Enhance button) ──
   async function direct(
-    signal: AbortSignal,
+    R: RunApi,
     brief: string,
     payloadFiles: unknown[],
     editing: boolean,
     film: { duration: number; aspect: Aspect; recreate: boolean } = { duration: project.duration, aspect: project.aspect, recreate: false },
   ) {
     const researching = !film.recreate && (brands.length > 0 || linksIn(brief).length > 0);
-    phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
+    R.phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
     let writing = !researching;
     return streamStage(
       {
@@ -692,16 +757,16 @@ export default function Studio() {
         brands,
         previousCode: editing ? project.code : undefined,
       },
-      signal,
+      R.signal,
       (s) => {
         if (!writing && s.trim()) {
           writing = true;
-          phase("Writing the creative treatment");
+          R.phase("Writing the creative treatment");
         }
-        setBusy((b) => b && { ...b, stream: s });
+        R.stream(s);
       },
-      note,
-      think,
+      R.note,
+      R.think,
     );
   }
 
@@ -725,59 +790,56 @@ export default function Studio() {
       ? { duration: Math.min(90, Math.max(3, Math.round(v.duration * 10) / 10)), aspect: aspectFor(v.w, v.h), recreate: true }
       : { duration: project.duration, aspect: project.aspect, recreate: false };
   };
-  const collectFiles = async (recreating: boolean) => {
-    if (videos.length) phase(recreating ? "Sampling the video frame by frame" : "Sampling the reference video");
+  const collectFiles = async (R: RunApi, recreating: boolean) => {
+    if (videos.length) R.phase(recreating ? "Sampling the video frame by frame" : "Sampling the reference video");
     const vids = await videoPayload(recreating);
     if (recreating && videos[0]) {
-      phase("Pulling the sound apart");
+      R.phase("Pulling the sound apart");
       try {
-        const stems = await extractStems(videos[0].blobUrl, videos[0].duration);
+        const stems = await extractStems(R, videos[0].blobUrl, videos[0].duration);
         pendingStems.current = stems;
         if (stems?.transcript) vids.push({ kind: "text", name: "reference-audio-transcript.txt", text: `Transcript of the reference video's voice, with word start times in seconds:\n${stems.transcript}` });
-        if (!stems) note("The video has no audio track");
+        if (!stems) R.note("The video has no audio track");
       } catch (e) {
-        note(`Sound: ${(e as Error).message}`);
+        R.note(`Sound: ${(e as Error).message}`);
         pendingStems.current = null;
       }
     }
-    if (videos.length) note(`${vids.filter((x) => (x as { kind: string }).kind === "image").length} frames from ${videos.length} video${videos.length > 1 ? "s" : ""}`);
+    if (videos.length) R.note(`${vids.filter((x) => (x as { kind: string }).kind === "image").length} frames from ${videos.length} video${videos.length > 1 ? "s" : ""}`);
     return [...(await filePayload()), ...vids];
   };
 
   async function enhance() {
     if (!prompt.trim() && !files.length && !videos.length) return;
-    const ac = new AbortController();
-    abortRef.current = ac;
+    const R = startRun(project.id, "enhance", "Treatment");
     setError(null);
-    setSteps([]);
-    let ok = false;
     try {
       const recreating = recreate;
       const brief = withExplainer(prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       const film = filmFor(recreating);
-      const treatment = await direct(ac.signal, brief, await collectFiles(recreating), mode === "edit" && !project.builtin, film);
+      const treatment = await direct(R, brief, await collectFiles(R, recreating), mode === "edit" && !project.builtin, film);
       setPrompt(treatment.trim());
       setEnhanced({ brief, recreate: recreating });
-      ok = true;
+      R.finish(true);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
-    } finally {
-      finishSteps(ok);
-      setBusy(null);
-      abortRef.current = null;
+      if ((e as Error).name === "AbortError") R.finish(false, "Stopped.");
+      else {
+        setError((e as Error).message);
+        R.finish(false, (e as Error).message);
+      }
     }
   }
 
   // ── chat edits for element-based films: the editing agent changes layers and keyframes ──
-  const agentEdit = async (request: string, signal: AbortSignal) => {
-    if (!project.doc) return;
-    phase("Editing the elements");
-    const history = [...(project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })), { role: "user" as const, text: request }];
+  const agentEdit = async (R: RunApi, target: Project, request: string) => {
+    if (!target.doc) return;
+    R.phase("Editing the elements");
+    const history = [...(target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })), { role: "user" as const, text: request }];
     const res = await fetch("/api/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc: project.doc, time: tRef.current, selection: [], messages: history }),
-      signal,
+      body: JSON.stringify({ doc: target.doc, time: tRef.current, selection: [], messages: history }),
+      signal: R.signal,
     });
     if (res.status === 401) throw new Error("Sign in to edit films.");
     if (!res.body) throw new Error(`Request failed (${res.status})`);
@@ -797,10 +859,10 @@ export default function Studio() {
         const ev = JSON.parse(line);
         if (ev.type === "text") {
           text += ev.text;
-          setBusy((b) => b && { ...b, stream: text });
-        } else if (ev.type === "thinking") think(ev.text);
-        else if (ev.type === "progress") note(ev.text.trim().slice(0, 140));
-        else if (ev.type === "action") note(ev.label);
+          R.stream(text);
+        } else if (ev.type === "thinking") R.think(ev.text);
+        else if (ev.type === "progress") R.note(ev.text.trim().slice(0, 140));
+        else if (ev.type === "action") R.note(ev.label);
         else if (ev.type === "done") result = ev;
         else if (ev.type === "error") {
           if (ev.doc) result = { doc: ev.doc, changes: 1 };
@@ -811,59 +873,74 @@ export default function Studio() {
     const now = nowMs();
     const userMsg: Msg = { id: uid(), role: "user", text: request, at: now };
     const changed = !!result?.doc && (result.changes ?? 0) > 0;
-    const botMsg: Msg = { id: uid(), role: "assistant", text: text.trim() || (changed ? "Updated the film." : "No change was needed."), at: now + 1, docBefore: changed ? project.doc : undefined };
-    const thread = [...(project.thread ?? []), userMsg, botMsg];
+    const botMsg: Msg = { id: uid(), role: "assistant", text: text.trim() || (changed ? "Updated the film." : "No change was needed."), at: now + 1, docBefore: changed ? target.doc : undefined };
+    const thread = [...(target.thread ?? []), userMsg, botMsg];
     const keep = thread.filter((m) => m.docBefore).slice(-3);
     for (const m of thread) if (m.docBefore && !keep.includes(m)) delete m.docBefore;
-    const nextDoc = changed ? Doc.parse(result!.doc) : project.doc;
-    upsert({ ...project, doc: nextDoc, duration: nextDoc.meta.duration, thread }, true);
+    const nextDoc = changed ? Doc.parse(result!.doc) : target.doc!;
+    upsert({ ...target, doc: nextDoc, duration: nextDoc.meta.duration, thread }, true);
     if (result?.seek !== undefined) tRef.current = Math.min(result.seek, nextDoc.meta.duration);
-    setPrompt("");
   };
 
   // ── stage 2: animate ──
   async function generate() {
     if (!prompt.trim() && !files.length && !videos.length) return;
-    const editing = mode === "edit";
-    const ac = new AbortController();
-    abortRef.current = ac;
+    const editing = mode === "edit" && !project.builtin;
+    const target = project; // snapshot: the user can move on while this runs
+    const request = prompt.trim();
+    const briefShown = request || (videos.length ? "Recreating a video" : "New film");
+    // A readable working title: the first few words of the brief.
+    const workingTitle = briefShown.split(/\s+/).slice(0, 6).join(" ").replace(/[,:;.!?]+$/, "") + (briefShown.split(/\s+/).length > 6 ? "…" : "");
+    // A new film gets its id and a placeholder tile right away, so it shows up in the library while it builds.
+    const id = editing ? target.id : uid();
+    const R = startRun(id, editing ? "edit" : "new", briefShown.slice(0, 60));
+    if (!editing) {
+      upsert({ id, title: workingTitle, code: "", duration: filmFor(enhanced?.recreate ?? recreate).duration, aspect: filmFor(enhanced?.recreate ?? recreate).aspect, building: R.id, thread: [], createdAt: nowMs() });
+      setCurrentId(id);
+      setMode("edit");
+      tRef.current = 0;
+    } else upsert({ ...target, building: R.id });
+    // The composer is free immediately; attachments are released once they've been read.
+    setPrompt("");
+    setEnhanced(null);
+    setExplainer(null);
     setError(null);
-    setSteps([]);
     let ok = false;
     try {
       const recreating = enhanced?.recreate ?? recreate;
       const film = filmFor(recreating);
       const [fw, fh] = SIZES[film.aspect];
-      const payloadFiles = await collectFiles(recreating);
-      const brief = enhanced?.brief ?? withExplainer(prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
+      const payloadFiles = await collectFiles(R, recreating);
+      clearAttachments();
+      const brief = enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       // Small edits go straight to the animator; new films always get a treatment first.
       // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
-      if (editing && project.doc) {
-        await agentEdit(prompt.trim(), ac.signal);
+      if (editing && target.doc) {
+        await agentEdit(R, target, request);
         ok = true;
         return;
       }
-      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false, film);
+      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(R, brief, payloadFiles, false, film);
 
       // Recreations are stripped into editable elements; the animator then draws only the leftovers.
       let elementsPlan: ElementsPlan | null = null;
       if (film.recreate && !editing && treatment) {
-        phase("Stripping the video into elements");
+        R.phase("Stripping the video into elements");
         const er = await fetch("/api/elements", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ breakdown: treatment, duration: film.duration, aspect: film.aspect, w: fw, h: fh, files: payloadFiles.filter((f) => (f as { kind: string }).kind === "image") }),
-          signal: ac.signal,
+          signal: R.signal,
         });
         const ej = await er.json();
         if (er.ok && ej.elements) {
           elementsPlan = ej as ElementsPlan;
-          note(`${elementsPlan.elements.length} elements: ${elementsPlan.elements.slice(0, 6).map((e) => e.name).join(", ")}${elementsPlan.elements.length > 6 ? "…" : ""}`);
-        } else note(`Elements: ${ej.error ?? "unavailable"}; building as one scene`);
+          R.note(`${elementsPlan.elements.length} elements: ${elementsPlan.elements.slice(0, 6).map((e) => e.name).join(", ")}${elementsPlan.elements.length > 6 ? "…" : ""}`);
+        } else R.note(`Elements: ${ej.error ?? "unavailable"}; building as one scene`);
       }
 
-      phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
-      const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
+      R.phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
+      const onText = (s: string) => R.stream(s);
       const base = {
         stage: "animate",
         prompt: brief,
@@ -873,15 +950,15 @@ export default function Studio() {
         duration: film.duration,
         aspect: film.aspect,
         files: payloadFiles,
-        previousCode: editing ? project.code : undefined,
-        history: editing ? (project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
+        previousCode: editing ? target.code : undefined,
+        history: editing ? (target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
         notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
       };
       const resumed = (n: number) => {
-        note(`Hit the time limit; continuing from where it stopped (${n})`);
-        phase("Continuing the scene");
+        R.note(`Hit the time limit; continuing from where it stopped (${n})`);
+        R.phase("Continuing the scene");
       };
-      let reply = parseScene(await animateStage(base, ac.signal, onText, think, resumed));
+      let reply = parseScene(await animateStage(base, R.signal, onText, R.think, resumed));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
 
       // Dry-run across the timeline; ask for one repair if it throws.
@@ -892,14 +969,13 @@ export default function Studio() {
           return `Syntax error: ${(e as Error).message}`;
         }
       };
-      phase("Checking every frame");
+      R.phase("Checking every frame");
       const problem = check(reply.code);
-      const id = editing && !project.builtin ? project.id : uid();
       const docFor = (code: string) => (elementsPlan ? elementsToDoc(elementsPlan, { id, title: reply.title || "Recreation", w: fw, h: fh, duration: film.duration, code }) : undefined);
       if (problem) {
-        note(problem);
-        phase("Fixing a runtime error");
-        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText, undefined, think));
+        R.note(problem);
+        R.phase("Fixing a runtime error");
+        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, undefined, R.think));
         if (fixed.code) reply = { ...reply, code: fixed.code };
       }
 
@@ -907,7 +983,7 @@ export default function Studio() {
       if (!editing) {
         const sceneOf = (code: string) => (elementsPlan ? docScene(docFor(code)!) : compileScene(code));
         for (let round = 1; round <= 2; round++) {
-          phase(round === 1 ? "Looking at its own frames" : "Looking again");
+          R.phase(round === 1 ? "Looking at its own frames" : "Looking again");
           const n = Math.min(24, Math.max(8, Math.round(film.duration)));
           const times = Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * film.duration);
           const scene = sceneOf(reply.code);
@@ -917,49 +993,49 @@ export default function Studio() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ images: [{ name: "Contact sheet (in order)", data: sheet }, { name: "Phone-width strip", data: phone }], treatment, duration: film.duration, aspect: film.aspect }),
-            signal: ac.signal,
+            signal: R.signal,
           });
           const cj = await cr.json();
           if (!cr.ok) {
-            note(`Review skipped: ${cj.error}`);
+            R.note(`Review skipped: ${cj.error}`);
             break;
           }
           const scores = cj.scores as Record<string, number>;
-          note(`Scores · ${Object.entries(scores).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
+          R.note(`Scores · ${Object.entries(scores).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
           const worst = (cj.problems as { t: number; issue: string; fix: string }[]).slice(0, 3);
           const low = Math.min(...Object.entries(scores).filter(([k]) => k !== "sound").map(([, v]) => v));
           if (low >= 8 || !worst.length) {
-            note(cj.verdict);
+            R.note(cj.verdict);
             break;
           }
-          worst.forEach((p) => note(`${p.t.toFixed(1)}s · ${p.issue}`));
-          phase(`Fixing the ${worst.length} worst problem${worst.length > 1 ? "s" : ""}`);
+          worst.forEach((p) => R.note(`${p.t.toFixed(1)}s · ${p.issue}`));
+          R.phase(`Fixing the ${worst.length} worst problem${worst.length > 1 ? "s" : ""}`);
           try {
             const fixed = parseScene(
               await animateStage(
                 { ...base, previousCode: reply.code, critique: worst.map((p) => `- at ${p.t.toFixed(1)}s: ${p.issue} → ${p.fix}`).join("\n"), files: [] },
-                ac.signal,
+                R.signal,
                 onText,
-                think,
+                R.think,
                 resumed,
               ),
             );
             if (fixed.code && !check(fixed.code)) reply = { ...reply, code: fixed.code };
-            else note("The fix didn't pass the frame check; keeping the previous version");
+            else R.note("The fix didn't pass the frame check; keeping the previous version");
           } catch (e) {
             if ((e as Error).name === "AbortError") throw e;
             // A failed fix never costs the film.
-            note(`Fix pass failed (${(e as Error).message.slice(0, 80)}); keeping the previous version`);
+            R.note(`Fix pass failed (${(e as Error).message.slice(0, 80)}); keeping the previous version`);
             break;
           }
         }
       }
 
-      const prev = editing && !project.builtin ? project : null;
+      const prev = editing ? target : null;
       const assetFiles = files.filter((f) => f.kind === "image" && f.asset);
       let assetRefs = prev?.assets ?? [];
       if (cloud && userId && assetFiles.length) {
-        phase("Saving your images");
+        R.phase("Saving your images");
         const up = await Promise.all(
           assetFiles.map((f) =>
             upload(`users/${userId}/assets/${id}/${f.name}`, f.file, { access: "private", handleUploadUrl: "/api/upload" }).then(
@@ -972,7 +1048,7 @@ export default function Studio() {
 
       const title = reply.title || prev?.title || brief.slice(0, 40) || "Untitled";
       const now = nowMs();
-      const userMsg: Msg = { id: uid(), role: "user", text: prompt.trim() || brief, at: now };
+      const userMsg: Msg = { id: uid(), role: "user", text: request || brief, at: now };
       const botMsg: Msg = {
         id: uid(),
         role: "assistant",
@@ -999,47 +1075,39 @@ export default function Studio() {
         assets: assetRefs,
         videos: prev?.videos ?? [],
         builtin: false,
+        building: undefined,
         createdAt: prev?.createdAt ?? nowMs(),
       };
       let saved = p;
       if (film.recreate && pendingStems.current) {
-        phase("Saving the original's sound elements");
+        R.phase("Saving the original's sound elements");
         const { clips: stemClips, blobs: stemBlobs, transcript } = pendingStems.current;
         pendingStems.current = null;
         setAudioBlobs((m) => ({ ...m, ...stemBlobs }));
         const stored = await Promise.all(stemClips.map((c) => storeClipBlob(p.id, c, stemBlobs[c.id])));
         saved = { ...p, audio: stored };
         upsert(saved, true);
-        setCurrentId(saved.id);
-        setMode("edit");
-        setPrompt("");
-        setEnhanced(null);
-        tRef.current = 0;
-        setPlaying(true);
         ok = true;
-        clearAttachments();
         // Rebuild the original's sound effects on top of its stems.
-        await scoreFilm(saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background") });
+        await scoreFilm(R, saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background") });
       } else {
         upsert(p, true);
-        setCurrentId(p.id);
-        setMode("edit");
-        setPrompt("");
-        setEnhanced(null);
-        tRef.current = 0;
-        setPlaying(true);
         ok = true;
-        clearAttachments();
         // Every new film gets a soundtrack; edits keep the one they have.
-        if (!editing && isSignedIn) await scoreFilm(p);
+        if (!editing && isSignedIn) await scoreFilm(R, p);
       }
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
-    } finally {
-      finishSteps(ok);
-      setBusy(null);
-      abortRef.current = null;
+      const stopped = (e as Error).name === "AbortError";
+      const message = stopped ? "Stopped." : (e as Error).message;
+      if (!stopped && currentId === id) setError(friendlyError(message));
+      R.finish(false, message);
+      // A failed new film keeps its tile so the error can be read, then removed.
+      setProjects((list) => list.map((x) => (x.id === id && x.building ? { ...x, title: `${x.title} (failed)` } : x)));
+      return;
     }
+    if (ok) R.finish(true);
+    else R.finish(false);
+    setProjects((list) => list.map((x) => (x.id === id ? { ...x, building: undefined } : x)));
   }
 
   // ── sound: clips, uploads, stems, scoring ──
@@ -1098,7 +1166,7 @@ export default function Studio() {
   };
 
   // Pull the audio out of a reference video: original, isolated voice, background (= original − voice), transcript.
-  const extractStems = async (videoBlobUrl: string, duration: number) => {
+  const extractStems = async (R: RunApi, videoBlobUrl: string, duration: number) => {
     const blob = await (await fetch(videoBlobUrl)).blob();
     let original: AudioBuffer;
     try {
@@ -1114,10 +1182,10 @@ export default function Studio() {
       f.append("audio", wav, "audio.wav");
       return f;
     };
-    note("Separating voice from background");
+    R.note("Separating voice from background");
     const [isoRes, sttRes] = await Promise.all([
-      fetch("/api/audio", { method: "POST", body: fd("isolate") }),
-      fetch("/api/audio", { method: "POST", body: fd("transcribe") }),
+      elFetch("/api/audio", { method: "POST", body: fd("isolate") }),
+      elFetch("/api/audio", { method: "POST", body: fd("transcribe") }),
     ]);
     const stt = sttRes.ok ? await sttRes.json() : { text: "", words: [] };
     const blobs: Record<string, Blob> = {};
@@ -1134,17 +1202,17 @@ export default function Studio() {
       const v: AudioClip = { id: uid(), kind: "voice", label: "Original voice", start: 0, duration: len, gain: 1, muted: !hasSpeech, source: "original", text: stt.text || undefined, words: words.length ? words : undefined };
       blobs[v.id] = voiceBlob;
       out.push(v);
-      note(hasSpeech ? `Transcribed ${words.length} words` : "No speech found");
+      R.note(hasSpeech ? `Transcribed ${words.length} words` : "No speech found");
       const bg = await subtractAligned(original, voiceBuf);
       if (bg) {
         const b: AudioClip = { id: uid(), kind: "background", label: "Original background (music + ambience)", start: 0, duration: len, gain: 1, muted: false, source: "original" };
         blobs[b.id] = toWav(bg);
         out.push(b);
-        note("Background stem ready");
+        R.note("Background stem ready");
       }
     } else {
       origClip.muted = false;
-      note("Voice separation unavailable; keeping the original mix");
+      R.note("Voice separation unavailable; keeping the original mix");
     }
     const transcript = (stt.words as { w: string; s: number; e: number }[])?.length
       ? (stt.words as { w: string; s: number; e: number }[]).map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ")
@@ -1153,8 +1221,10 @@ export default function Studio() {
   };
 
   // Score the film: plan with Claude, then generate voice / sfx / music with ElevenLabs.
-  const scoreFilm = async (target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean } = {}) => {
+  const scoreFilm = async (Rin: RunApi | null, target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean } = {}) => {
     if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
+    const own = !Rin;
+    const R = Rin ?? startRun(target.id, "score", "Sound");
     // A film built from a reference video keeps the original's voice and background; re-scoring only redoes the effects.
     const stems = (target.audio ?? []).filter((c) => c.source === "original");
     if (stems.length && !opts.recreate) {
@@ -1166,7 +1236,7 @@ export default function Studio() {
       };
     }
     setAudioBusy("Planning the sound…");
-    phase("Planning the sound design");
+    R.phase("Planning the sound design");
     try {
       const r = await fetch("/api/audio-plan", {
         method: "POST",
@@ -1189,7 +1259,7 @@ export default function Studio() {
       if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
       // A degenerate plan (no cues, placeholder notes) is worth one more try.
       if (!plan.sfx?.length && !plan.voice?.length) {
-        note("Plan came back empty; trying again");
+        R.note("Plan came back empty; trying again");
         const r2 = await fetch("/api/audio-plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1197,10 +1267,10 @@ export default function Studio() {
         });
         if (r2.ok) plan = await r2.json();
       }
-      note(plan.notes);
+      R.note(plan.notes);
       if (plan.musicGuess) {
         const q = encodeURIComponent(`${plan.musicGuess.title} ${plan.musicGuess.artist}`);
-        note(`Music sounds like “${plan.musicGuess.title}” by ${plan.musicGuess.artist} (${plan.musicGuess.confidence} confidence) · youtube.com/results?search_query=${q}`);
+        R.note(`Music sounds like “${plan.musicGuess.title}” by ${plan.musicGuess.artist} (${plan.musicGuess.confidence} confidence) · youtube.com/results?search_query=${q}`);
       }
       const T = target.duration;
       const made: AudioClip[] = [];
@@ -1212,10 +1282,10 @@ export default function Studio() {
       for (let i = 0; i < voiceLines.length; i++) {
         const line = voiceLines[i];
         setAudioBusy(`Voicing line ${i + 1} of ${voiceLines.length}…`);
-        const vr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "tts", text: line.text }) });
+        const vr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "tts", text: line.text }) });
         const vj = await vr.json();
         if (!vr.ok) {
-          note(`Voice: ${vj.error}`);
+          R.note(`Voice: ${vj.error}`);
           break;
         }
         const blob = b64blob(vj.audio, "audio/mpeg");
@@ -1225,7 +1295,7 @@ export default function Studio() {
         blobsNew[clip.id] = blob;
         made.push(clip);
       }
-      if (voiceLines.length) note(`${made.length} voice line${made.length === 1 ? "" : "s"}`);
+      if (voiceLines.length) R.note(`${made.length} voice line${made.length === 1 ? "" : "s"}`);
 
       // Sound effects, a few at a time (ElevenLabs allows 4 concurrent requests on small plans).
       const cues = plan.sfx as { p: number; prompt: string; seconds: number; gain: number }[];
@@ -1236,14 +1306,14 @@ export default function Studio() {
         while (cursor < cues.length) {
           const i = cursor++;
           const cue = cues[i];
-          const ask = () => fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }) });
+          const ask = () => elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }) });
           let sr = await ask();
           for (let attempt = 0; !sr.ok && attempt < 2; attempt++) {
             await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
             sr = await ask();
           }
           if (!sr.ok) {
-            note(`SFX ${i + 1} failed: ${(await sr.json().catch(() => ({}))).error ?? sr.status}`);
+            R.note(`SFX ${i + 1} failed: ${(await sr.json().catch(() => ({}))).error ?? sr.status}`);
             continue;
           }
           const blob = await sr.blob();
@@ -1257,22 +1327,22 @@ export default function Studio() {
       await Promise.all([worker(), worker(), worker()]);
       const fx = sfx.filter(Boolean) as AudioClip[];
       made.push(...fx);
-      note(`${fx.length} sound effects`);
+      R.note(`${fx.length} sound effects`);
 
       // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background exists.
       if (plan.music && !(opts.recreate && opts.hasBackground)) {
         setAudioBusy("Composing music…");
-        const mr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }) });
+        const mr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }) });
         if (mr.ok) {
           const blob = await mr.blob();
           const buf = await decodeAudio(blob);
           const clip: AudioClip = { id: uid(), kind: "music", label: "Music", start: 0, duration: Math.min(buf.duration, T), gain: voiceLines.length ? 0.55 : 0.8, muted: false, source: "generated", prompt: plan.music.prompt };
           blobsNew[clip.id] = blob;
           made.push(clip);
-          note("Music composed");
+          R.note("Music composed");
         } else {
           const mj = await mr.json().catch(() => ({}));
-          note(`Music: ${mj.error ?? "unavailable"}; composing a synthesized bed instead`);
+          R.note(`Music: ${mj.error ?? "unavailable"}; composing a synthesized bed instead`);
           setAudioBusy("Synthesizing a music bed…");
           const spec = specFromPlan(plan.music.prompt, plan.music.energy ?? "medium", target.id.split("").reduce((a, c) => a + c.charCodeAt(0), 7));
           const buf = await renderBed(spec, T);
@@ -1281,7 +1351,7 @@ export default function Studio() {
           const clip: AudioClip = { id: uid(), kind: "music", label: `Synth bed · ${spec.bpm} BPM`, start: 0, duration: T, gain: voiceLines.length ? 0.5 : 0.7, muted: false, source: "generated", prompt: plan.music.prompt, beats: { ...grid, hits: grid.downbeats } };
           blobsNew[clip.id] = blob;
           made.push(clip);
-          note(`Synth bed at ${spec.bpm} BPM, ${spec.mode}`);
+          R.note(`Synth bed at ${spec.bpm} BPM, ${spec.mode}`);
         }
       }
 
@@ -1298,7 +1368,7 @@ export default function Studio() {
             snapped++;
           }
         }
-        if (snapped) note(`${snapped} cue${snapped === 1 ? "" : "s"} snapped to the beat`);
+        if (snapped) R.note(`${snapped} cue${snapped === 1 ? "" : "s"} snapped to the beat`);
       }
 
       setAudioBusy("Saving sound…");
@@ -1308,11 +1378,10 @@ export default function Studio() {
       upsert({ ...target, audio: [...keepOld, ...stored] }, true);
       setNotice(`Scored: ${stored.length} sound element${stored.length === 1 ? "" : "s"} added.`);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError((e as Error).message));
     } finally {
       setAudioBusy(null);
-      finishSteps(true);
-      setBusy(null);
+      if (own) R.finish(true);
     }
   };
 
@@ -1410,8 +1479,8 @@ export default function Studio() {
     setError(null);
   };
 
-  const remove = async (id: string) => {
-    if (!confirm("Delete this animation and its saved videos?")) return;
+  const remove = async (id: string, silent = false) => {
+    if (!silent && !confirm("Delete this animation and its saved videos?")) return;
     setProjects((list) => {
       const next = list.filter((p) => p.id !== id);
       if (!cloud) persist({ ...GAIA, builtin: false, id: "_" }, next);
@@ -1506,17 +1575,12 @@ export default function Studio() {
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
-  const stopButton = (
-    <button className="primary stop" onClick={() => abortRef.current?.abort()}>
-      <span className="stop-square" /> Stop
-    </button>
-  );
-  const animateButton = busy ? stopButton : !isSignedIn ? (
+  const animateButton = !isSignedIn ? (
     <SignIn>
       <button className="primary">Sign in to animate</button>
     </SignIn>
   ) : (
-    <button className="primary" onClick={generate} disabled={!!busy || !canAsk || !fonts}>
+    <button className="primary" onClick={generate} disabled={!canAsk || !fonts || (mode === "edit" && isBuilding)}>
       {recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
     </button>
   );
@@ -1542,20 +1606,25 @@ export default function Studio() {
 
       <main className="main">
         <section className="stage-wrap">
-          <div ref={stageRef} className={`stage${busy ? " busy" : ""}`}>
+          <div ref={stageRef} className={`stage${currentRun?.status === "running" ? " busy" : ""}`}>
             <canvas
               ref={canvasRef}
               style={fit ? { width: fit.w, height: fit.h } : { visibility: "hidden" }}
               onClick={() => setPlaying((p) => !p)}
             />
-            <Progress
-              steps={steps}
-              running={!!busy}
-              output={busy?.stream ?? ""}
-              onCancel={() => abortRef.current?.abort()}
-              onDismiss={() => setSteps([])}
-            />
-            {shownError && !busy && (
+            {currentRun && (
+              <Progress
+                steps={currentRun.steps}
+                running={currentRun.status === "running"}
+                output={currentRun.stream}
+                onCancel={() => currentRun.abort.abort()}
+                onDismiss={() => {
+                  dismissRun(currentRun.id);
+                  if (project.building && !project.code) remove(project.id, true);
+                }}
+              />
+            )}
+            {shownError && currentRun?.status !== "running" && (
               <div className="error-card">
                 <span>{shownError}</span>
                 <button className="linkish" onClick={() => setError(null)}>
@@ -1563,7 +1632,7 @@ export default function Studio() {
                 </button>
               </div>
             )}
-            {notice && !shownError && !busy && <div className="notice">{notice}</div>}
+            {notice && !shownError && currentRun?.status !== "running" && <div className="notice">{notice}</div>}
           </div>
 
           <div className="transport">
@@ -1617,7 +1686,7 @@ export default function Studio() {
               // Example first, then favorites, then everything else (newest last).
               .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin) || Number(!!b.favorite) - Number(!!a.favorite))
               .map((p) => (
-              <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}`} onClick={() => select(p.id)}>
+              <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)}>
                 <div className="lib-title">
                   {!p.builtin && (
                     <span
@@ -1636,6 +1705,11 @@ export default function Studio() {
                   {p.title}
                 </div>
                 <div className="lib-meta">
+                  {p.building && runs[p.building]?.status === "running" ? (
+                    <span className="lib-building">
+                      <span className="dot" /> {runs[p.building].steps.at(-1)?.label ?? "Starting"}
+                    </span>
+                  ) : null}
                   {p.aspect} · {p.duration}s{p.builtin ? " · example" : ""}
                   {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
                 </div>
@@ -1690,7 +1764,7 @@ export default function Studio() {
               onChange={updateClip}
               onRemove={removeClip}
               onUpload={addAudioFiles}
-              onScore={() => scoreFilm()}
+              onScore={() => scoreFilm(null)}
               onRegenerate={regenerateClip}
               canScore={!!isSignedIn && !project.builtin}
             />
@@ -1799,9 +1873,9 @@ export default function Studio() {
                   )}
                 </div>
               ))}
-              {busy && (
+              {currentRun?.status === "running" && (
                 <div className="thread-msg assistant working">
-                  <span className="dot" /> {busy.label}
+                  <span className="dot" /> {currentRun.steps.at(-1)?.label ?? "Starting"} · you can start another film meanwhile
                 </div>
               )}
             </div>
@@ -1951,7 +2025,7 @@ export default function Studio() {
                 <button
                   className="attach enhance"
                   onClick={enhance}
-                  disabled={!!busy || !canAsk}
+                  disabled={!canAsk}
                   title="Expand your brief into a full creative treatment you can edit"
                 >
                   ✦ Enhance
@@ -2021,7 +2095,7 @@ export default function Studio() {
             </div>
           </div>
 
-          <button className="secondary" onClick={doExport} disabled={exporting !== null || !compiled.fn || !!busy}>
+          <button className="secondary" onClick={doExport} disabled={exporting !== null || !compiled.fn || isBuilding}>
             {exporting && <span className="progress-fill" style={{ width: `${exporting.k * 100}%` }} />}
             <span>
               {exporting
