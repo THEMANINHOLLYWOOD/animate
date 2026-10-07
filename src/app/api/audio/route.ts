@@ -27,7 +27,11 @@ function elError(status: number, body: string) {
 }
 
 async function passthrough(res: Response) {
-  if (!res.ok) return Response.json({ error: elError(res.status, await res.text()) }, { status: res.status === 402 ? 402 : 502 });
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`[elevenlabs] ${res.status} ${body.slice(0, 300)}`);
+    return Response.json({ error: elError(res.status, body) }, { status: res.status === 402 ? 402 : 502 });
+  }
   return new Response(res.body, { headers: { "Content-Type": res.headers.get("content-type") ?? "audio/mpeg" } });
 }
 

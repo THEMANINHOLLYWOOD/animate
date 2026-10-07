@@ -42,7 +42,7 @@ export async function DELETE(req: Request) {
   if (!ID.test(id)) return Response.json({ error: "Invalid id." }, { status: 400 });
   const root = userRoot(userId);
   const related = await Promise.all(
-    [`${root}assets/${id}/`, `${root}videos/${id}/`].map((prefix) => list({ prefix }).then((r) => r.blobs.map((b) => b.pathname))),
+    [`${root}assets/${id}/`, `${root}videos/${id}/`, `${root}audio/${id}/`].map((prefix) => list({ prefix }).then((r) => r.blobs.map((b) => b.pathname))),
   );
   await del([`${root}projects/${id}.json`, ...related.flat()]);
   return Response.json({ ok: true });

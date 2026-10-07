@@ -20,16 +20,26 @@ export async function POST(req: Request) {
     b.transcript ? `Transcript of the reference audio with word timings (seconds):\n${b.transcript}` : "",
     b.copy ? `On-screen copy in order:\n${b.copy}` : "",
   ].filter(Boolean);
-  try {
+  const ask = async (effort: "medium" | "high") => {
     const r = await anthropicClient().messages.create({
       model: "claude-opus-5-5",
       max_tokens: 8000,
-      output_config: { effort: "medium", format: { type: "json_schema", schema: SCHEMA } },
+      output_config: { effort, format: { type: "json_schema", schema: SCHEMA } },
       system: SYSTEM,
       messages: [{ role: "user", content: parts.join("\n\n") }],
     });
     const text = r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("");
-    return Response.json(JSON.parse(text));
+    const plan = JSON.parse(text);
+    // Drop unusable cues; the generator rejects empty prompts.
+    plan.sfx = (plan.sfx ?? []).filter((c: { prompt?: string }) => c.prompt?.trim());
+    plan.voice = (plan.voice ?? []).filter((v: { text?: string }) => v.text?.trim());
+    console.log(`[sound-plan] effort=${effort} stop=${r.stop_reason} out=${r.usage.output_tokens} voice=${plan.voice.length} sfx=${plan.sfx.length} music=${!!plan.music} notes=${JSON.stringify(String(plan.notes ?? "").slice(0, 80))}`);
+    return plan;
+  };
+  try {
+    let plan = await ask("medium");
+    if (!plan.sfx.length && !plan.voice.length) plan = await ask("high");
+    return Response.json(plan);
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }

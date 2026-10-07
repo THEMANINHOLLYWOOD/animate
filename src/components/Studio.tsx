@@ -508,6 +508,20 @@ export default function Studio() {
     }
   }, []);
 
+  // After a build, the brief's attachments have done their job.
+  const clearAttachments = () => {
+    setFiles((list) => {
+      for (const f of list) if (f.url) URL.revokeObjectURL(f.url);
+      return [];
+    });
+    setVideos((list) => {
+      for (const v of list) URL.revokeObjectURL(v.blobUrl);
+      return [];
+    });
+    setBrands([]);
+    triedLinks.current.clear();
+  };
+
   const removeVideo = (id: string) =>
     setVideos((list) => {
       const v = list.find((x) => x.id === id);
@@ -800,6 +814,7 @@ export default function Studio() {
         tRef.current = 0;
         setPlaying(true);
         ok = true;
+        clearAttachments();
         // Rebuild the original's sound effects on top of its stems.
         await scoreFilm(saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background") });
       } else {
@@ -811,6 +826,7 @@ export default function Studio() {
         tRef.current = 0;
         setPlaying(true);
         ok = true;
+        clearAttachments();
         // Every new film gets a soundtrack; edits keep the one they have.
         if (!editing && isSignedIn) await scoreFilm(p);
       }
@@ -914,6 +930,16 @@ export default function Studio() {
   // Score the film: plan with Claude, then generate voice / sfx / music with ElevenLabs.
   const scoreFilm = async (target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean } = {}) => {
     if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
+    // A film built from a reference video keeps the original's voice and background; re-scoring only redoes the effects.
+    const stems = (target.audio ?? []).filter((c) => c.source === "original");
+    if (stems.length && !opts.recreate) {
+      const voice = stems.find((c) => c.kind === "voice");
+      opts = {
+        recreate: true,
+        transcript: voice?.words?.length ? voice.words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ") : voice?.text,
+        hasBackground: stems.some((c) => c.kind === "background"),
+      };
+    }
     setAudioBusy("Planning the sound…");
     phase("Planning the sound design");
     try {
@@ -922,8 +948,18 @@ export default function Studio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
       });
-      const plan = await r.json();
+      let plan = await r.json();
       if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
+      // A degenerate plan (no cues, placeholder notes) is worth one more try.
+      if (!plan.sfx?.length && !plan.voice?.length) {
+        note("Plan came back empty; trying again");
+        const r2 = await fetch("/api/audio-plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
+        });
+        if (r2.ok) plan = await r2.json();
+      }
       note(plan.notes);
       if (plan.musicGuess) {
         const q = encodeURIComponent(`${plan.musicGuess.title} ${plan.musicGuess.artist}`);
@@ -954,20 +990,34 @@ export default function Studio() {
       }
       if (voiceLines.length) note(`${made.length} voice line${made.length === 1 ? "" : "s"}`);
 
-      // Sound effects, in parallel.
+      // Sound effects, a few at a time (ElevenLabs allows 4 concurrent requests on small plans).
       const cues = plan.sfx as { p: number; prompt: string; seconds: number; gain: number }[];
       setAudioBusy(`Making ${cues.length} sound effects…`);
-      const sfx = await Promise.all(
-        cues.map(async (cue, i) => {
-          const sr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.3, cue.seconds)) }) });
-          if (!sr.ok) return null;
+      const sfx: (AudioClip | null)[] = new Array(cues.length).fill(null);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < cues.length) {
+          const i = cursor++;
+          const cue = cues[i];
+          const ask = () => fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }) });
+          let sr = await ask();
+          for (let attempt = 0; !sr.ok && attempt < 2; attempt++) {
+            await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
+            sr = await ask();
+          }
+          if (!sr.ok) {
+            note(`SFX ${i + 1} failed: ${(await sr.json().catch(() => ({}))).error ?? sr.status}`);
+            continue;
+          }
           const blob = await sr.blob();
           const buf = await decodeAudio(blob);
           const clip: AudioClip = { id: uid(), kind: "sfx", label: `SFX ${i + 1}`, start: Math.max(0, Math.min(T - 0.1, cue.p * T)), duration: buf.duration, gain: Math.max(0.1, Math.min(1.5, cue.gain)), muted: false, source: "generated", prompt: cue.prompt };
           blobsNew[clip.id] = blob;
-          return clip;
-        }),
-      );
+          sfx[i] = clip;
+          setAudioBusy(`Making sound effects ${sfx.filter(Boolean).length}/${cues.length}…`);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
       const fx = sfx.filter(Boolean) as AudioClip[];
       made.push(...fx);
       note(`${fx.length} sound effects`);
@@ -1000,6 +1050,7 @@ export default function Studio() {
     } finally {
       setAudioBusy(null);
       finishSteps(true);
+      setBusy(null);
     }
   };
 
