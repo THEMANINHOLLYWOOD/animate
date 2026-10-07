@@ -20,6 +20,11 @@ import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
 import { useFilmAudio } from "@/components/useFilmAudio";
 import { type AudioClip, decodeAudio, renderMix, subtractAligned, toWav } from "@/lib/audio";
+import { produce } from "immer";
+import { Doc, type Doc as DocT } from "@/editor/doc/schema";
+import { retime } from "@/editor/doc/ops";
+import { docScene } from "@/editor/render/renderDoc";
+import { elementsSummary, elementsToDoc, type ElementsPlan } from "@/lib/elements";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 import { aspectFor, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
@@ -39,13 +44,15 @@ type Project = {
   assets?: { name: string; pathname: string }[];
   videos?: Render[];
   audio?: AudioClip[];
+  // Films stripped into elements are documents: layers + keyframes, with code only for leftovers.
+  doc?: DocT;
   builtin?: boolean;
   favorite?: boolean;
   share?: { id: string; createdAt: number };
   createdAt: number;
 };
 
-type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string };
+type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string; docBefore?: DocT };
 
 type Attached = {
   id: string;
@@ -316,11 +323,12 @@ export default function Studio() {
   // ── scene ──
   const compiled = useMemo<{ fn: SceneFn | null; err: string | null }>(() => {
     try {
+      if (project.doc) return { fn: docScene(project.doc), err: null };
       return { fn: compileScene(project.code), err: null };
     } catch (e) {
       return { fn: null, err: (e as Error).message };
     }
-  }, [project.code]);
+  }, [project.code, project.doc]);
 
   const assets = useMemo<Assets>(() => {
     const byName: Record<string, HTMLImageElement> = project.assets?.length ? { ...projectImgs } : {};
@@ -700,6 +708,59 @@ export default function Studio() {
     }
   }
 
+  // ── chat edits for element-based films: the editing agent changes layers and keyframes ──
+  const agentEdit = async (request: string, signal: AbortSignal) => {
+    if (!project.doc) return;
+    phase("Editing the elements");
+    const history = [...(project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })), { role: "user" as const, text: request }];
+    const res = await fetch("/api/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: project.doc, time: tRef.current, selection: [], messages: history }),
+      signal,
+    });
+    if (res.status === 401) throw new Error("Sign in to edit films.");
+    if (!res.body) throw new Error(`Request failed (${res.status})`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let text = "";
+    let result: { doc?: DocT; changes?: number; seek?: number } | null = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop()!;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "text") {
+          text += ev.text;
+          setBusy((b) => b && { ...b, stream: text });
+        } else if (ev.type === "thinking") think(ev.text);
+        else if (ev.type === "progress") note(ev.text.trim().slice(0, 140));
+        else if (ev.type === "action") note(ev.label);
+        else if (ev.type === "done") result = ev;
+        else if (ev.type === "error") {
+          if (ev.doc) result = { doc: ev.doc, changes: 1 };
+          else throw new Error(ev.message);
+        }
+      }
+    }
+    const now = nowMs();
+    const userMsg: Msg = { id: uid(), role: "user", text: request, at: now };
+    const changed = !!result?.doc && (result.changes ?? 0) > 0;
+    const botMsg: Msg = { id: uid(), role: "assistant", text: text.trim() || (changed ? "Updated the film." : "No change was needed."), at: now + 1, docBefore: changed ? project.doc : undefined };
+    const thread = [...(project.thread ?? []), userMsg, botMsg];
+    const keep = thread.filter((m) => m.docBefore).slice(-3);
+    for (const m of thread) if (m.docBefore && !keep.includes(m)) delete m.docBefore;
+    const nextDoc = changed ? Doc.parse(result!.doc) : project.doc;
+    upsert({ ...project, doc: nextDoc, duration: nextDoc.meta.duration, thread }, true);
+    if (result?.seek !== undefined) tRef.current = Math.min(result.seek, nextDoc.meta.duration);
+    setPrompt("");
+  };
+
   // ── stage 2: animate ──
   async function generate() {
     if (!prompt.trim() && !files.length && !videos.length) return;
@@ -716,9 +777,32 @@ export default function Studio() {
       const payloadFiles = await collectFiles(recreating);
       const brief = enhanced?.brief ?? (prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       // Small edits go straight to the animator; new films always get a treatment first.
+      // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
+      if (editing && project.doc) {
+        await agentEdit(prompt.trim(), ac.signal);
+        ok = true;
+        return;
+      }
       const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(ac.signal, brief, payloadFiles, false, film);
 
-      phase(editing ? "Revising the animation" : "Animating the scene");
+      // Recreations are stripped into editable elements; the animator then draws only the leftovers.
+      let elementsPlan: ElementsPlan | null = null;
+      if (film.recreate && !editing && treatment) {
+        phase("Stripping the video into elements");
+        const er = await fetch("/api/elements", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ breakdown: treatment, duration: film.duration, aspect: film.aspect, w: fw, h: fh, files: payloadFiles.filter((f) => (f as { kind: string }).kind === "image") }),
+          signal: ac.signal,
+        });
+        const ej = await er.json();
+        if (er.ok && ej.elements) {
+          elementsPlan = ej as ElementsPlan;
+          note(`${elementsPlan.elements.length} elements: ${elementsPlan.elements.slice(0, 6).map((e) => e.name).join(", ")}${elementsPlan.elements.length > 6 ? "…" : ""}`);
+        } else note(`Elements: ${ej.error ?? "unavailable"}; building as one scene`);
+      }
+
+      phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
       const onText = (s: string) => setBusy((b) => b && { ...b, stream: s });
       const base = {
         stage: "animate",
@@ -731,6 +815,7 @@ export default function Studio() {
         files: payloadFiles,
         previousCode: editing ? project.code : undefined,
         history: editing ? (project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
+        notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
       };
       let reply = parseScene(await streamStage(base, ac.signal, onText, undefined, think));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
@@ -745,6 +830,8 @@ export default function Studio() {
       };
       phase("Checking every frame");
       const problem = check(reply.code);
+      const id = editing && !project.builtin ? project.id : uid();
+      const docFor = (code: string) => (elementsPlan ? elementsToDoc(elementsPlan, { id, title: reply.title || "Recreation", w: fw, h: fh, duration: film.duration, code }) : undefined);
       if (problem) {
         note(problem);
         phase("Fixing a runtime error");
@@ -752,7 +839,6 @@ export default function Studio() {
         if (fixed.code) reply = { ...reply, code: fixed.code };
       }
 
-      const id = editing && !project.builtin ? project.id : uid();
       const prev = editing && !project.builtin ? project : null;
       const assetFiles = files.filter((f) => f.kind === "image" && f.asset);
       let assetRefs = prev?.assets ?? [];
@@ -788,6 +874,7 @@ export default function Studio() {
         id,
         title,
         thread,
+        doc: docFor(reply.code) ?? (editing ? prev?.doc : undefined),
         code: reply.code,
         duration: film.duration,
         aspect: film.aspect,
@@ -1127,7 +1214,7 @@ export default function Studio() {
 
   const setDuration = (d: number) => {
     tRef.current = (tRef.current / project.duration) * d;
-    updateProject({ duration: d });
+    updateProject(project.doc ? { duration: d, doc: produce(project.doc, retime(d)) } : { duration: d });
   };
 
   const seek = (t: number) => {
@@ -1393,6 +1480,32 @@ export default function Studio() {
             ))}
           </div>
 
+          {project.doc && (
+            <div className="elements">
+              <div className="section-label lib-head">
+                <span>Elements · {project.doc.layers.filter((l) => l.type !== "code").length}</span>
+                <a className="linkish" href={`/editor/${project.id}`}>
+                  Edit every element →
+                </a>
+              </div>
+              <div className="elements-list">
+                {project.doc.layers
+                  .filter((l) => l.type !== "code")
+                  .map((l) => (
+                    <span className={`element t-${l.type}`} key={l.id} title={`${l.start.toFixed(2)}–${l.end.toFixed(2)}s`}>
+                      <i>{l.type === "text" ? "T" : l.type === "image" ? "▣" : "◻"}</i>
+                      {l.name}
+                    </span>
+                  ))}
+                {project.doc.layers.some((l) => l.type === "code") && (
+                  <span className="element t-code" title="Everything that isn't a flat element, drawn by code underneath">
+                    <i>{"</>"}</i>Drawn by code
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {(!project.builtin || clips.length > 0) && (
             <AudioStrip
               clips={clips}
@@ -1472,17 +1585,19 @@ export default function Studio() {
               {(project.thread ?? []).map((m) => (
                 <div key={m.id} className={`thread-msg ${m.role}`}>
                   <span>{m.text}</span>
-                  {m.role === "assistant" && m.codeBefore && (
+                  {m.role === "assistant" && (m.codeBefore || m.docBefore) && (
                     <button
                       className="linkish"
                       title="Go back to the version before this change"
                       onClick={() => {
-                        const before = m.codeBefore!;
+                        const back: Msg = { id: uid(), role: "assistant", text: "Went back to the earlier version.", at: nowMs(), codeBefore: m.codeBefore ? project.code : undefined, docBefore: m.docBefore ? project.doc : undefined };
                         upsert(
                           {
                             ...project,
-                            code: before,
-                            thread: [...(project.thread ?? []), { id: uid(), role: "assistant", text: "Went back to the earlier version.", at: Date.now(), codeBefore: project.code }],
+                            code: m.codeBefore ?? project.code,
+                            doc: m.docBefore ?? project.doc,
+                            duration: m.docBefore?.meta.duration ?? project.duration,
+                            thread: [...(project.thread ?? []), back],
                           },
                           true,
                         );

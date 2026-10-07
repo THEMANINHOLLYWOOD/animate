@@ -24,7 +24,7 @@ import { Doc, type Ease, LayerType, type Value } from "../doc/schema";
 // Tools the editor agent can call. Each maps onto the same pure ops the UI uses,
 // so anything the agent does is exactly what a person could do by hand.
 
-const EASES: Record<string, Ease> = {
+export const EASES: Record<string, Ease> = {
   linear: "linear",
   hold: "hold",
   ease_out: { bezier: [0.22, 1, 0.36, 1] },

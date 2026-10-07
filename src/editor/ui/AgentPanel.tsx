@@ -76,6 +76,7 @@ export default function AgentPanel({ store }: { store: Store }) {
           if (!line.trim()) continue;
           const ev = JSON.parse(line);
           if (ev.type === "text") updateLast((m) => ({ ...m, text: m.text + ev.text }));
+          else if (ev.type === "progress") updateLast((m) => ({ ...m, actions: [...(m.actions ?? []), { label: ev.text.trim().slice(0, 140), error: false }] }));
           else if (ev.type === "thinking") updateLast((m) => ({ ...m, thinking: (m.thinking ?? "") + ev.text }));
           else if (ev.type === "action") updateLast((m) => ({ ...m, actions: [...(m.actions ?? []), { label: ev.label, error: ev.error }] }));
           else if (ev.type === "done") finish(ev.doc, ev.seek, ev.changes);

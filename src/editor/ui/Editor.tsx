@@ -26,7 +26,7 @@ async function loadDoc(id: string): Promise<Doc> {
     if (saved) return Doc.parse(JSON.parse(saved));
   } catch {}
   if (id === "gaia") return buildGaiaDoc();
-  type P = { id: string; title: string; code: string; duration: number; aspect: string };
+  type P = { id: string; title: string; code: string; duration: number; aspect: string; doc?: unknown };
   let projects: P[] = [];
   try {
     const r = await fetch("/api/projects");
@@ -39,6 +39,7 @@ async function loadDoc(id: string): Promise<Doc> {
   }
   const p = projects.find((x) => x.id === id);
   if (!p) throw new Error("Couldn't find that film.");
+  if (p.doc) return Doc.parse(p.doc);
   const [w, h] = p.aspect === "9:16" ? [1080, 1920] : p.aspect === "1:1" ? [1080, 1080] : [1920, 1080];
   return Doc.parse({
     meta: { id: p.id, title: p.title, size: { w, h }, duration: p.duration },

@@ -63,9 +63,12 @@ export async function POST(req: Request) {
             },
             { signal },
           );
-          s.on("text", (t) => send({ type: "text", text: t }));
+          // Text written before a tool call is a progress note; only the final turn's text is the reply.
+          let turnText = "";
+          s.on("text", (t) => (turnText += t));
           s.on("thinking", (t) => send({ type: "thinking", text: t }));
           const msg = await s.finalMessage();
+          if (turnText.trim()) send({ type: msg.stop_reason === "tool_use" ? "progress" : "text", text: turnText });
           messages.push({ role: "assistant", content: msg.content });
 
           if (msg.stop_reason === "refusal") {

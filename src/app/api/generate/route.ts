@@ -25,6 +25,7 @@ type Body = {
   brands?: BrandKit[];
   recreate?: boolean;
   history?: { role: "user" | "assistant"; text: string }[];
+  notes?: string; // extra instructions for the animator (e.g. elements drawn as separate layers)
 };
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
@@ -100,6 +101,7 @@ export async function POST(req: Request) {
     }
     if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
     if (body.recreate) content.push({ type: "text", text: RECREATE_ANIMATOR });
+    if (body.notes) content.push({ type: "text", text: body.notes });
   }
 
   const encoder = new TextEncoder();

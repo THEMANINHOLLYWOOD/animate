@@ -2,6 +2,17 @@
 
 Goal: turn animate from "generate and export" into a full editor. It should feel like **Figma** on the canvas (select, move, edit text in place, layers) and **Premiere / After Effects** on the timeline (tracks, trims, keyframes, curves, effects, audio, video). Any animation, whether Claude made it or a person built it, can be broken down and edited down to the last keyframe. Claude can generate the audio for every film: voiceover, music and sound effects.
 
+## Status (updated 2026-10-07)
+
+Shipped and verified end to end in a browser (local mode, real Anthropic + ElevenLabs + Blob):
+- Phase 0–1: document schema, interpolation, ops, undo; Gaia as a 63-layer doc; `/editor/[id]` with canvas select/move, inspector, Premiere-style timeline (clips, trims, keyframe diamonds), mobile layout.
+- Editing agent (`/api/agent`): strict tools mapped to the same ops; one undo step per request; verified on a multi-layer retime.
+- Sound: reference-video stems (ElevenLabs isolation + transcription, aligned subtraction for the background), Claude sound plan (structured output), ElevenLabs VO (with word timing) and SFX (3-at-a-time queue), music on paid plans; sound strip; playback locked to the picture; MP4 export with AAC.
+- Recreate mode: a dropped video or X link with no brief is rebuilt shot for shot. The video is **stripped into elements** (`/api/elements`): every text/shape/image becomes an editable layer with keyframes; a code layer underneath draws the leftovers. Films are saved as documents, open in the editor, and chat edits go through the agent.
+- Chat thread per film with revert; progress panel with Claude's reasoning; favorites; public share links.
+
+Next, in order: audio on the editor timeline (Phase 5 UI), agent tools for sound, Mediabunny export, graph editor (Phase 3), effects/masks (Phase 4), re-voice from transcript, song identification via a fingerprint service.
+
 ---
 
 ## 1. The one decision everything rests on

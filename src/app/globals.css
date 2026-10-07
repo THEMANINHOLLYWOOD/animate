@@ -1365,3 +1365,49 @@ input[type="range"]:active::-webkit-slider-thumb {
   color: var(--slate);
   font-style: italic;
 }
+
+/* ── Elements (stripped from a video) ──────────────── */
+
+.elements {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.elements-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.element {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--slate);
+}
+
+.element i {
+  font-style: normal;
+  font-family: var(--font-mono), monospace;
+  font-size: 10px;
+  color: var(--stone);
+}
+
+.element.t-text {
+  border-color: #dccbb4;
+}
+
+.element.t-shape {
+  border-color: #c7d3b8;
+}
+
+.element.t-code {
+  border-style: dashed;
+  color: var(--stone);
+}
