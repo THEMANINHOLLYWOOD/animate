@@ -347,7 +347,6 @@ function EditorInner({ store, id }: { store: Store; id: string }) {
       <header className="ed-top">
         <div className="ed-top-left">
           <Link href="/" className="brand">
-            <span className="brand-mark" />
             animate
           </Link>
           <span className="ed-title">{doc.meta.title}</span>

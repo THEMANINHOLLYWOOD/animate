@@ -14,7 +14,7 @@ export async function POST(req: Request) {
       onBeforeGenerateToken: async (pathname) => {
         if (!ownsPath(userId, pathname)) throw new Error("Not your folder.");
         return {
-          allowedContentTypes: ["video/mp4", "video/webm", "image/*"],
+          allowedContentTypes: ["video/mp4", "video/webm", "image/*", "audio/*"],
           maximumSizeInBytes: 500 * 1024 * 1024,
           addRandomSuffix: false,
           allowOverwrite: true,

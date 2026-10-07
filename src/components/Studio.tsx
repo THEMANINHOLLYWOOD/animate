@@ -17,6 +17,9 @@ import {
 } from "@/lib/engine";
 import { GAIA_SCENE } from "@/lib/presets/gaia";
 import Progress, { type Step } from "@/components/Progress";
+import AudioStrip from "@/components/AudioStrip";
+import { useFilmAudio } from "@/components/useFilmAudio";
+import { type AudioClip, decodeAudio, renderMix, subtractAligned, toWav } from "@/lib/audio";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 import { aspectFor, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
@@ -31,13 +34,18 @@ type Project = {
   aspect: Aspect;
   prompt?: string;
   treatment?: string;
+  // The conversation with this film: every brief / edit and what changed.
+  thread?: Msg[];
   assets?: { name: string; pathname: string }[];
   videos?: Render[];
+  audio?: AudioClip[];
   builtin?: boolean;
   favorite?: boolean;
   share?: { id: string; createdAt: number };
   createdAt: number;
 };
+
+type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string };
 
 type Attached = {
   id: string;
@@ -61,6 +69,7 @@ const GAIA: Project = {
 
 const LOCAL = "animate.projects.v1";
 const uid = () => Math.random().toString(36).slice(2, 12);
+const nowMs = () => Date.now();
 const fmt = (s: number) => {
   const m = Math.floor(s / 60);
   const r = s - m * 60;
@@ -122,9 +131,10 @@ function imagePayload(img: HTMLImageElement, type: string) {
 
 function parseScene(text: string) {
   const title = text.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim();
+  const note = text.match(/<note>([\s\S]*?)<\/note>/)?.[1]?.trim();
   const blocks = [...text.matchAll(/```(?:js|javascript)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
   const code = blocks.sort((a, b) => b.length - a.length)[0];
-  return { title, code };
+  return { title, note, code };
 }
 
 async function streamStage(
@@ -190,6 +200,10 @@ export default function Studio() {
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [favOnly, setFavOnly] = useState(false);
+  const [audioBlobs, setAudioBlobs] = useState<Record<string, Blob>>({});
+  const [audioBusy, setAudioBusy] = useState<string | null>(null);
+  // Stems pulled from a reference video (recreate mode), waiting for the film to exist.
+  const pendingStems = useRef<{ clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
@@ -314,6 +328,19 @@ export default function Studio() {
     return { images: Object.entries(byName).map(([name, img]) => ({ name, img })), byName };
   }, [files, projectImgs, project.assets]);
 
+  const clips = useMemo(() => project.audio ?? [], [project.audio]);
+  const { loaded: loadedAudio, mixer } = useFilmAudio(clips, audioBlobs);
+  const mixerRef = useRef(mixer);
+  useEffect(() => {
+    mixerRef.current = mixer;
+  }, [mixer]);
+
+  // Keep sound locked to the picture: (re)start the mix on play, stop on pause.
+  useEffect(() => {
+    if (playing) mixer?.play(tRef.current);
+    else mixer?.stop();
+  }, [playing, mixer]);
+
   // ── fit canvas inside the stage ──
   useEffect(() => {
     const el = stageRef.current;
@@ -347,7 +374,11 @@ export default function Studio() {
       if (dead) return;
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      if (playingRef.current) tRef.current = (tRef.current + dt) % T;
+      if (playingRef.current) {
+        const next = tRef.current + dt;
+        if (next >= T) mixerRef.current?.play(0);
+        tRef.current = next % T;
+      }
       tRef.current = Math.min(tRef.current, T);
       try {
         r.draw(compiled.fn!, tRef.current, T, assets);
@@ -615,6 +646,18 @@ export default function Studio() {
   const collectFiles = async (recreating: boolean) => {
     if (videos.length) phase(recreating ? "Sampling the video frame by frame" : "Sampling the reference video");
     const vids = await videoPayload(recreating);
+    if (recreating && videos[0]) {
+      phase("Pulling the sound apart");
+      try {
+        const stems = await extractStems(videos[0].blobUrl, videos[0].duration);
+        pendingStems.current = stems;
+        if (stems?.transcript) vids.push({ kind: "text", name: "reference-audio-transcript.txt", text: `Transcript of the reference video's voice, with word start times in seconds:\n${stems.transcript}` });
+        if (!stems) note("The video has no audio track");
+      } catch (e) {
+        note(`Sound: ${(e as Error).message}`);
+        pendingStems.current = null;
+      }
+    }
     if (videos.length) note(`${vids.filter((x) => (x as { kind: string }).kind === "image").length} frames from ${videos.length} video${videos.length > 1 ? "s" : ""}`);
     return [...(await filePayload()), ...vids];
   };
@@ -673,6 +716,7 @@ export default function Studio() {
         aspect: film.aspect,
         files: payloadFiles,
         previousCode: editing ? project.code : undefined,
+        history: editing ? (project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
       };
       let reply = parseScene(await streamStage(base, ac.signal, onText, undefined, think));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
@@ -691,7 +735,7 @@ export default function Studio() {
         note(problem);
         phase("Fixing a runtime error");
         const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText, undefined, think));
-        if (fixed.code) reply = { title: reply.title, code: fixed.code };
+        if (fixed.code) reply = { ...reply, code: fixed.code };
       }
 
       const id = editing && !project.builtin ? project.id : uid();
@@ -710,10 +754,26 @@ export default function Studio() {
         assetRefs = [...assetRefs.filter((a) => !up.some((u) => u.name === a.name)), ...up];
       }
 
+      const title = reply.title || prev?.title || brief.slice(0, 40) || "Untitled";
+      const now = nowMs();
+      const userMsg: Msg = { id: uid(), role: "user", text: prompt.trim() || brief, at: now };
+      const botMsg: Msg = {
+        id: uid(),
+        role: "assistant",
+        text: reply.note || (editing ? "Updated the film." : `Built “${title}”.`),
+        at: now + 1,
+        codeBefore: prev?.code,
+      };
+      // Keep the last few code snapshots so earlier versions can be restored.
+      const thread = [...(prev?.thread ?? []), userMsg, botMsg];
+      const keep = thread.filter((m) => m.codeBefore).slice(-5);
+      for (const m of thread) if (m.codeBefore && !keep.includes(m)) delete m.codeBefore;
+
       const p: Project = {
         ...(prev ?? {}),
         id,
-        title: reply.title || prev?.title || brief.slice(0, 40) || "Untitled",
+        title,
+        thread,
         code: reply.code,
         duration: film.duration,
         aspect: film.aspect,
@@ -722,16 +782,38 @@ export default function Studio() {
         assets: assetRefs,
         videos: prev?.videos ?? [],
         builtin: false,
-        createdAt: prev?.createdAt ?? Date.now(),
+        createdAt: prev?.createdAt ?? nowMs(),
       };
-      upsert(p, true);
-      setCurrentId(p.id);
-      setMode("edit");
-      setPrompt("");
-      setEnhanced(null);
-      tRef.current = 0;
-      setPlaying(true);
-      ok = true;
+      let saved = p;
+      if (film.recreate && pendingStems.current) {
+        phase("Saving the original's sound elements");
+        const { clips: stemClips, blobs: stemBlobs, transcript } = pendingStems.current;
+        pendingStems.current = null;
+        setAudioBlobs((m) => ({ ...m, ...stemBlobs }));
+        const stored = await Promise.all(stemClips.map((c) => storeClipBlob(p.id, c, stemBlobs[c.id])));
+        saved = { ...p, audio: stored };
+        upsert(saved, true);
+        setCurrentId(saved.id);
+        setMode("edit");
+        setPrompt("");
+        setEnhanced(null);
+        tRef.current = 0;
+        setPlaying(true);
+        ok = true;
+        // Rebuild the original's sound effects on top of its stems.
+        await scoreFilm(saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background") });
+      } else {
+        upsert(p, true);
+        setCurrentId(p.id);
+        setMode("edit");
+        setPrompt("");
+        setEnhanced(null);
+        tRef.current = 0;
+        setPlaying(true);
+        ok = true;
+        // Every new film gets a soundtrack; edits keep the one they have.
+        if (!editing && isSignedIn) await scoreFilm(p);
+      }
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -741,13 +823,214 @@ export default function Studio() {
     }
   }
 
+  // ── sound: clips, uploads, stems, scoring ──
+  const audioExt = (type: string) => (type.includes("wav") ? "wav" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : "m4a");
+
+  // Persist a clip's audio (private Blob when signed in; memory otherwise).
+  const storeClipBlob = async (projectId: string, clip: AudioClip, blob: Blob): Promise<AudioClip> => {
+    setAudioBlobs((m) => ({ ...m, [clip.id]: blob }));
+    if (!cloud || !userId) return clip;
+    const res = await upload(`users/${userId}/audio/${projectId}/${clip.id}.${audioExt(blob.type)}`, blob, { access: "private", handleUploadUrl: "/api/upload", contentType: blob.type || "audio/mpeg" });
+    return { ...clip, pathname: res.pathname };
+  };
+
+  const updateClip = (id: string, patch: Partial<AudioClip>) => upsert({ ...project, audio: clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  const removeClip = (id: string) => upsert({ ...project, audio: clips.filter((c) => c.id !== id) }, true);
+
+  const addAudioFiles = async (list: FileList | File[]) => {
+    if (project.builtin) return setNotice("Make your own film first; the example can't be changed.");
+    setAudioBusy("Adding audio…");
+    try {
+      const added: AudioClip[] = [];
+      for (const file of Array.from(list)) {
+        const buf = await decodeAudio(file);
+        const kind: AudioClip["kind"] = /voice|vo\b|speech/i.test(file.name) ? "voice" : /sfx|fx|whoosh|hit/i.test(file.name) ? "sfx" : "music";
+        const clip: AudioClip = { id: uid(), kind, label: file.name.replace(/\.[^.]+$/, ""), start: 0, duration: Math.min(buf.duration, project.duration), gain: 1, muted: false, source: "upload" };
+        added.push(await storeClipBlob(project.id, clip, file));
+      }
+      upsert({ ...project, audio: [...clips, ...added] }, true);
+    } catch (e) {
+      setError(`Couldn't read that audio: ${(e as Error).message}`);
+    } finally {
+      setAudioBusy(null);
+    }
+  };
+
+  // Pull the audio out of a reference video: original, isolated voice, background (= original − voice), transcript.
+  const extractStems = async (videoBlobUrl: string, duration: number) => {
+    const blob = await (await fetch(videoBlobUrl)).blob();
+    let original: AudioBuffer;
+    try {
+      original = await decodeAudio(blob);
+    } catch {
+      return null; // no audio track
+    }
+    if (original.duration < 0.5) return null;
+    const wav = toWav(original, original.numberOfChannels === 1);
+    const fd = (action: string) => {
+      const f = new FormData();
+      f.append("action", action);
+      f.append("audio", wav, "audio.wav");
+      return f;
+    };
+    note("Separating voice from background");
+    const [isoRes, sttRes] = await Promise.all([
+      fetch("/api/audio", { method: "POST", body: fd("isolate") }),
+      fetch("/api/audio", { method: "POST", body: fd("transcribe") }),
+    ]);
+    const stt = sttRes.ok ? await sttRes.json() : { text: "", words: [] };
+    const blobs: Record<string, Blob> = {};
+    const out: AudioClip[] = [];
+    const len = Math.min(original.duration, duration);
+    const origClip: AudioClip = { id: uid(), kind: "original", label: "Original mix", start: 0, duration: len, gain: 1, muted: true, source: "original" };
+    blobs[origClip.id] = wav;
+    out.push(origClip);
+    if (isoRes.ok) {
+      const voiceBlob = await isoRes.blob();
+      const voiceBuf = await decodeAudio(voiceBlob);
+      const words = (stt.words as { w: string; s: number; e: number }[]) ?? [];
+      const hasSpeech = !!stt.text?.trim();
+      const v: AudioClip = { id: uid(), kind: "voice", label: "Original voice", start: 0, duration: len, gain: 1, muted: !hasSpeech, source: "original", text: stt.text || undefined, words: words.length ? words : undefined };
+      blobs[v.id] = voiceBlob;
+      out.push(v);
+      note(hasSpeech ? `Transcribed ${words.length} words` : "No speech found");
+      const bg = await subtractAligned(original, voiceBuf);
+      if (bg) {
+        const b: AudioClip = { id: uid(), kind: "background", label: "Original background (music + ambience)", start: 0, duration: len, gain: 1, muted: false, source: "original" };
+        blobs[b.id] = toWav(bg);
+        out.push(b);
+        note("Background stem ready");
+      }
+    } else {
+      origClip.muted = false;
+      note("Voice separation unavailable; keeping the original mix");
+    }
+    const transcript = (stt.words as { w: string; s: number; e: number }[])?.length
+      ? (stt.words as { w: string; s: number; e: number }[]).map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ")
+      : stt.text || undefined;
+    return { clips: out, blobs, transcript };
+  };
+
+  // Score the film: plan with Claude, then generate voice / sfx / music with ElevenLabs.
+  const scoreFilm = async (target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean } = {}) => {
+    if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
+    setAudioBusy("Planning the sound…");
+    phase("Planning the sound design");
+    try {
+      const r = await fetch("/api/audio-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
+      });
+      const plan = await r.json();
+      if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
+      note(plan.notes);
+      if (plan.musicGuess) {
+        const q = encodeURIComponent(`${plan.musicGuess.title} ${plan.musicGuess.artist}`);
+        note(`Music sounds like “${plan.musicGuess.title}” by ${plan.musicGuess.artist} (${plan.musicGuess.confidence} confidence) · youtube.com/results?search_query=${q}`);
+      }
+      const T = target.duration;
+      const made: AudioClip[] = [];
+      const blobsNew: Record<string, Blob> = {};
+      const b64blob = (b64: string, type: string) => new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type });
+
+      // Voice, line by line (skipped in recreate mode when the original voice exists).
+      const voiceLines = opts.recreate && opts.transcript ? [] : (plan.voice as { p: number; text: string }[]);
+      for (let i = 0; i < voiceLines.length; i++) {
+        const line = voiceLines[i];
+        setAudioBusy(`Voicing line ${i + 1} of ${voiceLines.length}…`);
+        const vr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "tts", text: line.text }) });
+        const vj = await vr.json();
+        if (!vr.ok) {
+          note(`Voice: ${vj.error}`);
+          break;
+        }
+        const blob = b64blob(vj.audio, "audio/mpeg");
+        const buf = await decodeAudio(blob);
+        const start = Math.max(0, Math.min(T - 0.1, line.p * T));
+        const clip: AudioClip = { id: uid(), kind: "voice", label: `VO ${i + 1}`, start, duration: buf.duration, gain: 1, muted: false, source: "generated", text: line.text, words: (vj.words as { w: string; s: number; e: number }[]).map((w) => ({ w: w.w, s: start + w.s, e: start + w.e })) };
+        blobsNew[clip.id] = blob;
+        made.push(clip);
+      }
+      if (voiceLines.length) note(`${made.length} voice line${made.length === 1 ? "" : "s"}`);
+
+      // Sound effects, in parallel.
+      const cues = plan.sfx as { p: number; prompt: string; seconds: number; gain: number }[];
+      setAudioBusy(`Making ${cues.length} sound effects…`);
+      const sfx = await Promise.all(
+        cues.map(async (cue, i) => {
+          const sr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.3, cue.seconds)) }) });
+          if (!sr.ok) return null;
+          const blob = await sr.blob();
+          const buf = await decodeAudio(blob);
+          const clip: AudioClip = { id: uid(), kind: "sfx", label: `SFX ${i + 1}`, start: Math.max(0, Math.min(T - 0.1, cue.p * T)), duration: buf.duration, gain: Math.max(0.1, Math.min(1.5, cue.gain)), muted: false, source: "generated", prompt: cue.prompt };
+          blobsNew[clip.id] = blob;
+          return clip;
+        }),
+      );
+      const fx = sfx.filter(Boolean) as AudioClip[];
+      made.push(...fx);
+      note(`${fx.length} sound effects`);
+
+      // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background exists.
+      if (plan.music && !(opts.recreate && opts.hasBackground)) {
+        setAudioBusy("Composing music…");
+        const mr = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }) });
+        if (mr.ok) {
+          const blob = await mr.blob();
+          const buf = await decodeAudio(blob);
+          const clip: AudioClip = { id: uid(), kind: "music", label: "Music", start: 0, duration: Math.min(buf.duration, T), gain: voiceLines.length ? 0.55 : 0.8, muted: false, source: "generated", prompt: plan.music.prompt };
+          blobsNew[clip.id] = blob;
+          made.push(clip);
+          note("Music composed");
+        } else {
+          const mj = await mr.json().catch(() => ({}));
+          note(`Music: ${mj.error ?? "unavailable"}. Add your own track with “＋ Add audio”.`);
+        }
+      }
+
+      setAudioBusy("Saving sound…");
+      setAudioBlobs((m) => ({ ...m, ...blobsNew }));
+      const stored = await Promise.all(made.map((c) => storeClipBlob(target.id, c, blobsNew[c.id])));
+      const keepOld = (target.audio ?? []).filter((c) => c.source !== "generated");
+      upsert({ ...target, audio: [...keepOld, ...stored] }, true);
+      setNotice(`Scored: ${stored.length} sound element${stored.length === 1 ? "" : "s"} added.`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAudioBusy(null);
+      finishSteps(true);
+    }
+  };
+
+  const regenerateClip = async (id: string) => {
+    const c = clips.find((x) => x.id === id);
+    if (!c) return;
+    setAudioBusy(`Regenerating ${c.label}…`);
+    try {
+      const body = c.kind === "voice" ? { action: "tts", text: c.text } : c.kind === "music" ? { action: "music", prompt: c.prompt, seconds: project.duration } : { action: "sfx", prompt: c.prompt, seconds: Math.min(6, c.duration) };
+      const r = await fetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Couldn't regenerate.");
+      const blob = c.kind === "voice" ? new Blob([Uint8Array.from(atob((await r.json()).audio), (ch) => ch.charCodeAt(0))], { type: "audio/mpeg" }) : await r.blob();
+      const buf = await decodeAudio(blob);
+      const fresh: AudioClip = { ...c, id: uid(), duration: c.kind === "music" ? Math.min(buf.duration, project.duration) : buf.duration };
+      const stored = await storeClipBlob(project.id, fresh, blob);
+      upsert({ ...project, audio: clips.map((x) => (x.id === id ? stored : x)) }, true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAudioBusy(null);
+    }
+  };
+
   // ── export (+ save to library) ──
   async function doExport() {
     if (!compiled.fn || !fonts) return;
     setExporting({ label: "Rendering", k: 0 });
     setError(null);
     try {
-      const { blob, ext } = await exportVideo({
+      const mix = loadedAudio.length ? await renderMix(loadedAudio, project.duration) : null;
+      const { blob, ext, audioIncluded } = await exportVideo({
         scene: compiled.fn,
         fonts,
         assets,
@@ -755,8 +1038,10 @@ export default function Studio() {
         H,
         T: project.duration,
         fps,
+        audio: mix,
         onProgress: (k) => setExporting({ label: "Rendering", k }),
       });
+      if (mix && !audioIncluded) setNotice("Exported without sound: this browser can't encode audio into MP4. Chrome can.");
       const name = `${project.title.replace(/[^\w\- ]+/g, "").trim() || "animation"}.${ext}`;
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -797,6 +1082,7 @@ export default function Studio() {
   const seek = (t: number) => {
     tRef.current = t;
     setTime(t);
+    if (playingRef.current) mixer?.play(t);
   };
 
   const select = (id: string) => {
@@ -805,6 +1091,7 @@ export default function Studio() {
     setPlaying(true);
     setShowCode(false);
     setMode(id === "gaia" ? "new" : "edit");
+    setEnhanced(null);
     setProjectImgs({});
     setError(null);
   };
@@ -905,13 +1192,18 @@ export default function Studio() {
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
-  const animateButton = !isSignedIn ? (
+  const stopButton = (
+    <button className="primary stop" onClick={() => abortRef.current?.abort()}>
+      <span className="stop-square" /> Stop
+    </button>
+  );
+  const animateButton = busy ? stopButton : !isSignedIn ? (
     <SignIn>
       <button className="primary">Sign in to animate</button>
     </SignIn>
   ) : (
     <button className="primary" onClick={generate} disabled={!!busy || !canAsk || !fonts}>
-      {busy ? "Working…" : recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Apply changes"}
+      {recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
     </button>
   );
 
@@ -919,7 +1211,6 @@ export default function Studio() {
     <div className="app">
       <header className="top">
         <div className="brand">
-          <span className="brand-mark" />
           animate
         </div>
         <div className="top-right">
@@ -1051,6 +1342,20 @@ export default function Studio() {
             ))}
           </div>
 
+          {(!project.builtin || clips.length > 0) && (
+            <AudioStrip
+              clips={clips}
+              duration={project.duration}
+              busyLabel={audioBusy}
+              onChange={updateClip}
+              onRemove={removeClip}
+              onUpload={addAudioFiles}
+              onScore={() => scoreFilm()}
+              onRegenerate={regenerateClip}
+              canScore={!!isSignedIn && !project.builtin}
+            />
+          )}
+
           {!!project.videos?.length && (
             <>
               <div className="section-label">Saved videos</div>
@@ -1090,18 +1395,61 @@ export default function Studio() {
         </section>
 
         <aside className="panel">
-          <h1 className="headline">
-            Describe it. Drop in your files. <em>Get a film.</em>
-          </h1>
+          {mode === "edit" && !project.builtin ? (
+            <div className="thread-head">
+              <h1 className="headline small">{project.title}</h1>
+              <button className="linkish" onClick={() => setMode("new")}>
+                ＋ New film
+              </button>
+            </div>
+          ) : (
+            <div className="thread-head">
+              <h1 className="headline">
+                Describe it. Drop in your files. <em>Get a film.</em>
+              </h1>
+              {!project.builtin && (
+                <button className="linkish" onClick={() => setMode("edit")}>
+                  ← back to “{project.title}”
+                </button>
+              )}
+            </div>
+          )}
 
-          <div className="seg">
-            <button className={mode === "new" ? "on" : ""} onClick={() => setMode("new")}>
-              New animation
-            </button>
-            <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>
-              Edit this one
-            </button>
-          </div>
+          {mode === "edit" && !project.builtin && (
+            <div className="thread">
+              {(project.thread ?? []).length === 0 && <p className="hint">Tell animate what to change. Every reply is a new version you can go back to.</p>}
+              {(project.thread ?? []).map((m) => (
+                <div key={m.id} className={`thread-msg ${m.role}`}>
+                  <span>{m.text}</span>
+                  {m.role === "assistant" && m.codeBefore && (
+                    <button
+                      className="linkish"
+                      title="Go back to the version before this change"
+                      onClick={() => {
+                        const before = m.codeBefore!;
+                        upsert(
+                          {
+                            ...project,
+                            code: before,
+                            thread: [...(project.thread ?? []), { id: uid(), role: "assistant", text: "Went back to the earlier version.", at: Date.now(), codeBefore: project.code }],
+                          },
+                          true,
+                        );
+                        tRef.current = 0;
+                      }}
+                    >
+                      revert
+                    </button>
+                  )}
+                </div>
+              ))}
+              {busy && (
+                <div className="thread-msg assistant working">
+                  <span className="dot" /> {busy.label}
+                </div>
+              )}
+            </div>
+          )}
 
           <div
             className={`composer${drag ? " drag" : ""}${enhanced ? " enhanced" : ""}`}
@@ -1139,7 +1487,7 @@ export default function Studio() {
               style={enhanced ? { minHeight: 300 } : undefined}
               placeholder={
                 mode === "new"
-                  ? "Paste a company link, or describe your film: a launch film for our app, start on the logo, three features, end on the URL…"
+                  ? "Paste a company link, drop a video to recreate, or describe your film: a launch film for our app, start on the logo, three features, end on the URL…"
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />

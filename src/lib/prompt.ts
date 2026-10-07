@@ -127,7 +127,7 @@ ${GAIA_SCENE.trim()}
 \`\`\`
 
 # Output format
-Reply with a short title in <title></title> tags, then the scene body in a single \`\`\`js code block, and nothing else. No function wrapper and no exports: just the body.`;
+Reply with a short title in <title></title> tags, then one plain sentence in <note></note> tags telling the user what you made or changed (no jargon, no code talk), then the scene body in a single \`\`\`js code block, and nothing else. No function wrapper and no exports: just the body.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Recreate mode: a reference video and no brief means "rebuild this video".

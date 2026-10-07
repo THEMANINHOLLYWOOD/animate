@@ -106,8 +106,9 @@ export async function exportVideo(opts: {
   fps: number;
   onProgress?: (f: number) => void;
   signal?: AbortSignal;
-}): Promise<{ blob: Blob; ext: string }> {
-  const { scene, fonts, assets, W, H, T, fps, onProgress, signal } = opts;
+  audio?: AudioBuffer | null; // rendered mix; muxed as AAC when the browser can encode it
+}): Promise<{ blob: Blob; ext: string; audioIncluded: boolean }> {
+  const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio } = opts;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
@@ -118,12 +119,33 @@ export async function exportVideo(opts: {
   const codec = await pickCodec(W, H, fps);
   if (!codec) return exportRealtime({ ...opts, canvas, renderer: r });
 
+  const aac = audio && typeof AudioEncoder !== "undefined" ? await pickAudioCodec(audio) : null;
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: "avc", width: W, height: H, frameRate: fps },
+    ...(aac ? { audio: { codec: "aac", numberOfChannels: aac.numberOfChannels, sampleRate: aac.sampleRate } } : {}),
     fastStart: "in-memory",
   });
   let failure: any = null;
+
+  // Audio first: encode the whole mix in one pass (it's small next to the video).
+  if (aac && audio) {
+    const aenc = new AudioEncoder({ output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), error: (e) => (failure = e) });
+    aenc.configure(aac);
+    const chans = aac.numberOfChannels;
+    const frameLen = 1024 * 20;
+    const planar = new Float32Array(frameLen * chans);
+    for (let off = 0; off < audio.length; off += frameLen) {
+      const n = Math.min(frameLen, audio.length - off);
+      for (let c = 0; c < chans; c++) planar.set(audio.getChannelData(Math.min(c, audio.numberOfChannels - 1)).subarray(off, off + n), c * n);
+      const data = new AudioData({ format: "f32-planar", sampleRate: aac.sampleRate, numberOfFrames: n, numberOfChannels: chans, timestamp: Math.round((off / aac.sampleRate) * 1e6), data: planar.subarray(0, n * chans) });
+      aenc.encode(data);
+      data.close();
+    }
+    await aenc.flush();
+    aenc.close();
+    if (failure) throw failure;
+  }
   const enc = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => (failure = e),
@@ -147,7 +169,16 @@ export async function exportVideo(opts: {
   if (failure) throw failure;
   muxer.finalize();
   onProgress?.(1);
-  return { blob: new Blob([muxer.target.buffer], { type: "video/mp4" }), ext: "mp4" };
+  return { blob: new Blob([muxer.target.buffer], { type: "video/mp4" }), ext: "mp4", audioIncluded: !!aac };
+}
+
+async function pickAudioCodec(audio: AudioBuffer): Promise<AudioEncoderConfig | null> {
+  const config: AudioEncoderConfig = { codec: "mp4a.40.2", sampleRate: audio.sampleRate, numberOfChannels: Math.min(2, audio.numberOfChannels), bitrate: 160_000 };
+  try {
+    return (await AudioEncoder.isConfigSupported(config)).supported ? config : null;
+  } catch {
+    return null;
+  }
 }
 
 async function pickCodec(W: number, H: number, fps: number): Promise<VideoEncoderConfig | null> {
@@ -179,7 +210,7 @@ async function exportRealtime(opts: {
   renderer: Renderer;
   onProgress?: (f: number) => void;
   signal?: AbortSignal;
-}): Promise<{ blob: Blob; ext: string }> {
+}): Promise<{ blob: Blob; ext: string; audioIncluded: boolean }> {
   const { scene, assets, T, fps, canvas, renderer, onProgress, signal } = opts;
   const stream = canvas.captureStream(fps);
   const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m))!;
@@ -203,5 +234,5 @@ async function exportRealtime(opts: {
   });
   rec.stop();
   await done;
-  return { blob: new Blob(chunks, { type: mime }), ext: mime.startsWith("video/mp4") ? "mp4" : "webm" };
+  return { blob: new Blob(chunks, { type: mime }), ext: mime.startsWith("video/mp4") ? "mp4" : "webm", audioIncluded: false };
 }

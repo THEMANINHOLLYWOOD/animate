@@ -24,6 +24,7 @@ type Body = {
   error?: string;
   brands?: BrandKit[];
   recreate?: boolean;
+  history?: { role: "user" | "assistant"; text: string }[];
 };
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
         text: `${spec}${treatment}\n\nCurrent scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\n${
           body.error
             ? `This scene throws at runtime: ${body.error}\nFix it while keeping the design.`
-            : `Revise the scene: ${body.prompt}\nKeep everything the request doesn't ask to change.`
+            : `${body.history?.length ? `Conversation so far:\n${body.history.map((m) => `${m.role === "user" ? "User" : "animate"}: ${m.text}`).join("\n")}\n\n` : ""}Revise the scene: ${body.prompt}\nKeep everything the request doesn't ask to change.`
         }`,
       });
     } else {
@@ -129,7 +130,8 @@ export async function POST(req: Request) {
               thinking: { type: "adaptive", display: "summarized" },
               // Director plans at high effort (~1 min); the animator writes code at medium
               // so a full film fits inside the function time limit.
-              output_config: { effort: body.stage === "direct" ? "high" : "medium" },
+              // ANIMATE_EFFORT=high gives richer films but needs a longer function limit (Vercel Pro).
+              output_config: { effort: body.stage === "direct" ? "high" : ((process.env.ANIMATE_EFFORT as "medium" | "high") || "medium") },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
               system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],

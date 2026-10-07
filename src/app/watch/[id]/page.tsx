@@ -28,7 +28,6 @@ export default async function Watch({ params }: { params: Promise<{ id: string }
     <main className="watch">
       <header className="watch-top">
         <Link href="/" className="brand">
-          <span className="brand-mark" />
           animate
         </Link>
       </header>
