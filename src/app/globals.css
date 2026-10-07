@@ -1411,3 +1411,50 @@ input[type="range"]:active::-webkit-slider-thumb {
   border-style: dashed;
   color: var(--stone);
 }
+
+/* ── Explainer brief + captions ────────────────────── */
+
+.explainer {
+  padding: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.explainer-head {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--stone);
+}
+
+.explainer input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--ivory);
+  outline: 0;
+}
+
+.explainer input:focus {
+  border-color: var(--ink);
+}
+
+.captions-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--slate);
+}
+
+.caption-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

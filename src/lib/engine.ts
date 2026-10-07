@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ArrayBufferTarget, Muxer } from "mp4-muxer";
 import { makeKit, type Fonts } from "./kit";
+import { cueAt, drawCaption, type Cue } from "./captions";
 
 export type Aspect = "16:9" | "9:16" | "1:1";
 export const SIZES: Record<Aspect, [number, number]> = {
@@ -93,7 +94,48 @@ export function probeScene(scene: SceneFn, fonts: Fonts, W: number, H: number, a
       return `At t=${t.toFixed(2)}s (p=${(t / T).toFixed(3)}): ${e?.message ?? String(e)}`;
     }
   }
+  // Determinism: the same t must paint the same frame (frames export out of order).
+  const ctx = c.getContext("2d")!;
+  const snap = () => {
+    const d = ctx.getImageData(0, 0, W, H).data;
+    let h = 0;
+    for (let i = 0; i < d.length; i += 97) h = (h * 31 + d[i]) >>> 0;
+    return h;
+  };
+  const tMid = T * 0.47;
+  r.draw(scene, tMid, T, assets);
+  const a = snap();
+  r.draw(scene, T * 0.9, T, assets);
+  r.draw(scene, tMid, T, assets);
+  if (snap() !== a) return `The frame at t=${tMid.toFixed(2)}s differs between two renders: the scene must be a pure function of t (no Math.random, Date, or state kept between frames).`;
   return null;
+}
+
+// Contact sheets for the critique loop: frames in order with time labels, as JPEG base64.
+export function contactSheet(scene: SceneFn, fonts: Fonts, W: number, H: number, assets: Assets, T: number, times: number[], tileW: number, cols: number) {
+  const src = document.createElement("canvas");
+  src.width = W;
+  src.height = H;
+  const r = new Renderer(src.getContext("2d")!, W, H, fonts);
+  const tileH = Math.round((tileW * H) / W);
+  const rows = Math.ceil(times.length / cols);
+  const sheet = document.createElement("canvas");
+  sheet.width = tileW * cols;
+  sheet.height = tileH * rows;
+  const g = sheet.getContext("2d")!;
+  g.fillStyle = "#888";
+  g.fillRect(0, 0, sheet.width, sheet.height);
+  times.forEach((t, i) => {
+    r.draw(scene, t, T, assets);
+    const x = (i % cols) * tileW, y = Math.floor(i / cols) * tileH;
+    g.drawImage(src, x + 1, y + 1, tileW - 2, tileH - 2);
+    g.fillStyle = "rgba(0,0,0,0.6)";
+    g.fillRect(x + 4, y + 4, 54, 18);
+    g.fillStyle = "#fff";
+    g.font = "12px monospace";
+    g.fillText(`${t.toFixed(1)}s`, x + 8, y + 17);
+  });
+  return sheet.toDataURL("image/jpeg", 0.8).split(",")[1];
 }
 
 export async function exportVideo(opts: {
@@ -107,8 +149,9 @@ export async function exportVideo(opts: {
   onProgress?: (f: number) => void;
   signal?: AbortSignal;
   audio?: AudioBuffer | null; // rendered mix; muxed as AAC when the browser can encode it
+  captions?: Cue[]; // burned in when given
 }): Promise<{ blob: Blob; ext: string; audioIncluded: boolean }> {
-  const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio } = opts;
+  const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio, captions } = opts;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
@@ -156,6 +199,10 @@ export async function exportVideo(opts: {
     if (signal?.aborted) throw new DOMException("Export cancelled", "AbortError");
     if (failure) throw failure;
     r.draw(scene, i / fps, T, assets);
+    if (captions?.length) {
+      const cue = cueAt(captions, i / fps);
+      if (cue) drawCaption(ctx, W, H, cue.text, fonts.sans);
+    }
     const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
     enc.encode(frame, { keyFrame: i % (fps * 2) === 0 });
     frame.close();

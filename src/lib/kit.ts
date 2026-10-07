@@ -441,6 +441,29 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     return 1 - Math.exp(-damping * 10 * k) * Math.cos(freq * Math.PI * 2 * k * (1 - damping * 0.3));
   }
 
+  // Closed-form damped spring 0→1 in seconds (stiffness k, damping d), pure in t.
+  function springT(t: number, k = 170, d = 26) {
+    if (t <= 0) return 0;
+    const w0 = Math.sqrt(k);
+    const z = d / (2 * w0);
+    if (z < 1) {
+      const wd = w0 * Math.sqrt(1 - z * z);
+      return 1 - Math.exp(-z * w0 * t) * (Math.cos(wd * t) + ((z * w0) / wd) * Math.sin(wd * t));
+    }
+    return 1 - Math.exp(-w0 * t) * (1 + w0 * t);
+  }
+
+  // A value that changes target several times: one spring per change, summed.
+  // keys: [[time, value], ...] sorted by time. Stays continuous and seekable.
+  function track(t: number, keys: [number, number][], k = 170, d = 26) {
+    if (!keys.length) return 0;
+    let v = keys[0][1];
+    for (let i = 1; i < keys.length; i++) v += (keys[i][1] - keys[i - 1][1]) * springT(t - keys[i][0], k, d);
+    return v;
+  }
+
+  const loopT = (t: number, period: number) => ((t % period) + period) % period;
+
   // Per-item progress for n staggered items sharing one progress value k.
   function stagger(k: number, i: number, n: number, spread = 0.6, e: Ease = ease.outQuint) {
     const start = n > 1 ? (i / (n - 1)) * spread : 0;
@@ -476,6 +499,9 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
   return {
     noise,
     spring,
+    springT,
+    track,
+    loopT,
     stagger,
     camera,
     mask,

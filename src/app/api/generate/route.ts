@@ -26,7 +26,22 @@ type Body = {
   recreate?: boolean;
   history?: { role: "user" | "assistant"; text: string }[];
   notes?: string; // extra instructions for the animator (e.g. elements drawn as separate layers)
+  critique?: string; // problems found by the review of rendered stills
+  continuation?: string; // text produced so far by a run the time limit cut off
 };
+
+// Hobby functions stop at 300s; Pro allows more (set ANIMATE_FUNCTION_SECONDS=780 there).
+const LIMIT_MS = (Number(process.env.ANIMATE_FUNCTION_SECONDS) || 285) * 1000;
+
+// How hard the animator thinks has to fit the function limit: on a 5-minute limit a
+// 10 s film at medium effort takes ~2.5 min, a 20 s film doesn't fit at all.
+// ANIMATE_EFFORT overrides (set it with a longer limit on Pro).
+function animatorEffort(duration: number): "low" | "medium" | "high" {
+  const forced = process.env.ANIMATE_EFFORT as "low" | "medium" | "high" | undefined;
+  if (forced) return forced;
+  if (LIMIT_MS >= 600_000) return duration > 30 ? "medium" : "high";
+  return duration > 12 ? "low" : "medium";
+}
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
 
@@ -93,6 +108,8 @@ export async function POST(req: Request) {
         text: `${spec}${treatment}\n\nCurrent scene:\n\`\`\`js\n${body.previousCode}\n\`\`\`\n\n${
           body.error
             ? `This scene throws at runtime: ${body.error}\nFix it while keeping the design.`
+            : body.critique
+              ? `A motion director reviewed stills of this scene and found these problems:\n${body.critique}\n\nFix each one precisely (the element, the time, the change). Keep everything else exactly as it is: same concept, same copy, same timing elsewhere.`
             : `${body.history?.length ? `Conversation so far:\n${body.history.map((m) => `${m.role === "user" ? "User" : "animate"}: ${m.text}`).join("\n")}\n\n` : ""}Revise the scene: ${body.prompt}\nKeep everything the request doesn't ask to change.`
         }`,
       });
@@ -111,8 +128,15 @@ export async function POST(req: Request) {
     async start(controller) {
       // Hobby-plan functions stop at 300s; end cleanly a little before that.
       const deadline = new AbortController();
-      const timer = setTimeout(() => deadline.abort(), 285_000);
+      const timer = setTimeout(() => deadline.abort(), LIMIT_MS);
+      // Keep the connection alive through long silent stretches (thinking).
+      const ping = setInterval(() => {
+        try {
+          send(controller, { type: "ping" });
+        } catch {}
+      }, 15_000);
       const signal = AbortSignal.any([req.signal, deadline.signal]);
+      let acc = "";
       try {
         // The director researches any company or link in the brief with web search + fetch.
         const research = body.stage === "direct" && !body.recreate && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
@@ -123,6 +147,15 @@ export async function POST(req: Request) {
             ]
           : [];
         const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
+        if (body.continuation) {
+          // Resume a cut-off run: replay what was produced and ask for the rest only.
+          const tail = body.continuation.slice(-240);
+          messages.push({ role: "assistant", content: body.continuation });
+          messages.push({
+            role: "user",
+            content: `Your previous message was cut off by a time limit. Continue from exactly where it stopped. It currently ends with:\n<<<\n${tail}\n>>>\nOutput only the remaining text, starting with the very next character. Do not repeat anything, do not add a preamble, and finish the scene (close the code block).`,
+          });
+        }
         let msg: Anthropic.Beta.BetaMessage;
         for (let turn = 0; ; turn++) {
           const s = client.beta.messages.stream(
@@ -132,8 +165,10 @@ export async function POST(req: Request) {
               thinking: { type: "adaptive", display: "summarized" },
               // Director plans at high effort (~1 min); the animator writes code at medium
               // so a full film fits inside the function time limit.
-              // ANIMATE_EFFORT=high gives richer films but needs a longer function limit (Vercel Pro).
-              output_config: { effort: body.stage === "direct" ? "high" : ((process.env.ANIMATE_EFFORT as "medium" | "high") || "medium") },
+              // Repairs and review fixes start from existing code, so they can afford medium effort.
+              output_config: {
+                effort: body.stage === "direct" ? "high" : body.error || body.critique ? (animatorEffort(body.duration) === "low" ? "medium" : animatorEffort(body.duration)) : animatorEffort(body.duration),
+              },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
               system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
@@ -142,7 +177,10 @@ export async function POST(req: Request) {
             },
             { signal },
           );
-          s.on("text", (delta) => send(controller, { type: "delta", text: delta }));
+          s.on("text", (delta) => {
+            acc += delta;
+            send(controller, { type: "delta", text: delta });
+          });
           // Summarised reasoning, shown in the progress panel so users can watch Claude think.
           s.on("thinking", (delta) => send(controller, { type: "thinking", text: delta }));
           s.on("contentBlock", (block) => {
@@ -169,8 +207,13 @@ export async function POST(req: Request) {
           send(controller, { type: "done" });
         }
       } catch (e) {
+        if (deadline.signal.aborted && body.stage === "animate" && acc.length > 2000) {
+          // Hand back the partial scene; the client asks for a continuation.
+          send(controller, { type: "partial", text: acc });
+          return;
+        }
         const message = deadline.signal.aborted
-          ? "This one took longer than the 5-minute limit. Try again, or shorten the brief or the film length."
+          ? `This one took longer than the ${Math.round(LIMIT_MS / 60000)}-minute limit this plan allows. Try a shorter film (under 15 s works reliably), a simpler brief, or a longer limit (Vercel Pro).`
           : e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))
             ? "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
             : e instanceof Anthropic.RateLimitError
@@ -185,6 +228,7 @@ export async function POST(req: Request) {
         send(controller, { type: "error", message });
       } finally {
         clearTimeout(timer);
+        clearInterval(ping);
         controller.close();
       }
     },

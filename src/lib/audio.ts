@@ -14,6 +14,7 @@ export type AudioClip = {
   text?: string; // voice lines
   prompt?: string; // sfx / music prompt
   words?: { w: string; s: number; e: number }[]; // voice word timings (film seconds)
+  beats?: { bpm: number; beats: number[]; downbeats: number[]; hits: number[] }; // music grid (film seconds)
 };
 
 let ctx: AudioContext | null = null;
@@ -147,10 +148,12 @@ export class Mixer {
     const ac = audioContext();
     if (ac.state === "suspended") ac.resume();
     const now = ac.currentTime + 0.02;
+    const ducks = duckWindows(this.loaded.map((l) => l.clip));
     for (const { clip, buffer } of this.loaded) {
       if (clip.muted) continue;
       const g = ac.createGain();
       g.gain.value = clip.gain;
+      if (isBed(clip)) scheduleDucking(g.gain, clip.gain, ducks, now - t);
       g.connect(this.master);
       const s = ac.createBufferSource();
       s.buffer = buffer;
@@ -175,13 +178,45 @@ export class Mixer {
 
 // ── Offline mix for export ──────────────────────────────────────────────
 
+// ── Ducking: the bed (music / background) dips under the voice ──────────
+
+const isBed = (c: AudioClip) => c.kind === "music" || c.kind === "background";
+const DUCK = 0.35; // bed level under voice
+const RAMP = 0.18; // seconds
+
+// Film-time windows where a voice clip is active.
+function duckWindows(clips: AudioClip[]) {
+  return clips
+    .filter((c) => c.kind === "voice" && !c.muted)
+    .map((c) => [c.start, c.start + c.duration] as [number, number])
+    .sort((a, b) => a[0] - b[0]);
+}
+
+// Gain automation in audio-context time; `base` maps film time 0 onto the context clock.
+function scheduleDucking(param: AudioParam, gain: number, windows: [number, number][], base: number) {
+  if (!windows.length) return;
+  param.setValueAtTime(gain, Math.max(0, base));
+  for (const [s, e] of windows) {
+    const a = base + s - RAMP, b = base + s, c = base + e, d = base + e + RAMP;
+    if (d < 0) continue;
+    param.setValueAtTime(gain, Math.max(0, a));
+    param.linearRampToValueAtTime(gain * DUCK, Math.max(0, b));
+    param.setValueAtTime(gain * DUCK, Math.max(0, c));
+    param.linearRampToValueAtTime(gain, Math.max(0, d));
+  }
+}
+
+// ── Offline mix for export ──────────────────────────────────────────────
+
 export async function renderMix(loaded: Loaded[], duration: number, sampleRate = 48000): Promise<AudioBuffer | null> {
   const active = loaded.filter((l) => !l.clip.muted);
   if (!active.length) return null;
   const off = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
+  const ducks = duckWindows(active.map((l) => l.clip));
   for (const { clip, buffer } of active) {
     const g = off.createGain();
     g.gain.value = clip.gain;
+    if (isBed(clip)) scheduleDucking(g.gain, clip.gain, ducks, 0);
     g.connect(off.destination);
     const s = off.createBufferSource();
     s.buffer = buffer;
@@ -191,21 +226,45 @@ export async function renderMix(loaded: Loaded[], duration: number, sampleRate =
     s.start(Math.max(0, clip.start), 0, dur);
   }
   const mix = await off.startRendering();
-  // Normalise quietly-mastered sources up to -3 dBFS peak; never push a loud mix hotter.
+  normalizeLoudness(mix);
+  return mix;
+}
+
+// Delivery loudness: about -16 LUFS integrated (approximated by RMS over the
+// louder half of the programme) with true peaks no higher than -1.5 dBFS.
+function normalizeLoudness(mix: AudioBuffer) {
+  const n = mix.length;
+  const win = Math.max(1, Math.round(mix.sampleRate * 0.4));
+  const blocks: number[] = [];
   let peak = 0;
-  for (let c = 0; c < mix.numberOfChannels; c++) {
-    const d = mix.getChannelData(c);
-    for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
-  }
-  const target = Math.pow(10, -3 / 20);
-  if (peak > 0 && peak < target) {
-    const k = target / peak;
+  for (let start = 0; start < n; start += win) {
+    let sum = 0, count = 0;
     for (let c = 0; c < mix.numberOfChannels; c++) {
       const d = mix.getChannelData(c);
-      for (let i = 0; i < d.length; i++) d[i] *= k;
+      const end = Math.min(n, start + win);
+      for (let i = start; i < end; i++) {
+        sum += d[i] * d[i];
+        count++;
+        const a = Math.abs(d[i]);
+        if (a > peak) peak = a;
+      }
     }
+    if (count) blocks.push(sum / count);
   }
-  return mix;
+  if (!blocks.length || peak === 0) return;
+  // Gate out silence: measure the louder half of blocks.
+  const sorted = [...blocks].sort((a, b) => b - a);
+  const loud = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2)));
+  const rms = Math.sqrt(loud.reduce((a, b) => a + b, 0) / loud.length);
+  const targetRms = Math.pow(10, -16 / 20);
+  const peakCap = Math.pow(10, -1.5 / 20);
+  let k = targetRms / Math.max(rms, 1e-6);
+  if (peak * k > peakCap) k = peakCap / peak;
+  if (Math.abs(k - 1) < 0.02) return;
+  for (let c = 0; c < mix.numberOfChannels; c++) {
+    const d = mix.getChannelData(c);
+    for (let i = 0; i < n; i++) d[i] *= k;
+  }
 }
 
 export const canEncodeAac = async () => {

@@ -68,7 +68,7 @@ export const SOUND_PLAN_SYSTEM = `You are the sound designer for a short motion-
 
 - voice: a voiceover script, split into lines that each start at a beat. Speak at about 2.5 words per second, so a line must fit inside its beat: never more than (beat length in seconds × 2.5) words. Prefer short, clear lines; often the on-screen copy or a paraphrase of it. Leave voice empty when the film is wordless or a voiceover would fight the on-screen type.
 - music: one brief for the whole film: genre, instruments, tempo, mood and how it builds, matched to the film's energy and length. Null only if the film should be silent.
-- sfx: tasteful cues on moments of motion: transitions, reveals, counters, impacts, risers before a payoff. Describe them for a sound generator (texture, length, character). Keep them subtle: motion graphics sound design, not an action trailer. 4–10 cues for a 10–30 s film.
+- sfx: soft UI-style cues only on actions that carry meaning, plus one returning motif cue on the key idea when it helps. Tasteful cues on moments of motion: transitions, reveals, counters, impacts, risers before a payoff. Describe them for a sound generator (texture, length, character). Keep them subtle: motion graphics sound design, not an action trailer. 4–10 cues for a 10–30 s film.
 - musicGuess: when a transcript or a reference's text clearly identifies a real song (lyrics, a named track, a known jingle), name it with your confidence; otherwise null. Never guess from vibe alone.
 - notes: one or two sentences for the user on the overall sound direction.
 

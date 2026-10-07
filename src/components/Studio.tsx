@@ -25,6 +25,10 @@ import { Doc, type Doc as DocT } from "@/editor/doc/schema";
 import { retime } from "@/editor/doc/ops";
 import { docScene } from "@/editor/render/renderDoc";
 import { elementsSummary, elementsToDoc, type ElementsPlan } from "@/lib/elements";
+import { cuesFromClips, toSrt } from "@/lib/captions";
+import { contactSheet } from "@/lib/engine";
+import { bedBeats, renderBed, specFromPlan } from "@/lib/synth";
+import { detectBeats, snapToGrid } from "@/lib/beats";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 import { aspectFor, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
@@ -163,27 +167,65 @@ async function streamStage(
   const dec = new TextDecoder();
   let buf = "";
   let text = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop()!;
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const ev = JSON.parse(line);
-      if (ev.type === "delta") {
-        text += ev.text;
-        onText(text);
-      } else if (ev.type === "reset") {
-        text = "";
-        onText(text);
-      } else if (ev.type === "status") onStatus?.(ev.text);
-      else if (ev.type === "thinking") onThinking?.(ev.text);
-      else if (ev.type === "error") throw new Error(ev.message);
+  let finished = false;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop()!;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "delta") {
+          text += ev.text;
+          onText(text);
+        } else if (ev.type === "reset") {
+          text = "";
+          onText(text);
+        } else if (ev.type === "status") onStatus?.(ev.text);
+        else if (ev.type === "thinking") onThinking?.(ev.text);
+        else if (ev.type === "partial") throw new PartialOutput(ev.text);
+        else if (ev.type === "done") finished = true;
+        else if (ev.type === "error") throw new Error(ev.message);
+      }
     }
+  } catch (e) {
+    if (e instanceof PartialOutput || signal.aborted) throw e;
+    // The connection dropped. If a complete answer already arrived, keep it.
+    const complete = /```[\s\S]*```\s*$/.test(text.trim()) || (text.length > 400 && !/```/.test(text));
+    if (!finished && !complete) throw new Error(`The connection dropped mid-way (${(e as Error).message}). Try again.`);
   }
   return text;
+}
+
+// A run the function time limit cut short; the text so far is resumable.
+class PartialOutput extends Error {
+  constructor(public text: string) {
+    super("partial");
+  }
+}
+
+// The animator stage with automatic continuation when the time limit cuts it off.
+async function animateStage(payload: Record<string, unknown>, signal: AbortSignal, onText: (s: string) => void, onThinking?: (d: string) => void, onResume?: (n: number) => void) {
+  let sofar = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const rest = await streamStage({ ...payload, continuation: sofar || undefined }, signal, (s) => onText(sofar + s), undefined, onThinking);
+      return sofar + rest;
+    } catch (e) {
+      if (e instanceof PartialOutput) {
+        if (attempt === 2) throw e;
+        sofar += e.text;
+        onResume?.(attempt + 1);
+        continue;
+      }
+      if (/connection dropped/.test((e as Error).message) && attempt === 0) continue; // one retry
+      throw e;
+    }
+  }
+  return sofar;
 }
 
 export default function Studio() {
@@ -209,6 +251,9 @@ export default function Studio() {
   const [favOnly, setFavOnly] = useState(false);
   const [audioBlobs, setAudioBlobs] = useState<Record<string, Blob>>({});
   const [audioBusy, setAudioBusy] = useState<string | null>(null);
+  const [burnCaptions, setBurnCaptions] = useState(true);
+  // Explainer brief: who it's for, what they believe, what they should be able to do after.
+  const [explainer, setExplainer] = useState<null | { audience: string; believe: string; outcome: string }>(null);
   // Stems pulled from a reference video (recreate mode), waiting for the film to exist.
   const pendingStems = useRef<{ clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -338,6 +383,7 @@ export default function Studio() {
 
   const clips = useMemo(() => project.audio ?? [], [project.audio]);
   const { loaded: loadedAudio, mixer } = useFilmAudio(clips, audioBlobs);
+  const cues = useMemo(() => cuesFromClips(clips), [clips]);
   const mixerRef = useRef(mixer);
   useEffect(() => {
     mixerRef.current = mixer;
@@ -518,6 +564,7 @@ export default function Studio() {
 
   // After a build, the brief's attachments have done their job.
   const clearAttachments = () => {
+    setExplainer(null);
     setFiles((list) => {
       for (const f of list) if (f.url) URL.revokeObjectURL(f.url);
       return [];
@@ -658,6 +705,19 @@ export default function Studio() {
     );
   }
 
+  // Explainer films carry the audience, their current belief and the outcome into the brief.
+  const withExplainer = (brief: string) => {
+    if (!explainer || mode !== "new") return brief;
+    const lines = [
+      `Topic: ${brief}`,
+      explainer.audience && `Audience: ${explainer.audience}`,
+      explainer.believe && `What they already believe: ${explainer.believe}`,
+      explainer.outcome && `After watching they can: ${explainer.outcome}`,
+      "This is an explainer: leave the viewer with one new understanding. Use the explainer arc.",
+    ].filter(Boolean);
+    return lines.join("\n");
+  };
+
   // Recreate mode: a reference video and no brief means "copy this video".
   const filmFor = (recreating: boolean) => {
     const v = videos[0];
@@ -693,7 +753,7 @@ export default function Studio() {
     let ok = false;
     try {
       const recreating = recreate;
-      const brief = prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.");
+      const brief = withExplainer(prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       const film = filmFor(recreating);
       const treatment = await direct(ac.signal, brief, await collectFiles(recreating), mode === "edit" && !project.builtin, film);
       setPrompt(treatment.trim());
@@ -775,7 +835,7 @@ export default function Studio() {
       const film = filmFor(recreating);
       const [fw, fh] = SIZES[film.aspect];
       const payloadFiles = await collectFiles(recreating);
-      const brief = enhanced?.brief ?? (prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
+      const brief = enhanced?.brief ?? withExplainer(prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       // Small edits go straight to the animator; new films always get a treatment first.
       // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
       if (editing && project.doc) {
@@ -817,7 +877,11 @@ export default function Studio() {
         history: editing ? (project.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
         notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
       };
-      let reply = parseScene(await streamStage(base, ac.signal, onText, undefined, think));
+      const resumed = (n: number) => {
+        note(`Hit the time limit; continuing from where it stopped (${n})`);
+        phase("Continuing the scene");
+      };
+      let reply = parseScene(await animateStage(base, ac.signal, onText, think, resumed));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
 
       // Dry-run across the timeline; ask for one repair if it throws.
@@ -837,6 +901,58 @@ export default function Studio() {
         phase("Fixing a runtime error");
         const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, ac.signal, onText, undefined, think));
         if (fixed.code) reply = { ...reply, code: fixed.code };
+      }
+
+      // Claude watches its own frames: score the stills, fix the worst problems, up to two rounds.
+      if (!editing) {
+        const sceneOf = (code: string) => (elementsPlan ? docScene(docFor(code)!) : compileScene(code));
+        for (let round = 1; round <= 2; round++) {
+          phase(round === 1 ? "Looking at its own frames" : "Looking again");
+          const n = Math.min(24, Math.max(8, Math.round(film.duration)));
+          const times = Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * film.duration);
+          const scene = sceneOf(reply.code);
+          const sheet = contactSheet(scene, fonts!, fw, fh, assets, film.duration, times, 320, 4);
+          const phone = contactSheet(scene, fonts!, fw, fh, assets, film.duration, times.filter((_, i) => i % 2 === 0), 200, 6);
+          const cr = await fetch("/api/critique", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ images: [{ name: "Contact sheet (in order)", data: sheet }, { name: "Phone-width strip", data: phone }], treatment, duration: film.duration, aspect: film.aspect }),
+            signal: ac.signal,
+          });
+          const cj = await cr.json();
+          if (!cr.ok) {
+            note(`Review skipped: ${cj.error}`);
+            break;
+          }
+          const scores = cj.scores as Record<string, number>;
+          note(`Scores · ${Object.entries(scores).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
+          const worst = (cj.problems as { t: number; issue: string; fix: string }[]).slice(0, 3);
+          const low = Math.min(...Object.entries(scores).filter(([k]) => k !== "sound").map(([, v]) => v));
+          if (low >= 8 || !worst.length) {
+            note(cj.verdict);
+            break;
+          }
+          worst.forEach((p) => note(`${p.t.toFixed(1)}s · ${p.issue}`));
+          phase(`Fixing the ${worst.length} worst problem${worst.length > 1 ? "s" : ""}`);
+          try {
+            const fixed = parseScene(
+              await animateStage(
+                { ...base, previousCode: reply.code, critique: worst.map((p) => `- at ${p.t.toFixed(1)}s: ${p.issue} → ${p.fix}`).join("\n"), files: [] },
+                ac.signal,
+                onText,
+                think,
+                resumed,
+              ),
+            );
+            if (fixed.code && !check(fixed.code)) reply = { ...reply, code: fixed.code };
+            else note("The fix didn't pass the frame check; keeping the previous version");
+          } catch (e) {
+            if ((e as Error).name === "AbortError") throw e;
+            // A failed fix never costs the film.
+            note(`Fix pass failed (${(e as Error).message.slice(0, 80)}); keeping the previous version`);
+            break;
+          }
+        }
       }
 
       const prev = editing && !project.builtin ? project : null;
@@ -947,8 +1063,30 @@ export default function Studio() {
       const added: AudioClip[] = [];
       for (const file of Array.from(list)) {
         const buf = await decodeAudio(file);
-        const kind: AudioClip["kind"] = /voice|vo\b|speech/i.test(file.name) ? "voice" : /sfx|fx|whoosh|hit/i.test(file.name) ? "sfx" : "music";
+        const kind: AudioClip["kind"] = /voice|vo\b|speech|narration/i.test(file.name) ? "voice" : /sfx|fx|whoosh|hit/i.test(file.name) ? "sfx" : "music";
         const clip: AudioClip = { id: uid(), kind, label: file.name.replace(/\.[^.]+$/, ""), start: 0, duration: Math.min(buf.duration, project.duration), gain: 1, muted: false, source: "upload" };
+        if (kind === "music") {
+          setAudioBusy(`Finding the beat in ${file.name}…`);
+          try {
+            clip.beats = detectBeats(buf);
+            clip.label += ` · ${Math.round(clip.beats.bpm)} BPM`;
+          } catch {}
+        }
+        if (kind === "voice") {
+          // Word timings give the track captions and let the bed duck under it.
+          setAudioBusy(`Transcribing ${file.name}…`);
+          const f = new FormData();
+          f.append("action", "transcribe");
+          f.append("audio", toWav(buf, true), "voice.wav");
+          const r = await fetch("/api/audio", { method: "POST", body: f });
+          if (r.ok) {
+            const j = await r.json();
+            if (j.words?.length) {
+              clip.words = j.words;
+              clip.text = j.text;
+            }
+          }
+        }
         added.push(await storeClipBlob(project.id, clip, file));
       }
       upsert({ ...project, audio: [...clips, ...added] }, true);
@@ -1033,7 +1171,19 @@ export default function Studio() {
       const r = await fetch("/api/audio-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
+        body: JSON.stringify({
+          brief: target.prompt,
+          treatment: target.treatment,
+          duration: target.duration,
+          aspect: target.aspect,
+          recreate: !!opts.recreate,
+          transcript: opts.transcript,
+          hasBackground: !!opts.hasBackground,
+          grid: (() => {
+            const m = (target.audio ?? []).find((c) => c.kind === "music" && c.beats);
+            return m?.beats ? `Music grid: ${Math.round(m.beats.bpm)} BPM; downbeats at ${m.beats.downbeats.slice(0, 16).map((t) => (t + m.start).toFixed(2)).join(", ")}s. Place cues on beats or downbeats.` : undefined;
+          })(),
+        }),
       });
       let plan = await r.json();
       if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
@@ -1122,8 +1272,33 @@ export default function Studio() {
           note("Music composed");
         } else {
           const mj = await mr.json().catch(() => ({}));
-          note(`Music: ${mj.error ?? "unavailable"}. Add your own track with “＋ Add audio”.`);
+          note(`Music: ${mj.error ?? "unavailable"}; composing a synthesized bed instead`);
+          setAudioBusy("Synthesizing a music bed…");
+          const spec = specFromPlan(plan.music.prompt, plan.music.energy ?? "medium", target.id.split("").reduce((a, c) => a + c.charCodeAt(0), 7));
+          const buf = await renderBed(spec, T);
+          const blob = toWav(buf);
+          const grid = bedBeats(spec, T);
+          const clip: AudioClip = { id: uid(), kind: "music", label: `Synth bed · ${spec.bpm} BPM`, start: 0, duration: T, gain: voiceLines.length ? 0.5 : 0.7, muted: false, source: "generated", prompt: plan.music.prompt, beats: { ...grid, hits: grid.downbeats } };
+          blobsNew[clip.id] = blob;
+          made.push(clip);
+          note(`Synth bed at ${spec.bpm} BPM, ${spec.mode}`);
         }
+      }
+
+      // Snap effects to the music's beat grid (an uploaded track's detected beats, or the bed's).
+      const gridClip = [...made, ...(target.audio ?? [])].find((c) => c.kind === "music" && c.beats && !c.muted);
+      if (gridClip?.beats) {
+        const grid = [...gridClip.beats.beats, ...gridClip.beats.hits].map((t) => t + gridClip.start);
+        let snapped = 0;
+        for (const c of made) {
+          if (c.kind !== "sfx") continue;
+          const t = snapToGrid(c.start, grid, 0.15);
+          if (t !== c.start) {
+            c.start = t;
+            snapped++;
+          }
+        }
+        if (snapped) note(`${snapped} cue${snapped === 1 ? "" : "s"} snapped to the beat`);
       }
 
       setAudioBusy("Saving sound…");
@@ -1177,6 +1352,7 @@ export default function Studio() {
         T: project.duration,
         fps,
         audio: mix,
+        captions: burnCaptions ? cues : undefined,
         onProgress: (k) => setExporting({ label: "Rendering", k }),
       });
       if (mix && !audioIncluded) setNotice("Exported without sound: this browser can't encode audio into MP4. Chrome can.");
@@ -1519,6 +1695,20 @@ export default function Studio() {
               canScore={!!isSignedIn && !project.builtin}
             />
           )}
+          {cues.length > 0 && (
+            <div className="captions-row">
+              <label className="caption-toggle">
+                <input type="checkbox" checked={burnCaptions} onChange={(e) => setBurnCaptions(e.target.checked)} /> Burn captions into the export ({cues.length} lines)
+              </label>
+              <a
+                className="linkish"
+                href={`data:text/plain;charset=utf-8,${encodeURIComponent(toSrt(cues))}`}
+                download={`${project.title.replace(/[^\w\- ]+/g, "").trim() || "captions"}.srt`}
+              >
+                Download .srt
+              </a>
+            </div>
+          )}
 
           {!!project.videos?.length && (
             <>
@@ -1657,6 +1847,27 @@ export default function Studio() {
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />
+            {mode === "new" && (
+              <div className="explainer">
+                {explainer ? (
+                  <>
+                    <div className="explainer-head">
+                      <span>Explainer brief</span>
+                      <button className="linkish" onClick={() => setExplainer(null)}>
+                        remove
+                      </button>
+                    </div>
+                    <input value={explainer.audience} onChange={(e) => setExplainer({ ...explainer, audience: e.target.value })} placeholder="Who is it for? e.g. first-time founders" />
+                    <input value={explainer.believe} onChange={(e) => setExplainer({ ...explainer, believe: e.target.value })} placeholder="What do they believe today that's wrong or incomplete?" />
+                    <input value={explainer.outcome} onChange={(e) => setExplainer({ ...explainer, outcome: e.target.value })} placeholder="After watching they can… (one sentence)" />
+                  </>
+                ) : (
+                  <button className="linkish" onClick={() => setExplainer({ audience: "", believe: "", outcome: "" })}>
+                    Make it an explainer ▸
+                  </button>
+                )}
+              </div>
+            )}
             {(brands.length > 0 || reading.length > 0 || videos.length > 0) && (
               <div className="brands">
                 {videos.map((v) => (
