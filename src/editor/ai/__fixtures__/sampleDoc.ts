@@ -1,6 +1,6 @@
-import { Doc, type Ease, type Layer, Layer as LayerSchema, type Value, newId } from "../doc/schema";
+import { Doc, type Ease, type Layer, Layer as LayerSchema, type Value, newId } from "../../doc/schema";
 
-// The Gaia launch film rebuilt as a native, fully editable document:
+// The Atlas launch film rebuilt as a native, fully editable document:
 // every element is a layer, every motion is a keyframe on the timeline.
 
 const W = 1920, H = 1080, T = 30;
@@ -41,7 +41,7 @@ function words(name: string, text: string, x: number, y: number, a: number, b: n
   return key(l, "props.reveal", [[a, 0, LIN], [b, 1]]);
 }
 
-export function buildGaiaDoc(): Doc {
+export function buildSampleDoc(): Doc {
   const layers: Layer[] = [];
   const push = (...ls: Layer[]) => layers.push(...ls);
   const cx = W / 2, cy = H / 2;
@@ -90,7 +90,7 @@ export function buildGaiaDoc(): Doc {
   // ── Chrome: wordmark + on-air tag ──
   const M = 140;
   push(
-    fade(make({ type: "text", name: "Wordmark", x: M, y: M * 0.55 + 26, start: 4.5, end: 26.85, props: { text: "Gaia", size: 34, color: C.ink } }), 4.5, 5.4, 26.25, 26.85),
+    fade(make({ type: "text", name: "Wordmark", x: M, y: M * 0.55 + 26, start: 4.5, end: 26.85, props: { text: "Atlas", size: 34, color: C.ink } }), 4.5, 5.4, 26.25, 26.85),
     fade(make({ type: "shape", name: "On-air dot", x: W - M - 118, y: M * 0.55 + 15, anchor: [0.5, 0.5], start: 4.5, end: 26.85, props: { kind: "ellipse", w: 10, h: 10, fill: C.clay, pulse: 1.6 } }), 4.5, 5.4, 26.25, 26.85),
     fade(make({ type: "text", name: "On-air label", x: W - M, y: M * 0.55 + 22, start: 4.5, end: 26.85, props: { text: "ON AIR", size: 18, family: "mono", color: C.stone, align: "right", tracking: 0.14 } }), 4.5, 5.4, 26.25, 26.85),
   );
@@ -98,7 +98,7 @@ export function buildGaiaDoc(): Doc {
   // ── 1 · Intro ──
   const iy = hero[1] + hero[2] + 118;
   push(
-    fade(words("Intro · Gaia", "Gaia", cx, iy, 1.8, 3.3, { size: 92, align: "center", rise: 30 }, 0.9, 4.65), 0.9, 0.95, 3.75, 4.65),
+    fade(words("Intro · Atlas", "Atlas", cx, iy, 1.8, 3.3, { size: 92, align: "center", rise: 30 }, 0.9, 4.65), 0.9, 0.95, 3.75, 4.65),
     fade(words("Intro · tagline", "A live newsroom that never goes off the air", cx, iy + 62, 2.55, 3.9, { size: 26, family: "sans", color: C.stone, align: "center", stagger: 0.6 }, 0.9, 4.65), 0.9, 0.95, 3.75, 4.65),
   );
 
@@ -147,7 +147,7 @@ export function buildGaiaDoc(): Doc {
   const FEATS = [
     ["01", "Listen live", "An AI anchor voices the news around the clock."],
     ["02", "Join in", "Ask a question out loud. The anchor answers, then carries on."],
-    ["03", "Make a podcast", "Name any topic and Gaia hosts a live episode on it."],
+    ["03", "Make a podcast", "Name any topic and Atlas hosts a live episode on it."],
     ["04", "Explore the globe", "Every story has a place — now, or deep in the past."],
   ];
   const cw = (W - 2 * M - 3 * 56) / 4;
@@ -187,14 +187,14 @@ export function buildGaiaDoc(): Doc {
 
   // ── 7 · End card ──
   push(
-    fade(words("End · Gaia", "Gaia", cx, cy + 70, 27.3, 28.35, { size: 150, align: "center", rise: 30 }, 27, T), 27, 27.9),
+    fade(words("End · Atlas", "Atlas", cx, cy + 70, 27.3, 28.35, { size: 150, align: "center", rise: 30 }, 27, T), 27, 27.9),
     fade(words("End · tagline", "Hear the world as it happens.", cx, cy + 150, 27.75, 28.95, { size: 44, italic: true, color: C.slate, align: "center", stagger: 0.6, rise: 14 }, 27, T), 27, 27.9),
-    fade(make({ type: "text", name: "End · URL", x: cx, y: H - M - 46, start: 28.5, end: T, props: { text: "civgaia.com", size: 30, family: "sans", weight: 500, align: "center" } }), 28.5, 29.25),
+    fade(make({ type: "text", name: "End · URL", x: cx, y: H - M - 46, start: 28.5, end: T, props: { text: "atlas.example", size: 30, family: "sans", weight: 500, align: "center" } }), 28.5, 29.25),
     fade(make({ type: "text", name: "End · award", x: cx, y: H - M + 2, start: 28.5, end: T, props: { text: "1ST PLACE OF 4,329 PROJECTS  ·  LOVABLE × ELEVENLABS HACKATHON", size: 17, family: "mono", color: C.stone, align: "center", tracking: 0.12 } }), 28.5, 29.25),
   );
 
   return Doc.parse({
-    meta: { id: "gaia", title: "Gaia — Hear the world", size: { w: W, h: H }, fps: 30, duration: T, background: C.ivory },
+    meta: { id: "sample", title: "Atlas — Hear the world", size: { w: W, h: H }, fps: 30, duration: T, background: C.ivory },
     layers,
     markers: [
       { id: newId("m"), t: 0, label: "Intro", kind: "cue" },

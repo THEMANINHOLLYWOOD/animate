@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { propAt } from "../doc/interpolate";
 import { Doc } from "../doc/schema";
-import { buildGaiaDoc } from "../presets/gaiaDoc";
+import { buildSampleDoc } from "./__fixtures__/sampleDoc";
 import { AGENT_TOOLS, runTool, summarizeDoc } from "./tools";
 
 const byName = (doc: Doc, name: string) => doc.layers.find((l) => l.name === name)!;
 
-describe("agent tools on the Gaia film", () => {
-  const gaia = buildGaiaDoc();
+describe("agent tools on a sample film", () => {
+  const sample = buildSampleDoc();
 
   it("declares strict, valid schemas for every tool", () => {
     for (const t of AGENT_TOOLS) {
@@ -19,15 +19,15 @@ describe("agent tools on the Gaia film", () => {
   });
 
   it("summarises layers with ids, timing and animated props", () => {
-    const s = summarizeDoc(gaia, 7);
+    const s = summarizeDoc(sample, 7);
     expect(s).toContain('"Headline · line 1"');
     expect(s).toContain("animated: props.reveal");
-    expect(s.split("\n").length).toBeGreaterThan(gaia.layers.length);
+    expect(s.split("\n").length).toBeGreaterThan(sample.layers.length);
   });
 
   it("sets a static property and keyframes an animated one at the playhead", () => {
-    const h = byName(gaia, "Headline · line 1");
-    let r = runTool(gaia, "set_property", { layer_id: h.id, path: "props.size", value: 130, time: null }, 7);
+    const h = byName(sample, "Headline · line 1");
+    let r = runTool(sample, "set_property", { layer_id: h.id, path: "props.size", value: 130, time: null }, 7);
     expect(byName(r.doc, "Headline · line 1").props.size).toBe(130);
     r = runTool(r.doc, "set_property", { layer_id: h.id, path: "transform.opacity", value: 0.5, time: 7 }, 7);
     expect(propAt(byName(r.doc, "Headline · line 1"), "transform.opacity", 7)).toBeCloseTo(0.5);
@@ -35,9 +35,9 @@ describe("agent tools on the Gaia film", () => {
   });
 
   it("moves a whole section later, keyframes travelling with the clips", () => {
-    const facts = gaia.layers.filter((l) => l.name.startsWith("Facts") || l.name.startsWith("Principle"));
+    const facts = sample.layers.filter((l) => l.name.startsWith("Facts") || l.name.startsWith("Principle"));
     const before = propAt(facts[0], "props.reveal", 25.2);
-    const r = runTool(gaia, "move_layers", { layer_ids: facts.map((l) => l.id), dt: 2 }, 0);
+    const r = runTool(sample, "move_layers", { layer_ids: facts.map((l) => l.id), dt: 2 }, 0);
     const moved = r.doc.layers.find((l) => l.id === facts[0].id)!;
     expect(moved.start).toBeCloseTo(facts[0].start + 2);
     expect(propAt(moved, "props.reveal", 27.2)).toBeCloseTo(before as number);
@@ -45,7 +45,7 @@ describe("agent tools on the Gaia film", () => {
 
   it("adds, keyframes, eases and deletes a new layer", () => {
     let r = runTool(
-      gaia,
+      sample,
       "add_layer",
       { type: "text", name: "Subtitle", start: 1, end: 5, x: 960, y: 900, props_json: '{"text":"Hello","size":40,"align":"center"}', above_layer_id: null },
       0,
@@ -64,8 +64,8 @@ describe("agent tools on the Gaia film", () => {
   });
 
   it("trims, splits, renames, hides, reorders and retimes", () => {
-    const g = byName(gaia, "Globe");
-    let r = runTool(gaia, "trim_layer", { layer_id: g.id, start: 1, end: 29 }, 0);
+    const g = byName(sample, "Globe");
+    let r = runTool(sample, "trim_layer", { layer_id: g.id, start: 1, end: 29 }, 0);
     r = runTool(r.doc, "split_layer", { layer_id: g.id, time: 10 }, 0);
     expect(r.doc.layers.filter((l) => l.type === "globe")).toHaveLength(2);
     r = runTool(r.doc, "rename_layer", { layer_id: g.id, name: "Earth" }, 0);
@@ -78,16 +78,16 @@ describe("agent tools on the Gaia film", () => {
   });
 
   it("reports bad ids and invalid input as tool errors without changing the doc", () => {
-    const r = runTool(gaia, "set_property", { layer_id: "nope", path: "props.size", value: 1, time: null }, 0);
+    const r = runTool(sample, "set_property", { layer_id: "nope", path: "props.size", value: 1, time: null }, 0);
     expect(r.isError).toBe(true);
-    expect(r.doc).toBe(gaia);
-    const bad = runTool(gaia, "add_layer", { type: "text", name: "x", start: 0, end: 1, x: 0, y: 0, props_json: "{nope", above_layer_id: null }, 0);
+    expect(r.doc).toBe(sample);
+    const bad = runTool(sample, "add_layer", { type: "text", name: "x", start: 0, end: 1, x: 0, y: 0, props_json: "{nope", above_layer_id: null }, 0);
     expect(bad.isError).toBe(true);
   });
 
   it("seek moves the playhead without editing", () => {
-    const r = runTool(gaia, "seek", { time: 12 }, 0);
+    const r = runTool(sample, "seek", { time: 12 }, 0);
     expect(r.seek).toBe(12);
-    expect(r.doc).toBe(gaia);
+    expect(r.doc).toBe(sample);
   });
 });

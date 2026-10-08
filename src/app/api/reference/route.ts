@@ -1,4 +1,3 @@
-import { requireUser, unauthorized } from "@/lib/store";
 import { isXMediaUrl, readXVideo } from "@/lib/xvideo";
 
 export const maxDuration = 60;
@@ -8,8 +7,6 @@ const MAX_BYTES = 150 * 1024 * 1024;
 // GET /api/reference?media=<twimg url>   -> streams that video or poster (X media hosts only)
 //   &dl=1 to download as a file
 export async function GET(req: Request) {
-  const userId = await requireUser();
-  if (!userId) return unauthorized();
   const q = new URL(req.url).searchParams;
 
   const media = q.get("media");

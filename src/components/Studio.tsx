@@ -15,7 +15,7 @@ import {
   Renderer,
   SIZES,
 } from "@/lib/engine";
-import { GAIA_SCENE } from "@/lib/presets/gaia";
+import { SHOWCASE } from "@/lib/presets/showcase";
 import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
 import { useFilmAudio } from "@/components/useFilmAudio";
@@ -110,15 +110,10 @@ type Attached = {
   asset: boolean;
 };
 
-const GAIA: Project = {
-  id: "gaia",
-  title: "Gaia — Hear the world",
-  code: GAIA_SCENE,
-  duration: 30,
-  aspect: "16:9",
-  builtin: true,
-  createdAt: 0,
-};
+// Example films everyone starts with: ten deliberately opposite styles.
+const EXAMPLES: Project[] = SHOWCASE.map((f, i) => ({ ...f, builtin: true, createdAt: i }));
+const FIRST = EXAMPLES[0];
+const isExample = (id: string) => EXAMPLES.some((p) => p.id === id);
 
 const LOCAL = "animate.projects.v1";
 const uid = () => Math.random().toString(36).slice(2, 12);
@@ -274,8 +269,8 @@ async function animateStage(payload: Record<string, unknown>, signal: AbortSigna
 
 export default function Studio() {
   const { isLoaded, isSignedIn, userId } = useAccount();
-  const [projects, setProjects] = useState<Project[]>([GAIA]);
-  const [currentId, setCurrentId] = useState("gaia");
+  const [projects, setProjects] = useState<Project[]>(EXAMPLES);
+  const [currentId, setCurrentId] = useState(FIRST.id);
   const [prompt, setPrompt] = useState("");
   const [enhanced, setEnhanced] = useState<null | { brief: string; recreate?: boolean }>(null);
   const [mode, setMode] = useState<"new" | "edit">("new");
@@ -312,8 +307,10 @@ export default function Studio() {
   const tRef = useRef(0);
   const playingRef = useRef(true);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Guests have no cloud storage: images drawn in their films live in memory for the session.
+  const guestImgs = useRef<Record<string, Record<string, HTMLImageElement>>>({});
 
-  const project = projects.find((p) => p.id === currentId) ?? GAIA;
+  const project = projects.find((p) => p.id === currentId) ?? FIRST;
   const [W, H] = SIZES[project.aspect];
   const cloud = !!isSignedIn;
   // No brief + a reference video = recreate that video as closely as possible.
@@ -340,8 +337,8 @@ export default function Studio() {
         } catch {}
       }
       if (cancelled) return;
-      setProjects([GAIA, ...list]);
-      setCurrentId((id) => (id === "gaia" || list.some((p) => p.id === id) ? id : "gaia"));
+      setProjects([...EXAMPLES, ...list]);
+      setCurrentId((id) => (isExample(id) || list.some((p) => p.id === id) ? id : FIRST.id));
     })();
     return () => {
       cancelled = true;
@@ -419,10 +416,10 @@ export default function Studio() {
   }, [project.code, project.doc, project.building, project.title]);
 
   const assets = useMemo<Assets>(() => {
-    const byName: Record<string, HTMLImageElement> = project.assets?.length ? { ...projectImgs } : {};
+    const byName: Record<string, HTMLImageElement> = { ...guestImgs.current[project.id], ...(project.assets?.length ? projectImgs : {}) };
     for (const f of files) if (f.img && f.asset) byName[f.name] = f.img;
     return { images: Object.entries(byName).map(([name, img]) => ({ name, img })), byName };
-  }, [files, projectImgs, project.assets]);
+  }, [files, projectImgs, project.assets, project.id]);
 
   const clips = useMemo(() => project.audio ?? [], [project.audio]);
   const { loaded: loadedAudio, mixer } = useFilmAudio(clips, audioBlobs);
@@ -662,7 +659,6 @@ export default function Studio() {
   };
 
   useEffect(() => {
-    if (!isSignedIn) return;
     const keyOf = (u: string) => (isXStatus(u) ? `x:${xStatusId(u)}` : hostOf(u));
     const fresh = linksIn(prompt).filter((u) => !triedLinks.current.has(keyOf(u)));
     if (!fresh.length) return;
@@ -695,7 +691,7 @@ export default function Studio() {
       }
     }, 700);
     return () => clearTimeout(t);
-  }, [prompt, isSignedIn, importImage, grabXVideo]);
+  }, [prompt, importImage, grabXVideo]);
 
   // ── Runs: every generation has its own steps, stream and stop button ──
   const patchRun = (id: string, f: (r: Run) => Run) => setRuns((rs) => (rs[id] ? { ...rs, [id]: f(rs[id]) } : rs));
@@ -1044,6 +1040,8 @@ export default function Studio() {
           ),
         );
         assetRefs = [...assetRefs.filter((a) => !up.some((u) => u.name === a.name)), ...up];
+      } else if (assetFiles.length) {
+        guestImgs.current[id] = { ...guestImgs.current[id], ...Object.fromEntries(assetFiles.filter((f) => f.img).map((f) => [f.name, f.img!])) };
       }
 
       const title = reply.title || prev?.title || brief.slice(0, 40) || "Untitled";
@@ -1094,7 +1092,7 @@ export default function Studio() {
         upsert(p, true);
         ok = true;
         // Every new film gets a soundtrack; edits keep the one they have.
-        if (!editing && isSignedIn) await scoreFilm(R, p);
+        if (!editing) await scoreFilm(R, p);
       }
     } catch (e) {
       const stopped = (e as Error).name === "AbortError";
@@ -1473,7 +1471,7 @@ export default function Studio() {
     tRef.current = 0;
     setPlaying(true);
     setShowCode(false);
-    setMode(id === "gaia" ? "new" : "edit");
+    setMode(isExample(id) ? "new" : "edit");
     setEnhanced(null);
     setProjectImgs({});
     setError(null);
@@ -1483,7 +1481,7 @@ export default function Studio() {
     if (!silent && !confirm("Delete this animation and its saved videos?")) return;
     setProjects((list) => {
       const next = list.filter((p) => p.id !== id);
-      if (!cloud) persist({ ...GAIA, builtin: false, id: "_" }, next);
+      if (!cloud) persist({ ...FIRST, builtin: false, id: "_" }, next);
       return next;
     });
     if (cloud) {
@@ -1491,7 +1489,7 @@ export default function Studio() {
       await Promise.all((gone?.videos ?? []).filter((v) => v.shareId).map((v) => fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" }).catch(() => {})));
       await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
     }
-    if (id === currentId) setCurrentId("gaia");
+    if (id === currentId) setCurrentId(FIRST.id);
   };
 
   // ── Share: a public page for a rendered MP4 (never scene code) ──
@@ -1575,11 +1573,53 @@ export default function Studio() {
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
-  const animateButton = !isSignedIn ? (
-    <SignIn>
-      <button className="primary">Sign in to animate</button>
-    </SignIn>
-  ) : (
+  // Your films first (favorites on top), then the examples.
+  const ownFilms = projects.filter((p) => !p.builtin && (!favOnly || p.favorite)).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
+  const tile = (p: Project) => (
+    <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)}>
+      <div className="lib-title">
+        {!p.builtin && (
+          <span
+            className={`lib-star${p.favorite ? " on" : ""}`}
+            role="button"
+            aria-label={p.favorite ? "Remove from favorites" : "Add to favorites"}
+            title={p.favorite ? "Remove from favorites" : "Add to favorites"}
+            onClick={(e) => {
+              e.stopPropagation();
+              upsert({ ...p, favorite: !p.favorite }, true);
+            }}
+          >
+            {p.favorite ? "★" : "☆"}
+          </span>
+        )}
+        {p.title}
+      </div>
+      <div className="lib-meta">
+        {p.building && runs[p.building]?.status === "running" ? (
+          <span className="lib-building">
+            <span className="dot" /> {runs[p.building].steps.at(-1)?.label ?? "Starting"}
+          </span>
+        ) : null}
+        {p.aspect} · {p.duration}s
+        {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
+      </div>
+      {!p.builtin && (
+        <span
+          className="lib-del"
+          role="button"
+          aria-label="Delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            remove(p.id);
+          }}
+        >
+          ×
+        </span>
+      )}
+    </button>
+  );
+
+  const animateButton = (
     <button className="primary" onClick={generate} disabled={!canAsk || !fonts || (mode === "edit" && isBuilding)}>
       {recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
     </button>
@@ -1664,6 +1704,7 @@ export default function Studio() {
             </span>
           </div>
 
+          {ownFilms.length > 0 && (
           <div className="section-label lib-head">
             <span className="lib-head-title">
               {cloud ? "Your library" : "On this device"}
@@ -1680,55 +1721,18 @@ export default function Studio() {
               </span>
             )}
           </div>
-          <div className="library">
-            {[...projects]
-              .filter((p) => !favOnly || p.favorite)
-              // Example first, then favorites, then everything else (newest last).
-              .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin) || Number(!!b.favorite) - Number(!!a.favorite))
-              .map((p) => (
-              <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)}>
-                <div className="lib-title">
-                  {!p.builtin && (
-                    <span
-                      className={`lib-star${p.favorite ? " on" : ""}`}
-                      role="button"
-                      aria-label={p.favorite ? "Remove from favorites" : "Add to favorites"}
-                      title={p.favorite ? "Remove from favorites" : "Add to favorites"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        upsert({ ...p, favorite: !p.favorite }, true);
-                      }}
-                    >
-                      {p.favorite ? "★" : "☆"}
-                    </span>
-                  )}
-                  {p.title}
-                </div>
-                <div className="lib-meta">
-                  {p.building && runs[p.building]?.status === "running" ? (
-                    <span className="lib-building">
-                      <span className="dot" /> {runs[p.building].steps.at(-1)?.label ?? "Starting"}
-                    </span>
-                  ) : null}
-                  {p.aspect} · {p.duration}s{p.builtin ? " · example" : ""}
-                  {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
-                </div>
-                {!p.builtin && (
-                  <span
-                    className="lib-del"
-                    role="button"
-                    aria-label="Delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      remove(p.id);
-                    }}
-                  >
-                    ×
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          )}
+          {ownFilms.length > 0 && <div className="library">{ownFilms.map(tile)}</div>}
+          {!favOnly && (
+            <>
+              <div className="section-label lib-head">
+                <span className="lib-head-title">
+                  Examples<span> · ten opposite styles, open one or describe your own</span>
+                </span>
+              </div>
+              <div className="library">{EXAMPLES.map((e) => tile(projects.find((p) => p.id === e.id) ?? e))}</div>
+            </>
+          )}
 
           {project.doc && (
             <div className="elements">
@@ -1766,7 +1770,7 @@ export default function Studio() {
               onUpload={addAudioFiles}
               onScore={() => scoreFilm(null)}
               onRegenerate={regenerateClip}
-              canScore={!!isSignedIn && !project.builtin}
+              canScore={!project.builtin}
             />
           )}
           {cues.length > 0 && (
@@ -1912,7 +1916,7 @@ export default function Studio() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && isSignedIn) generate();
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate();
               }}
               style={enhanced ? { minHeight: 300 } : undefined}
               placeholder={
@@ -2021,7 +2025,7 @@ export default function Studio() {
                 </svg>
                 Add, drop or paste files
               </button>
-              {isSignedIn && !enhanced && (
+              {!enhanced && (
                 <button
                   className="attach enhance"
                   onClick={enhance}

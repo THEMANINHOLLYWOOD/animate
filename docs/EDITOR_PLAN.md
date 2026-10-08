@@ -5,7 +5,7 @@ Goal: turn animate from "generate and export" into a full editor. It should feel
 ## Status (updated 2026-10-07)
 
 Shipped and verified end to end in a browser (local mode, real Anthropic + ElevenLabs + Blob):
-- Phase 0–1: document schema, interpolation, ops, undo; Gaia as a 63-layer doc; `/editor/[id]` with canvas select/move, inspector, Premiere-style timeline (clips, trims, keyframe diamonds), mobile layout.
+- Phase 0–1: document schema, interpolation, ops, undo; a 63-layer sample film as a doc; `/editor/[id]` with canvas select/move, inspector, Premiere-style timeline (clips, trims, keyframe diamonds), mobile layout.
 - Editing agent (`/api/agent`): strict tools mapped to the same ops; one undo step per request; verified on a multi-layer retime.
 - Sound: reference-video stems (ElevenLabs isolation + transcription, aligned subtraction for the background), Claude sound plan (structured output), ElevenLabs VO (with word timing) and SFX (3-at-a-time queue), music on paid plans; sound strip; playback locked to the picture; MP4 export with AAC.
 - Recreate mode: a dropped video or X link with no brief is rebuilt shot for shot. The video is **stripped into elements** (`/api/elements`): every text/shape/image becomes an editable layer with keyframes; a code layer underneath draws the leftovers. Films are saved as documents, open in the editor, and chat edits go through the agent.
@@ -84,13 +84,13 @@ Each phase ships something usable, ends with tests green, and is deployed.
 3. Write `ops.ts`: pure functions (`addLayer`, `moveLayer`, `setProp`, `addKeyframe`, `moveKeyframes`, `trimLayer`, `splitLayer`, `retime`, `group`, `ungroup`), each returning a new doc. Unit tests for each.
 4. Write `store.ts` and `history.ts`: Zustand store; every op goes through `apply(op)` → Immer patches → undo/redo stacks with coalescing (a drag is one undo step).
 5. Write `PixiRenderer.ts`: `renderFrame(doc, t)`, with layer renderers for text, shape, image and group. Golden-frame tests.
-6. Port the kit into `codeLayer.ts` so existing scenes render as a code layer inside a doc. **Acceptance:** the Gaia film plays identically as `{ layers: [codeLayer] }`.
+6. Port the kit into `codeLayer.ts` so existing scenes render as a code layer inside a doc. **Acceptance:** the sample film plays identically as `{ layers: [codeLayer] }`.
 
 ### Phase 1: Player and timeline (read-only)
 1. `/editor/[id]` route with a four-panel layout: Layers | Canvas | Inspector, with the Timeline along the bottom. Resizable panes, saved per user.
 2. Transport: play/pause, J/K/L shuttle, frame step (← →), loop in/out (I / O), time display in frames and timecode.
 3. Timeline: ruler with adaptive ticks, zoom (pinch, ⌥-scroll), playhead scrub, one row per layer with its clip bar, expandable property rows showing keyframe diamonds.
-4. **Gaia rebuilt as a native doc** (text, shape, globe and waveform layers), the reference for everything after.
+4. **A sample film rebuilt as a native doc** (text, shape, globe and waveform layers), the reference for everything after.
 
 **Acceptance:** opening any saved film shows its full timeline, scrubbing is frame-accurate, and 60 fps playback holds on an M1 at 1080p.
 

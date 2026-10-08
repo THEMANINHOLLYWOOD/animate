@@ -1,11 +1,8 @@
 import { readBrand, safeFetch } from "@/lib/brand";
-import { requireUser, unauthorized } from "@/lib/store";
 
 // GET /api/brand?url=…        -> brand kit (name, description, colours, fonts, logo, preview image)
 // GET /api/brand?image=…      -> proxies one public image so the browser can use it on canvas
 export async function GET(req: Request) {
-  const userId = await requireUser();
-  if (!userId) return unauthorized();
   const q = new URL(req.url).searchParams;
   try {
     const image = q.get("image");

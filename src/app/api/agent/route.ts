@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
 import { AGENT_SYSTEM, AGENT_TOOLS, runTool, summarizeDoc } from "@/editor/ai/tools";
 import { Doc } from "@/editor/doc/schema";
-import { requireUser, unauthorized } from "@/lib/store";
 
 export const maxDuration = 300;
 
@@ -19,8 +18,6 @@ type Body = {
 // The editor agent: Claude edits a copy of the document with the same ops the
 // UI uses, streaming each action; the client applies the final doc as one undo step.
 export async function POST(req: Request) {
-  const userId = await requireUser();
-  if (!userId) return unauthorized();
 
   const body = (await req.json()) as Body;
   let doc: Doc;

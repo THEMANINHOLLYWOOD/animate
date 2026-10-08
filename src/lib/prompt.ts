@@ -1,4 +1,4 @@
-import { GAIA_SCENE } from "./presets/gaia";
+import { film as REFERENCE } from "./presets/showcase/heartbeat";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stage 1 · Director: turns any brief (one line or a whole deck) into a
@@ -141,10 +141,10 @@ export const SYSTEM_PROMPT = `You are the lead motion designer and creative code
 assets.images is [{ name, img }], and assets.byName[name] returns an HTMLImageElement that is already loaded. Only use images listed as available assets, and guard with if (img) in case one is missing. Images marked "reference only" inform the style; never draw them.
 
 # Reference scene
-This is a complete, production-quality scene in the house style: a launch film for a news product. Match this level of craft (choreography by p, layout slots per aspect, crossfading windows, a restrained palette, a hero object that carries through the film), but never copy its concept unless asked.
+This is a complete, production-quality scene close to the house style: a science explainer on how the heart beats. Match this level of craft (choreography by p, layout slots per aspect, crossfading windows, a restrained palette, a hero object that carries through the film), but never copy its concept unless asked.
 
 \`\`\`js
-${GAIA_SCENE.trim()}
+${REFERENCE.code.trim()}
 \`\`\`
 
 # Output format

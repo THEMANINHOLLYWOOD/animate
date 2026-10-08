@@ -1,4 +1,3 @@
-import { requireUser, unauthorized } from "@/lib/store";
 
 // ElevenLabs bridge. The key stays server-side; results stream straight back.
 //   POST multipart  action=isolate      audio=<file>            -> audio/mpeg (voice only)
@@ -57,7 +56,6 @@ function wordsFromAlignment(a: Char | null) {
 }
 
 export async function GET(req: Request) {
-  if (!(await requireUser())) return unauthorized();
   if (!key()) return Response.json({ error: "ELEVENLABS_API_KEY is not set." }, { status: 503 });
   if (new URL(req.url).searchParams.get("voices")) {
     const r = await fetch(`${EL}/voices`, { headers: { "xi-api-key": key() } });
@@ -72,7 +70,6 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  if (!(await requireUser())) return unauthorized();
   if (!key()) return Response.json({ error: "ELEVENLABS_API_KEY is not set." }, { status: 503 });
   const H = { "xi-api-key": key() };
   const ct = req.headers.get("content-type") ?? "";

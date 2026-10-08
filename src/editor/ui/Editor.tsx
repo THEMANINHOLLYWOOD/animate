@@ -8,7 +8,7 @@ import { makeKit, type Fonts } from "@/lib/kit";
 import { propAt } from "../doc/interpolate";
 import { addKeyframe, removeKeyframes, removeLayers, renameLayer, setProp } from "../doc/ops";
 import { Doc, type Layer, type Value } from "../doc/schema";
-import { buildGaiaDoc } from "../presets/gaiaDoc";
+import { SHOWCASE } from "@/lib/presets/showcase";
 import { docScene, renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
 import AgentPanel from "./AgentPanel";
@@ -19,19 +19,20 @@ type Store = ReturnType<typeof createEditorStore>;
 const EMPTY_ASSETS = { images: [], byName: {} };
 const SAVE_KEY = (id: string) => `animate.editor.v1.${id}`;
 
-// ── Loading a doc: Gaia is native; any other saved film opens as one code layer ──
+// ── Loading a doc: a saved doc, or any film (example or saved) as one code layer ──
 async function loadDoc(id: string): Promise<Doc> {
   try {
     const saved = localStorage.getItem(SAVE_KEY(id));
     if (saved) return Doc.parse(JSON.parse(saved));
   } catch {}
-  if (id === "gaia") return buildGaiaDoc();
   type P = { id: string; title: string; code: string; duration: number; aspect: string; doc?: unknown };
-  let projects: P[] = [];
-  try {
-    const r = await fetch("/api/projects");
-    if (r.ok) projects = (await r.json()).projects;
-  } catch {}
+  let projects: P[] = SHOWCASE.filter((x) => x.id === id);
+  if (!projects.length) {
+    try {
+      const r = await fetch("/api/projects");
+      if (r.ok) projects = (await r.json()).projects;
+    } catch {}
+  }
   if (!projects.length) {
     try {
       projects = JSON.parse(localStorage.getItem("animate.projects.v1") || "[]");

@@ -1,14 +1,12 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
 import { ELEMENTS_SCHEMA, ELEMENTS_SYSTEM, type ElementsPlan } from "@/lib/elements";
-import { requireUser, unauthorized } from "@/lib/store";
 
 export const maxDuration = 300;
 
 // Strip a video into editable elements from its breakdown and sampled frames.
 // Body: { breakdown, duration, aspect, w, h, files: [{kind:"image", name, mediaType, data}, {kind:"text", name, text}] }
 export async function POST(req: Request) {
-  if (!(await requireUser())) return unauthorized();
   const b = await req.json();
   const content: Anthropic.ContentBlockParam[] = [];
   for (const f of b.files ?? []) {

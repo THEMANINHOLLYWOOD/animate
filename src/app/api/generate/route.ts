@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
 import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
-import { requireUser } from "@/lib/store";
 import type { BrandKit } from "@/lib/brand";
 
 export const maxDuration = 300;
@@ -63,9 +62,7 @@ function brandNotes(brands: BrandKit[]) {
 }
 
 export async function POST(req: Request) {
-  // The API key is shared, so generation is limited to signed-in users.
-  const userId = await requireUser();
-  if (!userId) return Response.json({ error: "Sign in to create animations." }, { status: 401 });
+  // Anyone can create: no sign-in needed to generate.
 
   const body = (await req.json()) as Body;
 

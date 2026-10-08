@@ -1,5 +1,4 @@
 import { anthropicClient } from "@/lib/anthropic";
-import { requireUser, unauthorized } from "@/lib/store";
 import { SOUND_PLAN_SCHEMA as SCHEMA, SOUND_PLAN_SYSTEM as SYSTEM } from "@/lib/soundPlan";
 
 export const maxDuration = 120;
@@ -9,7 +8,6 @@ export const maxDuration = 120;
 // timeline as a fraction of the film. Strict JSON so the client can act on it.
 
 export async function POST(req: Request) {
-  if (!(await requireUser())) return unauthorized();
   const b = await req.json();
   const duration = Number(b.duration) || 10;
   const parts = [

@@ -1,6 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
-import { requireUser, unauthorized } from "@/lib/store";
 
 export const maxDuration = 120;
 
@@ -52,7 +51,6 @@ List the 3 biggest problems with timestamps. Hunt specifically for: text overlap
 Be concrete: say which element, where, at what time, and exactly what to change. If the film is genuinely strong, say so and give fewer problems. Never invent problems to fill the list.`;
 
 export async function POST(req: Request) {
-  if (!(await requireUser())) return unauthorized();
   const b = await req.json();
   const content: Anthropic.ContentBlockParam[] = [];
   for (const img of (b.images ?? []) as { name: string; data: string }[]) {
