@@ -19,7 +19,7 @@ import { SHOWCASE } from "@/lib/presets/showcase";
 import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
 import { useFilmAudio } from "@/components/useFilmAudio";
-import { type AudioClip, decodeAudio, renderMix, subtractAligned, toWav } from "@/lib/audio";
+import { type AudioClip, decodeAudio, renderMix, speechWav, subtractAligned, toWav } from "@/lib/audio";
 import { produce } from "immer";
 import { Doc, type Doc as DocT } from "@/editor/doc/schema";
 import { retime } from "@/editor/doc/ops";
@@ -31,7 +31,7 @@ import { bedBeats, renderBed, specFromPlan } from "@/lib/synth";
 import { detectBeats, snapToGrid } from "@/lib/beats";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
-import { aspectFor, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
+import { aspectFor, fitFrames, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number; shareId?: string };
 
@@ -52,6 +52,8 @@ type Project = {
   doc?: DocT;
   // Set while a run is building this film (the run id); the tile shows progress.
   building?: string;
+  // Why a new film never got made (its build failed or was interrupted).
+  failed?: string;
   builtin?: boolean;
   favorite?: boolean;
   share?: { id: string; createdAt: number };
@@ -98,6 +100,15 @@ const buildingScene = (brief: string): SceneFn => (ctx, W, H, t, _T, _p, lib) =>
   lib.text(ctx, brief, W / 2, H / 2 + 120 * u, { size: 34 * u, family: "sans", color: C.slate, align: "center", maxWidth: W * 0.6, lineHeight: 1.4 });
 };
 
+// What a film that never got made shows instead.
+const failedScene = (reason: string): SceneFn => (ctx, W, H, _t, _T, _p, lib) => {
+  const { C, u } = lib;
+  lib.bg(ctx, W, H, C.ivory);
+  lib.text(ctx, "Didn't finish", W / 2, H / 2 - 30 * u, { size: 30 * u, family: "mono", color: C.clay, align: "center", tracking: 0.12 });
+  lib.text(ctx, reason, W / 2, H / 2 + 30 * u, { size: 32 * u, family: "sans", color: C.slate, align: "center", maxWidth: W * 0.7, lineHeight: 1.4 });
+  lib.text(ctx, "Delete it and try again.", W / 2, H / 2 + 170 * u, { size: 26 * u, family: "sans", color: C.stone, align: "center" });
+};
+
 type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string; docBefore?: DocT };
 
 type Attached = {
@@ -116,6 +127,8 @@ const FIRST = EXAMPLES[0];
 const isExample = (id: string) => EXAMPLES.some((p) => p.id === id);
 
 const LOCAL = "animate.projects.v1";
+// Base64 bytes of reference frames per request; the rest of the 4.5 MB request limit is brief, treatment and transcript.
+const FRAME_BUDGET = 3_300_000;
 const uid = () => Math.random().toString(36).slice(2, 12);
 const friendlyError = (m: string) =>
   /credit balance/i.test(m) ? "The Anthropic account is out of credits. Add credits at console.anthropic.com → Plans & Billing, then try again." : m;
@@ -187,6 +200,24 @@ function parseScene(text: string) {
   return { title, note, code };
 }
 
+// A readable reason for a failed API response (JSON error, platform error page, or status).
+async function failure(res: Response) {
+  if (res.status === 413) return "The reference was too large to send. Try a shorter video.";
+  if (res.status === 504) return "The server timed out. Try again, or use a shorter video.";
+  const text = await res.text().catch(() => "");
+  try {
+    const j = JSON.parse(text);
+    if (j?.error) return String(j.error);
+  } catch {}
+  return `Request failed (${res.status})${text && text.length < 160 ? `: ${text}` : ""}`;
+}
+
+// JSON from an API response, or a thrown readable error.
+async function jsonOf<T = Record<string, unknown>>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(await failure(res));
+  return res.json();
+}
+
 async function streamStage(
   payload: object,
   signal: AbortSignal,
@@ -200,8 +231,7 @@ async function streamStage(
     body: JSON.stringify(payload),
     signal,
   });
-  if (res.status === 401) throw new Error("Sign in to create animations.");
-  if (!res.body) throw new Error(`Request failed (${res.status})`);
+  if (!res.ok || !res.body) throw new Error(await failure(res));
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -246,12 +276,19 @@ class PartialOutput extends Error {
   }
 }
 
-// The animator stage with automatic continuation when the time limit cuts it off.
-async function animateStage(payload: Record<string, unknown>, signal: AbortSignal, onText: (s: string) => void, onThinking?: (d: string) => void, onResume?: (n: number) => void) {
+// A stage with automatic continuation when the time limit cuts it off (the animator, and recreation breakdowns).
+async function animateStage(
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+  onText: (s: string) => void,
+  onThinking?: (d: string) => void,
+  onResume?: (n: number) => void,
+  onStatus?: (s: string) => void,
+) {
   let sofar = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const rest = await streamStage({ ...payload, continuation: sofar || undefined }, signal, (s) => onText(sofar + s), undefined, onThinking);
+      const rest = await streamStage({ ...payload, continuation: sofar || undefined }, signal, (s) => onText(sofar + s), onStatus, onThinking);
       return sofar + rest;
     } catch (e) {
       if (e instanceof PartialOutput) {
@@ -337,6 +374,10 @@ export default function Studio() {
         } catch {}
       }
       if (cancelled) return;
+      // Runs live in this page; a film still marked as building was cut off by a reload or a closed tab.
+      list = list.map((p) =>
+        p.building ? { ...p, building: undefined, ...(p.code || p.doc ? {} : { failed: p.failed ?? "This build was interrupted: the page was closed or reloaded before it finished." }) } : p,
+      );
       setProjects([...EXAMPLES, ...list]);
       setCurrentId((id) => (isExample(id) || list.some((p) => p.id === id) ? id : FIRST.id));
     })();
@@ -408,12 +449,13 @@ export default function Studio() {
   const compiled = useMemo<{ fn: SceneFn | null; err: string | null }>(() => {
     try {
       if (project.building && !project.code) return { fn: buildingScene(project.title), err: null };
+      if (!project.code && !project.doc) return { fn: failedScene(project.failed ?? "This film has no scene yet."), err: null };
       if (project.doc) return { fn: docScene(project.doc), err: null };
       return { fn: compileScene(project.code), err: null };
     } catch (e) {
       return { fn: null, err: (e as Error).message };
     }
-  }, [project.code, project.doc, project.building, project.title]);
+  }, [project.code, project.doc, project.building, project.title, project.failed]);
 
   const assets = useMemo<Assets>(() => {
     const byName: Record<string, HTMLImageElement> = { ...guestImgs.current[project.id], ...(project.assets?.length ? projectImgs : {}) };
@@ -632,8 +674,10 @@ export default function Studio() {
     for (const v of videos) {
       const n = recreate ? Math.max(8, Math.min(Math.ceil(v.duration * 2), Math.floor(budget / videos.length))) : Math.max(4, Math.floor(budget / videos.length));
       setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: "Sampling frames…" } : x)));
-      const frames = await sampleFrames(v.blobUrl, n, 768, (i) =>
-        setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `Sampling frames ${i}/${n}` } : x))),
+      // Every request that carries the frames (treatment, elements, animation) must stay under 4.5 MB.
+      const frames = await fitFrames(
+        await sampleFrames(v.blobUrl, n, 768, (i) => setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `Sampling frames ${i}/${n}` } : x)))),
+        FRAME_BUDGET / videos.length,
       );
       setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `${frames.length} frames sent` } : x)));
       const tag = v.id.replace(/[^\w-]/g, "");
@@ -742,7 +786,12 @@ export default function Studio() {
     const researching = !film.recreate && (brands.length > 0 || linksIn(brief).length > 0);
     R.phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
     let writing = !researching;
-    return streamStage(
+    // Breakdowns of long videos can outlast one request; they resume like the animator does.
+    const run = film.recreate
+      ? (payload: Record<string, unknown>, signal: AbortSignal, onText: (s: string) => void, onStatus: (s: string) => void, onThinking: (d: string) => void) =>
+          animateStage(payload, signal, onText, onThinking, (n) => R.note(`Hit the time limit; continuing the breakdown (${n})`), onStatus)
+      : streamStage;
+    return run(
       {
         stage: "direct",
         prompt: brief,
@@ -928,8 +977,8 @@ export default function Studio() {
           body: JSON.stringify({ breakdown: treatment, duration: film.duration, aspect: film.aspect, w: fw, h: fh, files: payloadFiles.filter((f) => (f as { kind: string }).kind === "image") }),
           signal: R.signal,
         });
-        const ej = await er.json();
-        if (er.ok && ej.elements) {
+        const ej = await jsonOf<ElementsPlan & { error?: string }>(er).catch((e) => ({ error: (e as Error).message }) as ElementsPlan & { error?: string });
+        if (ej.elements) {
           elementsPlan = ej as ElementsPlan;
           R.note(`${elementsPlan.elements.length} elements: ${elementsPlan.elements.slice(0, 6).map((e) => e.name).join(", ")}${elementsPlan.elements.length > 6 ? "…" : ""}`);
         } else R.note(`Elements: ${ej.error ?? "unavailable"}; building as one scene`);
@@ -991,8 +1040,8 @@ export default function Studio() {
             body: JSON.stringify({ images: [{ name: "Contact sheet (in order)", data: sheet }, { name: "Phone-width strip", data: phone }], treatment, duration: film.duration, aspect: film.aspect }),
             signal: R.signal,
           });
-          const cj = await cr.json();
-          if (!cr.ok) {
+          const cj = await jsonOf(cr).catch((e) => ({ error: (e as Error).message, failed: true }));
+          if ("failed" in cj) {
             R.note(`Review skipped: ${cj.error}`);
             break;
           }
@@ -1001,7 +1050,7 @@ export default function Studio() {
           const worst = (cj.problems as { t: number; issue: string; fix: string }[]).slice(0, 3);
           const low = Math.min(...Object.entries(scores).filter(([k]) => k !== "sound").map(([, v]) => v));
           if (low >= 8 || !worst.length) {
-            R.note(cj.verdict);
+            R.note(String(cj.verdict));
             break;
           }
           worst.forEach((p) => R.note(`${p.t.toFixed(1)}s · ${p.issue}`));
@@ -1099,8 +1148,14 @@ export default function Studio() {
       const message = stopped ? "Stopped." : (e as Error).message;
       if (!stopped && currentId === id) setError(friendlyError(message));
       R.finish(false, message);
-      // A failed new film keeps its tile so the error can be read, then removed.
-      setProjects((list) => list.map((x) => (x.id === id && x.building ? { ...x, title: `${x.title} (failed)` } : x)));
+      // Clear the building mark (saved too, or the tile spins forever after a reload).
+      // A failed new film keeps its tile, with the reason, until it's deleted.
+      setProjects((list) => {
+        const next = list.map((x) => (x.id === id && x.building === R.id ? { ...x, building: undefined, ...(x.code || x.doc ? {} : { title: `${x.title} (failed)`, failed: message }) } : x));
+        const p = next.find((x) => x.id === id);
+        if (p) persist(p, next, true);
+        return next;
+      });
       return;
     }
     if (ok) R.finish(true);
@@ -1174,10 +1229,12 @@ export default function Studio() {
     }
     if (original.duration < 0.5) return null;
     const wav = toWav(original, original.numberOfChannels === 1);
+    // Full quality stays here as the "original mix" stem; the speech services get a copy that fits a request.
+    const speech = await speechWav(original);
     const fd = (action: string) => {
       const f = new FormData();
       f.append("action", action);
-      f.append("audio", wav, "audio.wav");
+      f.append("audio", speech, "audio.wav");
       return f;
     };
     R.note("Separating voice from background");
@@ -1551,6 +1608,15 @@ export default function Studio() {
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
   }, [addFiles]);
+
+  // Runs live in this page: leaving mid-build would cut them off.
+  const anyRunning = Object.values(runs).some((r) => r.status === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const onLeave = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, [anyRunning]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

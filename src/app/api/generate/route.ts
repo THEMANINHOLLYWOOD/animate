@@ -150,7 +150,7 @@ export async function POST(req: Request) {
           messages.push({ role: "assistant", content: body.continuation });
           messages.push({
             role: "user",
-            content: `Your previous message was cut off by a time limit. Continue from exactly where it stopped. It currently ends with:\n<<<\n${tail}\n>>>\nOutput only the remaining text, starting with the very next character. Do not repeat anything, do not add a preamble, and finish the scene (close the code block).`,
+            content: `Your previous message was cut off by a time limit. Continue from exactly where it stopped. It currently ends with:\n<<<\n${tail}\n>>>\nOutput only the remaining text, starting with the very next character. Do not repeat anything, do not add a preamble, and finish it${body.stage === "animate" ? " (close the code block)" : ""}.`,
           });
         }
         let msg: Anthropic.Beta.BetaMessage;
@@ -164,7 +164,8 @@ export async function POST(req: Request) {
               // so a full film fits inside the function time limit.
               // Repairs and review fixes start from existing code, so they can afford medium effort.
               output_config: {
-                effort: body.stage === "direct" ? "high" : body.error || body.critique ? (animatorEffort(body.duration) === "low" ? "medium" : animatorEffort(body.duration)) : animatorEffort(body.duration),
+                // A recreation breakdown is forensic, not inventive: medium effort keeps it inside a 5-minute limit.
+                effort: body.stage === "direct" ? (body.recreate && LIMIT_MS < 600_000 ? "medium" : "high") : body.error || body.critique ? (animatorEffort(body.duration) === "low" ? "medium" : animatorEffort(body.duration)) : animatorEffort(body.duration),
               },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
@@ -204,7 +205,8 @@ export async function POST(req: Request) {
           send(controller, { type: "done" });
         }
       } catch (e) {
-        if (deadline.signal.aborted && body.stage === "animate" && acc.length > 2000) {
+        // Scenes and recreation breakdowns (no tools in play) resume from where the limit cut them.
+        if (deadline.signal.aborted && (body.stage === "animate" || body.recreate) && acc.length > 2000) {
           // Hand back the partial scene; the client asks for a continuation.
           send(controller, { type: "partial", text: acc });
           return;

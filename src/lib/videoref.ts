@@ -28,14 +28,26 @@ function openVideo(src: string) {
   v.crossOrigin = "anonymous";
   v.src = src;
   return new Promise<HTMLVideoElement>((res, rej) => {
-    v.onloadedmetadata = () => res(v);
-    v.onerror = () => rej(new Error("That video couldn't be decoded. Try an MP4 (H.264)."));
+    const timer = setTimeout(() => rej(new Error("That video took too long to open. Try an MP4 (H.264).")), 20_000);
+    v.onloadedmetadata = () => {
+      clearTimeout(timer);
+      res(v);
+    };
+    v.onerror = () => {
+      clearTimeout(timer);
+      rej(new Error("That video couldn't be decoded. Try an MP4 (H.264)."));
+    };
   });
 }
 
+// Some files never fire "seeked" for some timestamps; don't wait forever on one frame.
 const seek = (v: HTMLVideoElement, t: number) =>
   new Promise<void>((res) => {
-    v.onseeked = () => res();
+    const timer = setTimeout(res, 4000);
+    v.onseeked = () => {
+      clearTimeout(timer);
+      res();
+    };
     v.currentTime = Math.min(Math.max(0, t), Math.max(0, v.duration - 0.05));
   });
 
@@ -75,4 +87,37 @@ export function aspectFor(w: number, h: number): "16:9" | "9:16" | "1:1" {
   if (r > 1.25) return "16:9";
   if (r < 0.8) return "9:16";
   return "1:1";
+}
+
+// Server requests are capped at 4.5 MB in production. Re-encode frames smaller and
+// softer until all of them fit in maxBytes of base64 (detail matters less than count).
+export async function fitFrames(frames: Frame[], maxBytes: number): Promise<Frame[]> {
+  const total = (fs: Frame[]) => fs.reduce((n, f) => n + f.data.length, 0);
+  if (total(frames) <= maxBytes) return frames;
+  const imgs = await Promise.all(
+    frames.map(
+      (f) =>
+        new Promise<HTMLImageElement>((res, rej) => {
+          const img = new Image();
+          img.onload = () => res(img);
+          img.onerror = rej;
+          img.src = `data:image/jpeg;base64,${f.data}`;
+        }),
+    ),
+  );
+  const c = document.createElement("canvas");
+  const g = c.getContext("2d")!;
+  let out = frames;
+  for (const [side, q] of [[640, 0.75], [560, 0.7], [480, 0.65], [400, 0.6], [320, 0.55], [256, 0.5]] as const) {
+    out = frames.map((f, i) => {
+      const img = imgs[i];
+      const s = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+      c.width = Math.max(1, Math.round(img.naturalWidth * s));
+      c.height = Math.max(1, Math.round(img.naturalHeight * s));
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return { t: f.t, data: c.toDataURL("image/jpeg", q).split(",")[1] };
+    });
+    if (total(out) <= maxBytes) break;
+  }
+  return out;
 }
