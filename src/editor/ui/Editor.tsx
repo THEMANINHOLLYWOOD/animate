@@ -11,6 +11,7 @@ import { Doc, type Layer, type Value } from "../doc/schema";
 import { SHOWCASE } from "@/lib/presets/showcase";
 import { docScene, renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
+import { splitDocText } from "../extract/splitText";
 import AgentPanel from "./AgentPanel";
 import Timeline, { type KeySel } from "./Timeline";
 import "./editor.css";
@@ -19,8 +20,15 @@ type Store = ReturnType<typeof createEditorStore>;
 const EMPTY_ASSETS = { images: [], byName: {} };
 const SAVE_KEY = (id: string) => `animate.editor.v1.${id}`;
 
-// ── Loading a doc: a saved doc, or any film (example or saved) as one code layer ──
+// ── Loading a doc: a saved doc, or any film (example or saved) as a code layer
+// whose text is then split out into editable text layers ──
 async function loadDoc(id: string): Promise<Doc> {
+  const doc = await rawDoc(id);
+  const fonts = await loadFonts();
+  return splitDocText(doc, makeKit(doc.meta.size.w, doc.meta.size.h, fonts), EMPTY_ASSETS);
+}
+
+async function rawDoc(id: string): Promise<Doc> {
   try {
     const saved = localStorage.getItem(SAVE_KEY(id));
     if (saved) return Doc.parse(JSON.parse(saved));
@@ -41,6 +49,7 @@ async function loadDoc(id: string): Promise<Doc> {
   const p = projects.find((x) => x.id === id);
   if (!p) throw new Error("Couldn't find that film.");
   if (p.doc) return Doc.parse(p.doc);
+  if (!p.code?.trim()) throw new Error("This film didn't finish, so there's nothing to edit yet. Delete it and make it again.");
   const [w, h] = p.aspect === "9:16" ? [1080, 1920] : p.aspect === "1:1" ? [1080, 1080] : [1920, 1080];
   return Doc.parse({
     meta: { id: p.id, title: p.title, size: { w, h }, duration: p.duration },

@@ -59,18 +59,22 @@ export function toWav(buffer: AudioBuffer, mono = false): Blob {
   return new Blob([data.buffer], { type: "audio/wav" });
 }
 
-// Mono WAV for speech services, at the highest sample rate (≤ 24 kHz) that keeps it
-// under maxBytes: server requests are capped at 4.5 MB in production.
-export async function speechWav(b: AudioBuffer, maxBytes = 3_600_000): Promise<Blob> {
-  const rate = Math.max(8000, Math.min(24000, Math.floor((maxBytes - 44) / (b.duration * 2))));
-  const len = Math.ceil(b.duration * rate);
-  const off = new OfflineAudioContext(1, len, rate);
+// A WAV copy that fits under maxBytes (server requests are capped at 4.5 MB in production):
+// the highest sample rate up to maxRate, in stereo while that still allows ≥ 22.05 kHz, else mono.
+export async function fittedWav(b: AudioBuffer, maxBytes = 3_600_000, maxRate = 24000, stereo = false): Promise<Blob> {
+  const rateFor = (ch: number) => Math.max(8000, Math.min(maxRate, Math.floor((maxBytes - 44) / (b.duration * 2 * ch))));
+  const ch = stereo && b.numberOfChannels > 1 && rateFor(2) >= 22050 ? 2 : 1;
+  const rate = rateFor(ch);
+  const off = new OfflineAudioContext(ch, Math.ceil(b.duration * rate), rate);
   const s = off.createBufferSource();
   s.buffer = b;
   s.connect(off.destination);
   s.start();
-  return toWav(await off.startRendering(), true);
+  return toWav(await off.startRendering(), ch === 1);
 }
+
+// Mono, ≤ 24 kHz: all speech services need.
+export const speechWav = (b: AudioBuffer, maxBytes = 3_600_000) => fittedWav(b, maxBytes, 24000, false);
 
 function monoOf(b: AudioBuffer) {
   const out = new Float32Array(b.length);

@@ -150,6 +150,7 @@ export async function exportVideo(opts: {
   signal?: AbortSignal;
   audio?: AudioBuffer | null; // rendered mix; muxed as AAC when the browser can encode it
   captions?: Cue[]; // burned in when given
+  bitsPerPixel?: number; // bitrate per pixel per frame (default 0.18; previews use less)
 }): Promise<{ blob: Blob; ext: string; audioIncluded: boolean }> {
   const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio, captions } = opts;
   const canvas = document.createElement("canvas");
@@ -159,7 +160,7 @@ export async function exportVideo(opts: {
   const r = new Renderer(ctx, W, H, fonts);
   const frames = Math.round(T * fps);
 
-  const codec = await pickCodec(W, H, fps);
+  const codec = await pickCodec(W, H, fps, opts.bitsPerPixel);
   if (!codec) return exportRealtime({ ...opts, canvas, renderer: r });
 
   const aac = audio && typeof AudioEncoder !== "undefined" ? await pickAudioCodec(audio) : null;
@@ -228,14 +229,14 @@ async function pickAudioCodec(audio: AudioBuffer): Promise<AudioEncoderConfig | 
   }
 }
 
-async function pickCodec(W: number, H: number, fps: number): Promise<VideoEncoderConfig | null> {
+async function pickCodec(W: number, H: number, fps: number, bpp = 0.18): Promise<VideoEncoderConfig | null> {
   if (typeof VideoEncoder === "undefined") return null;
   for (const codec of ["avc1.640034", "avc1.640033", "avc1.4d0034", "avc1.42003e"]) {
     const config: VideoEncoderConfig = {
       codec,
       width: W,
       height: H,
-      bitrate: Math.round(W * H * fps * 0.18),
+      bitrate: Math.round(W * H * fps * bpp),
       framerate: fps,
       avc: { format: "avc" },
     };

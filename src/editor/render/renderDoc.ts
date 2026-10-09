@@ -4,6 +4,8 @@ import { compileScene } from "@/lib/engine";
 import type { Kit } from "@/lib/kit";
 import { propAt } from "../doc/interpolate";
 import type { Doc, Layer } from "../doc/schema";
+import { tapText } from "../extract/textTap";
+import { skipRule } from "../extract/splitText";
 
 export type Bounds = { x: number; y: number; w: number; h: number };
 
@@ -22,6 +24,9 @@ function resolved(layer: Layer, t: number) {
   }
   return { tr, props };
 }
+
+// Text-layer props that aren't kit text options.
+const TEXT_OWN = new Set(["text", "number", "reveal", "revealMode", "raw", "font", "letterSpacing", "ease"]);
 
 const codeCache = new Map<string, SceneFn | Error>();
 function codeFn(code: string) {
@@ -43,7 +48,23 @@ function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<stri
   switch (layer.type) {
     case "text": {
       const size = p.size ?? 48;
+      const str0 = typeof p.number === "number" ? String(Math.round(p.number)) : String(p.text ?? "");
+      if (p.raw) {
+        // Text split out of a code scene that set the canvas font directly.
+        ctx.font = String(p.font ?? "48px sans-serif").replace(/\d+(?:\.\d+)?px/, `${size}px`);
+        ctx.fillStyle = p.color ?? kit.C.ink;
+        ctx.textAlign = p.align || "left";
+        ctx.textBaseline = p.baseline || "alphabetic";
+        if ("letterSpacing" in ctx) (ctx as any).letterSpacing = p.letterSpacing || "0px";
+        ctx.fillText(str0, 0, 0);
+        const w = ctx.measureText(str0).width;
+        const x = ctx.textAlign === "center" ? -w / 2 : ctx.textAlign === "right" || ctx.textAlign === "end" ? -w : 0;
+        return { x, y: -size * 0.8, w, h: size };
+      }
       const o = {
+        // Options recorded from a code scene (blur, ease…) replay as they were drawn.
+        ...Object.fromEntries(Object.entries(p).filter(([k]) => !TEXT_OWN.has(k))),
+        ease: typeof p.ease === "string" ? (kit.ease as any)[p.ease] : undefined,
         size,
         family: p.family ?? "serif",
         weight: p.weight,
@@ -59,7 +80,7 @@ function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<stri
         stagger: p.stagger,
         rise: p.rise,
       };
-      const str = typeof p.number === "number" ? String(Math.round(p.number)) : String(p.text ?? "");
+      const str = str0;
       const reveal = p.reveal ?? 1;
       const mode = p.revealMode ?? "none";
       const r =
@@ -119,7 +140,13 @@ function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<stri
       if (f instanceof Error) throw f;
       const T = layer.end - layer.start;
       const lt = t - layer.start;
-      f(ctx, doc.meta.size.w, doc.meta.size.h, lt, T, Math.min(1, Math.max(0, lt / T)), kit, assets);
+      // Once its text is split into layers, the code paints everything except that text.
+      const tap = p.skipText ? tapText(ctx, kit, skipRule(Array.isArray(p.keepText) ? p.keepText : [])) : null;
+      try {
+        f(ctx, doc.meta.size.w, doc.meta.size.h, lt, T, Math.min(1, Math.max(0, lt / T)), tap ? tap.lib : kit, assets);
+      } finally {
+        tap?.restore();
+      }
       return { x: 0, y: 0, w: doc.meta.size.w, h: doc.meta.size.h };
     }
     default:

@@ -308,41 +308,88 @@ input[type="range"]:active::-webkit-slider-thumb {
 
 .library {
   display: flex;
-  gap: 10px;
+  gap: 14px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 4px 2px 10px;
+  scroll-snap-type: x proximity;
 }
 
+/* A tile is the film itself, looping, with its name underneath. */
 .lib-item {
   flex: none;
   text-align: left;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 14px;
-  min-width: 170px;
-  max-width: 240px;
-  background: var(--ivory);
-  transition:
-    border-color 0.2s,
-    background 0.2s;
+  border: 0;
+  padding: 0;
+  background: none;
   position: relative;
+  scroll-snap-align: start;
+  max-width: 260px;
+  cursor: pointer;
 }
 
-.lib-item:hover {
-  border-color: var(--line-strong);
-}
-
-.lib-item.on {
-  border-color: var(--ink);
-  background: #fff;
-}
-
-.lib-title {
-  font-family: var(--font-serif), serif;
-  font-size: 15px;
-  white-space: nowrap;
+.thumb {
+  position: relative;
+  height: 140px;
+  min-width: 140px;
+  border-radius: 12px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--line);
+  transform: translateZ(0);
+  transition:
+    transform 0.45s var(--ease),
+    box-shadow 0.45s var(--ease);
+}
+.thumb.a16x9 {
+  width: 249px;
+}
+.thumb.a1x1 {
+  width: 140px;
+}
+.thumb.a9x16 {
+  width: 140px;
+}
+
+.thumb-still,
+.thumb-clip {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.thumb-clip {
+  opacity: 0;
+  transition: opacity 0.6s var(--ease);
+}
+.thumb-clip.on {
+  opacity: 1;
+}
+
+.lib-item:hover .thumb {
+  transform: translateY(-3px) scale(1.015);
+  box-shadow:
+    0 0 0 1px var(--line-strong),
+    0 14px 30px -14px rgba(20, 20, 19, 0.35);
+}
+.lib-item.on .thumb {
+  box-shadow:
+    0 0 0 2px var(--ink),
+    0 14px 30px -16px rgba(20, 20, 19, 0.4);
+}
+.lib-item.building .thumb {
+  box-shadow: 0 0 0 1px var(--clay);
+}
+
+.lib-item .lib-building {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(250, 249, 245, 0.92);
+  font-size: 11px;
+  backdrop-filter: blur(6px);
 }
 
 .lib-meta {
@@ -352,12 +399,18 @@ input[type="range"]:active::-webkit-slider-thumb {
 
 .lib-del {
   position: absolute;
-  top: 6px;
-  right: 8px;
-  color: var(--stone);
+  top: 7px;
+  right: 7px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(250, 249, 245, 0.92);
+  color: var(--slate);
   font-size: 14px;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity 0.25s var(--ease);
 }
 
 .lib-item:hover .lib-del {

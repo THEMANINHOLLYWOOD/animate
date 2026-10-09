@@ -18,6 +18,7 @@ export async function POST(req: Request) {
     b.transcript ? `Transcript of the reference audio with word timings (seconds):\n${b.transcript}` : "",
     b.copy ? `On-screen copy in order:\n${b.copy}` : "",
     b.grid ? String(b.grid) : "",
+    b.rebuild ? String(b.rebuild) : "",
   ].filter(Boolean);
   const ask = async (effort: "medium" | "high") => {
     const r = await anthropicClient().messages.create({

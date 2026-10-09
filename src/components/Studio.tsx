@@ -18,8 +18,9 @@ import {
 import { SHOWCASE } from "@/lib/presets/showcase";
 import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
+import Thumb from "@/components/Thumb";
 import { useFilmAudio } from "@/components/useFilmAudio";
-import { type AudioClip, decodeAudio, renderMix, speechWav, subtractAligned, toWav } from "@/lib/audio";
+import { type AudioClip, decodeAudio, fittedWav, renderMix, speechWav, subtractAligned, toWav } from "@/lib/audio";
 import { produce } from "immer";
 import { Doc, type Doc as DocT } from "@/editor/doc/schema";
 import { retime } from "@/editor/doc/ops";
@@ -330,7 +331,7 @@ export default function Studio() {
   // Explainer brief: who it's for, what they believe, what they should be able to do after.
   const [explainer, setExplainer] = useState<null | { audience: string; believe: string; outcome: string }>(null);
   // Stems pulled from a reference video (recreate mode), waiting for the film to exist.
-  const pendingStems = useRef<{ clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string } | null>(null);
+  const pendingStems = useRef<{ clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string; separated?: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
@@ -1128,7 +1129,7 @@ export default function Studio() {
       let saved = p;
       if (film.recreate && pendingStems.current) {
         R.phase("Saving the original's sound elements");
-        const { clips: stemClips, blobs: stemBlobs, transcript } = pendingStems.current;
+        const { clips: stemClips, blobs: stemBlobs, transcript, separated } = pendingStems.current;
         pendingStems.current = null;
         setAudioBlobs((m) => ({ ...m, ...stemBlobs }));
         const stored = await Promise.all(stemClips.map((c) => storeClipBlob(p.id, c, stemBlobs[c.id])));
@@ -1136,7 +1137,8 @@ export default function Studio() {
         upsert(saved, true);
         ok = true;
         // Rebuild the original's sound effects on top of its stems.
-        await scoreFilm(R, saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background") });
+        // Separated stems are rebuilt in ElevenLabs; an isolated voice + background keep the original and add effects.
+        await scoreFilm(R, saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background"), rebuild: !!separated });
       } else {
         upsert(p, true);
         ok = true;
@@ -1218,6 +1220,60 @@ export default function Studio() {
     }
   };
 
+  // SAM Audio (via /api/separate): speech, music and effects as separate stems, plus a transcript.
+  const SAM_STEMS = [
+    { prompt: "speech", kind: "voice", label: "Original voice" },
+    { prompt: "music", kind: "music", label: "Original music" },
+    { prompt: "sound effects", kind: "sfx", label: "Original effects" },
+  ] as const;
+  const separateStems = async (R: RunApi, original: AudioBuffer, duration: number) => {
+    R.note("Splitting voice, music and effects with SAM Audio");
+    const fd = new FormData();
+    fd.append("audio", await fittedWav(original, 3_600_000, 32000, true), "audio.wav");
+    fd.append("prompts", JSON.stringify(SAM_STEMS.map((s) => s.prompt)));
+    const sfd = new FormData();
+    sfd.append("action", "transcribe");
+    sfd.append("audio", await speechWav(original), "audio.wav");
+    const [sepRes, sttRes] = await Promise.all([fetch("/api/separate", { method: "POST", body: fd, signal: R.signal }), elFetch("/api/audio", { method: "POST", body: sfd })]);
+    const sep = await jsonOf<{ stems: { prompt: string; url?: string; error?: string }[] }>(sepRes);
+    const stt = sttRes.ok ? await sttRes.json() : { text: "", words: [] };
+    const len = Math.min(original.duration, duration);
+    const blobs: Record<string, Blob> = {};
+    const out: AudioClip[] = [];
+    const wav = toWav(original, original.numberOfChannels === 1);
+    const origClip: AudioClip = { id: uid(), kind: "original", label: "Original mix", start: 0, duration: len, gain: 1, muted: true, source: "original" };
+    blobs[origClip.id] = wav;
+    out.push(origClip);
+    const words = (stt.words as { w: string; s: number; e: number }[]) ?? [];
+    for (const def of SAM_STEMS) {
+      const got = sep.stems.find((x) => x.prompt === def.prompt);
+      if (!got?.url) {
+        R.note(`${def.label}: ${got?.error ?? "missing"}`);
+        continue;
+      }
+      const blob = await (await fetch(got.url, { signal: R.signal })).blob();
+      const buf = await decodeAudio(blob);
+      // A stem that's essentially silent (no music in the video, say) isn't worth a lane.
+      const d = buf.getChannelData(0);
+      let e = 0;
+      for (let i = 0; i < d.length; i += 64) e += d[i] * d[i];
+      if (Math.sqrt(e / Math.ceil(d.length / 64)) < 0.004) {
+        R.note(`${def.label}: silent, skipped`);
+        continue;
+      }
+      const clip: AudioClip = { id: uid(), kind: def.kind, label: def.label, start: 0, duration: Math.min(buf.duration, len), gain: 1, muted: false, source: "original" };
+      if (def.kind === "voice" && stt.text?.trim()) Object.assign(clip, { text: stt.text, words: words.length ? words : undefined });
+      // Tempo from the music, hit times from the effects: the rebuilt versions line up with both.
+      if (def.kind !== "voice") clip.beats = detectBeats(buf);
+      blobs[clip.id] = blob;
+      out.push(clip);
+    }
+    if (out.length === 1) throw new Error("no stems came back");
+    R.note(`${out.length - 1} stems: ${out.slice(1).map((c) => c.label.replace("Original ", "")).join(", ")}${words.length ? ` · ${words.length} words transcribed` : ""}`);
+    const transcript = words.length ? words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ") : stt.text || undefined;
+    return { clips: out, blobs, transcript, separated: true };
+  };
+
   // Pull the audio out of a reference video: original, isolated voice, background (= original − voice), transcript.
   const extractStems = async (R: RunApi, videoBlobUrl: string, duration: number) => {
     const blob = await (await fetch(videoBlobUrl)).blob();
@@ -1228,6 +1284,18 @@ export default function Studio() {
       return null; // no audio track
     }
     if (original.duration < 0.5) return null;
+    // With SAM Audio available, split into real voice / music / effects stems.
+    const sam = await fetch("/api/separate")
+      .then((r) => r.json())
+      .then((j) => !!j.available)
+      .catch(() => false);
+    if (sam) {
+      const split = await separateStems(R, original, duration).catch((e) => {
+        R.note(`Stem separation failed (${(e as Error).message}); using voice isolation instead`);
+        return null;
+      });
+      if (split) return split;
+    }
     const wav = toWav(original, original.numberOfChannels === 1);
     // Full quality stays here as the "original mix" stem; the speech services get a copy that fits a request.
     const speech = await speechWav(original);
@@ -1276,7 +1344,7 @@ export default function Studio() {
   };
 
   // Score the film: plan with Claude, then generate voice / sfx / music with ElevenLabs.
-  const scoreFilm = async (Rin: RunApi | null, target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean } = {}) => {
+  const scoreFilm = async (Rin: RunApi | null, target: Project = project, opts: { recreate?: boolean; transcript?: string; hasBackground?: boolean; rebuild?: boolean } = {}) => {
     if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
     const own = !Rin;
     const R = Rin ?? startRun(target.id, "score", "Sound");
@@ -1288,8 +1356,12 @@ export default function Studio() {
         recreate: true,
         transcript: voice?.words?.length ? voice.words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ") : voice?.text,
         hasBackground: stems.some((c) => c.kind === "background"),
+        rebuild: stems.some((c) => c.kind === "music" || c.kind === "sfx"),
       };
     }
+    // Rebuilding separated stems: match the original music's tempo and the effects' hit times.
+    const origMusic = stems.find((c) => c.kind === "music" && c.beats);
+    const origFx = stems.find((c) => c.kind === "sfx" && c.beats);
     setAudioBusy("Planning the sound…");
     R.phase("Planning the sound design");
     try {
@@ -1304,6 +1376,9 @@ export default function Studio() {
           recreate: !!opts.recreate,
           transcript: opts.transcript,
           hasBackground: !!opts.hasBackground,
+          rebuild: opts.rebuild
+            ? `REBUILD: the original's ${stems.map((c) => c.kind).filter((k) => k !== "original").join(", ")} stems were separated. Write new versions of each: voice lines from the transcript at their original timings${origMusic?.beats ? `; music matching the original's tempo (about ${Math.round(origMusic.beats.bpm)} BPM), mood and structure` : ""}; effects at the moments the original has them${origFx?.beats?.hits.length ? ` (hits near ${origFx.beats.hits.slice(0, 24).map((t) => t.toFixed(2)).join(", ")}s)` : ""}.`
+            : undefined,
           grid: (() => {
             const m = (target.audio ?? []).find((c) => c.kind === "music" && c.beats);
             return m?.beats ? `Music grid: ${Math.round(m.beats.bpm)} BPM; downbeats at ${m.beats.downbeats.slice(0, 16).map((t) => (t + m.start).toFixed(2)).join(", ")}s. Place cues on beats or downbeats.` : undefined;
@@ -1332,8 +1407,8 @@ export default function Studio() {
       const blobsNew: Record<string, Blob> = {};
       const b64blob = (b64: string, type: string) => new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type });
 
-      // Voice, line by line (skipped in recreate mode when the original voice exists).
-      const voiceLines = opts.recreate && opts.transcript ? [] : (plan.voice as { p: number; text: string }[]);
+      // Voice, line by line (skipped in recreate mode when the original voice is kept as is).
+      const voiceLines = opts.recreate && opts.transcript && !opts.rebuild ? [] : (plan.voice as { p: number; text: string }[]);
       for (let i = 0; i < voiceLines.length; i++) {
         const line = voiceLines[i];
         setAudioBusy(`Voicing line ${i + 1} of ${voiceLines.length}…`);
@@ -1384,8 +1459,8 @@ export default function Studio() {
       made.push(...fx);
       R.note(`${fx.length} sound effects`);
 
-      // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background exists.
-      if (plan.music && !(opts.recreate && opts.hasBackground)) {
+      // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background is kept.
+      if (plan.music && (opts.rebuild || !(opts.recreate && opts.hasBackground))) {
         setAudioBusy("Composing music…");
         const mr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }) });
         if (mr.ok) {
@@ -1410,8 +1485,17 @@ export default function Studio() {
         }
       }
 
-      // Snap effects to the music's beat grid (an uploaded track's detected beats, or the bed's).
-      const gridClip = [...made, ...(target.audio ?? [])].find((c) => c.kind === "music" && c.beats && !c.muted);
+      // Rebuilt effects land on the original's hits; otherwise snap to the music's beat grid.
+      if (origFx?.beats?.hits.length) {
+        let snapped = 0;
+        for (const c of made) {
+          if (c.kind !== "sfx") continue;
+          const t = snapToGrid(c.start, origFx.beats.hits, 0.3);
+          if (t !== c.start) [c.start, snapped] = [t, snapped + 1];
+        }
+        if (snapped) R.note(`${snapped} effect${snapped === 1 ? "" : "s"} placed on the original's hits`);
+      }
+      const gridClip = origFx ? null : [...made, ...(target.audio ?? [])].find((c) => c.kind === "music" && c.beats && !c.muted && c.source !== "original");
       if (gridClip?.beats) {
         const grid = [...gridClip.beats.beats, ...gridClip.beats.hits].map((t) => t + gridClip.start);
         let snapped = 0;
@@ -1429,7 +1513,9 @@ export default function Studio() {
       setAudioBusy("Saving sound…");
       setAudioBlobs((m) => ({ ...m, ...blobsNew }));
       const stored = await Promise.all(made.map((c) => storeClipBlob(target.id, c, blobsNew[c.id])));
-      const keepOld = (target.audio ?? []).filter((c) => c.source !== "generated");
+      // A rebuilt stem replaces its original in the mix; the original stays, muted, for comparison.
+      const rebuilt = new Set(opts.rebuild ? made.map((c) => c.kind) : []);
+      const keepOld = (target.audio ?? []).filter((c) => c.source !== "generated").map((c) => (c.source === "original" && rebuilt.has(c.kind) ? { ...c, muted: true } : c));
       upsert({ ...target, audio: [...keepOld, ...stored] }, true);
       setNotice(`Scored: ${stored.length} sound element${stored.length === 1 ? "" : "s"} added.`);
     } catch (e) {
@@ -1642,7 +1728,13 @@ export default function Studio() {
   // Your films first (favorites on top), then the examples.
   const ownFilms = projects.filter((p) => !p.builtin && (!favOnly || p.favorite)).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
   const tile = (p: Project) => (
-    <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)}>
+    <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)} title={p.title}>
+      <Thumb film={p} fonts={fonts} />
+      {p.building && runs[p.building]?.status === "running" && (
+        <span className="lib-building">
+          <span className="dot" /> {runs[p.building].steps.at(-1)?.label ?? "Starting"}
+        </span>
+      )}
       <div className="lib-title">
         {!p.builtin && (
           <span
@@ -1659,15 +1751,6 @@ export default function Studio() {
           </span>
         )}
         {p.title}
-      </div>
-      <div className="lib-meta">
-        {p.building && runs[p.building]?.status === "running" ? (
-          <span className="lib-building">
-            <span className="dot" /> {runs[p.building].steps.at(-1)?.label ?? "Starting"}
-          </span>
-        ) : null}
-        {p.aspect} · {p.duration}s
-        {p.videos?.length ? ` · ${p.videos.length} video${p.videos.length > 1 ? "s" : ""}` : ""}
       </div>
       {!p.builtin && (
         <span
@@ -1793,7 +1876,7 @@ export default function Studio() {
             <>
               <div className="section-label lib-head">
                 <span className="lib-head-title">
-                  Examples<span> · ten opposite styles, open one or describe your own</span>
+                  Examples<span> · open one, or describe your own</span>
                 </span>
               </div>
               <div className="library">{EXAMPLES.map((e) => tile(projects.find((p) => p.id === e.id) ?? e))}</div>
