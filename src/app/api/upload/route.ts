@@ -3,6 +3,16 @@ import { ownsPath, requireUser, unauthorized } from "@/lib/store";
 
 // Issues short-lived client tokens so browsers upload videos and images
 // straight to Blob (bypassing the function body size limit).
+
+// What each folder may hold. videos/ is what share links publish, so it takes renders only.
+// audio/ also takes MP4/WebM: sound added from a video file is stored as that file
+// (shares only publish videos/, and media serves everything sandboxed).
+const FOLDERS: Record<string, string[]> = {
+  videos: ["video/mp4", "video/webm"],
+  assets: ["image/*"],
+  audio: ["audio/*", "video/mp4", "video/webm"],
+};
+
 export async function POST(req: Request) {
   const userId = await requireUser();
   if (!userId) return unauthorized();
@@ -13,8 +23,10 @@ export async function POST(req: Request) {
       request: req,
       onBeforeGenerateToken: async (pathname) => {
         if (!ownsPath(userId, pathname)) throw new Error("Not your folder.");
+        const folder = pathname.split("/")[2] ?? "";
+        if (!Object.hasOwn(FOLDERS, folder)) throw new Error("Not your folder.");
         return {
-          allowedContentTypes: ["video/mp4", "video/webm", "image/*", "audio/*"],
+          allowedContentTypes: FOLDERS[folder],
           maximumSizeInBytes: 500 * 1024 * 1024,
           addRandomSuffix: false,
           allowOverwrite: true,

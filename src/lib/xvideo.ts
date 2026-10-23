@@ -58,7 +58,7 @@ export async function readXVideo(url: string): Promise<XVideoRef> {
 export function isXMediaUrl(u: string) {
   try {
     const url = new URL(u);
-    return url.protocol === "https:" && (url.hostname === "video.twimg.com" || url.hostname === "pbs.twimg.com");
+    return url.protocol === "https:" && !url.port && !url.username && !url.password && (url.hostname === "video.twimg.com" || url.hostname === "pbs.twimg.com");
   } catch {
     return false;
   }

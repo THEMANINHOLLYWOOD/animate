@@ -41,14 +41,22 @@ function openVideo(src: string) {
 }
 
 // Some files never fire "seeked" for some timestamps; don't wait forever on one frame.
+// Resolves true once the picture at t is showing, false when the seek never got there
+// (the element would still be showing an earlier frame, or none at all).
 const seek = (v: HTMLVideoElement, t: number) =>
-  new Promise<void>((res) => {
-    const timer = setTimeout(res, 4000);
+  new Promise<boolean>((res) => {
+    const target = Math.min(Math.max(0, t), Math.max(0, v.duration - 0.05));
+    const at = () => !v.seeking && Math.abs(v.currentTime - target) < 0.25;
+    const timer = setTimeout(() => {
+      v.onseeked = null;
+      res(at() && v.readyState >= 2);
+    }, 4000);
     v.onseeked = () => {
       clearTimeout(timer);
-      res();
+      v.onseeked = null;
+      res(at());
     };
-    v.currentTime = Math.min(Math.max(0, t), Math.max(0, v.duration - 0.05));
+    v.currentTime = target;
   });
 
 export async function probeVideo(src: string) {
@@ -71,11 +79,16 @@ export async function sampleFrames(src: string, count: number, maxSide = 768, on
   c.height = Math.max(1, Math.round(v.videoHeight * s));
   const g = c.getContext("2d")!;
   const out: Frame[] = [];
+  let missed = 0;
   for (let i = 0; i < count; i++) {
     const t = ((i + 0.5) / count) * v.duration;
-    await seek(v, t);
-    g.drawImage(v, 0, 0, c.width, c.height);
-    out.push({ t, data: c.toDataURL("image/jpeg", 0.82).split(",")[1] });
+    // A seek that never landed would label an earlier picture with this timestamp: leave that frame out.
+    if (await seek(v, t)) {
+      g.drawImage(v, 0, 0, c.width, c.height);
+      out.push({ t, data: c.toDataURL("image/jpeg", 0.82).split(",")[1] });
+    } else if (++missed > count / 2) {
+      throw new Error("This video won't seek reliably, so its frames can't be read. Re-export it as an MP4 (H.264) and try again.");
+    }
     onFrame?.(i + 1);
   }
   return out;

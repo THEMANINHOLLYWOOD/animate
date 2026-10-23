@@ -1,9 +1,13 @@
+import { head } from "@vercel/blob";
+import { safeFilename, UNTRUSTED_HEADERS, videoType } from "@/lib/media";
 import { createShare, deleteShare, newShareId, readShare, streamShareVideo } from "@/lib/share";
 import { ownsPath, requireUser, unauthorized } from "@/lib/store";
 
 // POST   { pathname, title, w, h, duration } -> { id }   (owner only)
 // DELETE ?id=…                                           (owner only)
 // GET    ?id=…&dl=1                                      (public: download the shared MP4)
+// Only rendered videos can be shared, and they're always served as video, sandboxed:
+// a share never puts someone's upload (an SVG, say) on this origin as a page.
 
 export async function POST(req: Request) {
   const userId = await requireUser();
@@ -12,6 +16,10 @@ export async function POST(req: Request) {
   if (typeof b?.pathname !== "string" || !ownsPath(userId, b.pathname) || !/\/videos\//.test(b.pathname)) {
     return Response.json({ error: "Only your saved videos can be shared." }, { status: 400 });
   }
+  // Anything can be uploaded under videos/; only an actual MP4/WebM render may be published.
+  const blob = await head(b.pathname).catch(() => null);
+  if (!blob) return Response.json({ error: "That video couldn't be found." }, { status: 404 });
+  if (!videoType(blob.contentType)) return Response.json({ error: "Only your saved videos can be shared." }, { status: 400 });
   try {
     const share = await createShare({
       id: newShareId(),
@@ -45,13 +53,20 @@ export async function GET(req: Request) {
   if (!share) return Response.json({ error: "This link is no longer available." }, { status: 404 });
   const r = await streamShareVideo(share);
   if (!r || r.statusCode !== 200) return Response.json({ error: "Video not found." }, { status: 404 });
-  const name = share.title.replace(/[^\w\- ]+/g, "").trim() || "animation";
+  // Shares made before videos were checked could point at anything: serve only real videos.
+  const video = videoType(r.blob.contentType);
+  if (!video) {
+    await r.stream.cancel();
+    return Response.json({ error: "Video not found." }, { status: 404 });
+  }
+  const name = safeFilename(share.title.replace(/[^\w\- ]+/g, ""), "animation");
   return new Response(r.stream, {
     headers: {
-      "Content-Type": r.blob.contentType,
+      "Content-Type": video.type,
       "Content-Length": String(r.blob.size),
-      "Content-Disposition": `${q.get("dl") ? "attachment" : "inline"}; filename="${name}.mp4"`,
+      "Content-Disposition": `${q.get("dl") ? "attachment" : "inline"}; filename="${name}.${video.ext}"`,
       "Cache-Control": "public, max-age=300",
+      ...UNTRUSTED_HEADERS,
     },
   });
 }

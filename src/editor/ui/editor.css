@@ -15,6 +15,30 @@
   color: var(--stone);
 }
 
+/* Splitting a film's text into layers, on first open. */
+.ed-loading {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ed-progress {
+  display: block;
+  width: 200px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.ed-progress > i {
+  display: block;
+  height: 100%;
+  background: var(--clay);
+  transition: width 0.2s linear;
+}
+
 .ed-top {
   display: flex;
   justify-content: space-between;
@@ -39,6 +63,77 @@
 .ed-title {
   color: var(--stone);
   font-size: 13px;
+}
+
+/* A save that failed, or a split that couldn't be made. */
+.ed-notice {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--clay-deep);
+}
+
+/* Whether edits have reached the film. */
+.ed-save {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--stone);
+}
+
+.ed-save.err {
+  color: var(--clay-deep);
+}
+
+/* The film changed elsewhere while it was open here: whose version stays. */
+.ed-conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--clay) 12%, #fff);
+  font-size: 12px;
+  color: var(--clay-deep);
+}
+
+.ed-conflict > span {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-conflict .ed-link,
+.ed-notice .ed-link,
+.ed-save .ed-link {
+  white-space: nowrap;
+}
+
+/* A version an earlier editor kept, set aside until it's opened or deleted. */
+.ed-earlier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--clay-deep);
+}
+
+.ed-earlier > span {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ed-earlier .ed-link {
+  white-space: nowrap;
 }
 
 .ed-btn {
@@ -389,6 +484,59 @@ kbd {
   margin-bottom: 4px;
 }
 
+/* What's true of the selected layer: locked, stood down, linked, failing to draw. */
+.ed-note {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--stone);
+}
+
+.ed-note.err {
+  color: var(--clay-deep);
+}
+
+/* The inspector's fields, all disabled at once while the layer is locked. */
+.ed-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ed-fields:disabled {
+  opacity: 0.55;
+}
+
+/* Stood-down split text: editable, but nothing it holds shows until its text is split again. */
+.ed-insp.stood .ed-fields {
+  opacity: 0.55;
+}
+
+.ed-name:disabled {
+  color: var(--slate);
+}
+
+.ed-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--clay-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.ed-link:disabled {
+  color: var(--stone);
+  text-decoration: none;
+  cursor: default;
+}
+
 .ed-field {
   display: grid;
   grid-template-columns: 96px 1fr;
@@ -496,6 +644,14 @@ kbd {
 }
 
 /* ── Timeline ─────────────────────────────────────── */
+
+.ed-captions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  cursor: pointer;
+}
 
 .tl {
   display: grid;
@@ -653,6 +809,41 @@ kbd {
 
 .tl-layer.hidden {
   opacity: 0.45;
+}
+
+/* Locked: selectable, but nothing moves. */
+.tl-layer.locked .tl-clip {
+  cursor: default;
+  background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(20, 20, 19, 0.05) 6px 8px);
+}
+
+/* Split text standing down: its code draws it again until it's split anew. */
+.tl-layer.stood .tl-name,
+.tl-layer.stood .tl-clip-name {
+  color: var(--stone);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-strong);
+}
+
+.tl-layer.stood .tl-clip {
+  background: transparent;
+  border-style: dashed;
+}
+
+.tl-badge {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--ivory);
+  font-family: var(--font-mono), monospace;
+  font-size: 9px;
+  line-height: 15px;
+  color: var(--stone);
+}
+
+.tl-badge.err {
+  background: var(--clay);
+  color: #fff;
 }
 
 .tl-chev {
@@ -848,6 +1039,8 @@ kbd {
   position: absolute;
   top: 0;
   bottom: 0;
+  left: 0;
+  will-change: transform;
   width: 1.5px;
   background: var(--clay);
   pointer-events: none;
@@ -881,6 +1074,23 @@ kbd {
   }
 
   .ed-title {
+    display: none;
+  }
+
+  .ed-notice {
+    max-width: 40vw;
+  }
+
+  .ed-earlier > span,
+  .ed-conflict > span {
+    max-width: 28vw;
+  }
+
+  .ed-save {
+    max-width: 30vw;
+  }
+
+  .ed-captions {
     display: none;
   }
 

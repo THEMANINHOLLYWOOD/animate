@@ -44,3 +44,39 @@ describe("text identity", () => {
     expect(evolves("Each beat writes a trace.", "Two pumps. One rhythm. For life.")).toBe(false);
   });
 });
+
+describe("recorded numbers", () => {
+  it("puts key times just before their frame, never after", async () => {
+    const { keyTime } = await import("./splitText");
+    expect(keyTime(0)).toBe(0);
+    for (const t of [1 / 30, 0.3, 7 / 24, 12.5 / 30, 3]) {
+      expect(keyTime(t)).toBeLessThan(t - 4e-5);
+      expect(keyTime(t)).toBeGreaterThan(t - 2e-4);
+    }
+  });
+});
+
+describe("re-splitting a code layer", () => {
+  it("swaps the old text layers for the new ones just above the code, as one edit", async () => {
+    const { produce } = await import("immer");
+    const { Doc } = await import("../doc/schema");
+    const { applySplit } = await import("./splitText");
+    const doc = Doc.parse({
+      meta: { id: "f", title: "F", size: { w: 100, h: 100 }, duration: 1 },
+      layers: [
+        { id: "bg", name: "bg", type: "shape", start: 0, end: 1 },
+        { id: "code", name: "Artwork (code)", type: "code", start: 0, end: 1, props: { code: "new", skipText: true, keepText: ["x"], splitHash: "old" } },
+        { id: "t1", name: "old 1", type: "text", start: 0, end: 1, props: { splitFrom: "code" } },
+        { id: "mine", name: "mine", type: "text", start: 0, end: 1 },
+        { id: "t2", name: "old 2", type: "text", start: 0, end: 1, props: { splitFrom: "code" } },
+      ],
+    });
+    const fresh = Doc.parse({ ...doc, layers: [{ id: "n1", name: "new", type: "text", start: 0, end: 1, props: { splitFrom: "code" } }] }).layers;
+    const r = { name: "Artwork (code)", props: { skipText: true, keepText: [], splitHash: "h" }, layers: fresh };
+    const next = produce(doc, applySplit("code", "new", r));
+    expect(next.layers.map((l) => l.id)).toEqual(["bg", "code", "n1", "mine"]);
+    expect(next.layers[1].props).toEqual({ code: "new", skipText: true, keepText: [], splitHash: "h" });
+    // The code changed again while splitting: nothing happens.
+    expect(produce(doc, applySplit("code", "older", r))).toBe(doc);
+  });
+});

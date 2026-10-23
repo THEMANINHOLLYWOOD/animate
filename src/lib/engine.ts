@@ -151,8 +151,10 @@ export async function exportVideo(opts: {
   audio?: AudioBuffer | null; // rendered mix; muxed as AAC when the browser can encode it
   captions?: Cue[]; // burned in when given
   bitsPerPixel?: number; // bitrate per pixel per frame (default 0.18; previews use less)
+  sliceMs?: number; // hand the page back after this much drawing (default: every 6 frames)
+  realtimeFallback?: boolean; // false: throw NotSupportedError instead of recording in real time when H.264 can't be encoded
 }): Promise<{ blob: Blob; ext: string; audioIncluded: boolean }> {
-  const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio, captions } = opts;
+  const { scene, fonts, assets, W, H, T, fps, onProgress, signal, audio, captions, sliceMs } = opts;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
@@ -161,6 +163,7 @@ export async function exportVideo(opts: {
   const frames = Math.round(T * fps);
 
   const codec = await pickCodec(W, H, fps, opts.bitsPerPixel);
+  if (!codec && opts.realtimeFallback === false) throw new DOMException("This browser can't encode H.264 video", "NotSupportedError");
   if (!codec) return exportRealtime({ ...opts, canvas, renderer: r });
 
   const aac = audio && typeof AudioEncoder !== "undefined" ? await pickAudioCodec(audio) : null;
@@ -194,26 +197,32 @@ export async function exportVideo(opts: {
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => (failure = e),
   });
-  enc.configure(codec);
-
-  for (let i = 0; i < frames; i++) {
-    if (signal?.aborted) throw new DOMException("Export cancelled", "AbortError");
-    if (failure) throw failure;
-    r.draw(scene, i / fps, T, assets);
-    if (captions?.length) {
-      const cue = cueAt(captions, i / fps);
-      if (cue) drawCaption(ctx, W, H, cue.text, fonts.sans);
+  // Closed however this ends (done, cancelled, or a scene error): an open encoder holds a hardware session.
+  try {
+    enc.configure(codec);
+    let slice = performance.now();
+    for (let i = 0; i < frames; i++) {
+      if (signal?.aborted) throw new DOMException("Export cancelled", "AbortError");
+      if (failure) throw failure;
+      r.draw(scene, i / fps, T, assets);
+      if (captions?.length) {
+        const cue = cueAt(captions, i / fps);
+        if (cue) drawCaption(ctx, W, H, cue.text, fonts.sans);
+      }
+      const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+      enc.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+      frame.close();
+      while (enc.encodeQueueSize > 8) await new Promise((res) => setTimeout(res, 1));
+      if (sliceMs === undefined ? i % 6 === 0 : performance.now() - slice >= sliceMs) {
+        onProgress?.(i / frames);
+        await new Promise((res) => setTimeout(res, 0));
+        slice = performance.now();
+      }
     }
-    const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
-    enc.encode(frame, { keyFrame: i % (fps * 2) === 0 });
-    frame.close();
-    while (enc.encodeQueueSize > 8) await new Promise((res) => setTimeout(res, 1));
-    if (i % 6 === 0) {
-      onProgress?.(i / frames);
-      await new Promise((res) => setTimeout(res, 0));
-    }
+    await enc.flush();
+  } finally {
+    if (enc.state !== "closed") enc.close();
   }
-  await enc.flush();
   if (failure) throw failure;
   muxer.finalize();
   onProgress?.(1);
@@ -229,7 +238,8 @@ async function pickAudioCodec(audio: AudioBuffer): Promise<AudioEncoderConfig | 
   }
 }
 
-async function pickCodec(W: number, H: number, fps: number, bpp = 0.18): Promise<VideoEncoderConfig | null> {
+// The H.264 config this browser can encode at this size, or null (no WebCodecs, or no H.264 encoder).
+export async function pickCodec(W: number, H: number, fps: number, bpp = 0.18): Promise<VideoEncoderConfig | null> {
   if (typeof VideoEncoder === "undefined") return null;
   for (const codec of ["avc1.640034", "avc1.640033", "avc1.4d0034", "avc1.42003e"]) {
     const config: VideoEncoderConfig = {

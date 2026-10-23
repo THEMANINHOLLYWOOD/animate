@@ -1,13 +1,20 @@
+import { errorResponse, limit } from "@/lib/limits";
+import { canonicalWav } from "@/lib/media";
 
 // ElevenLabs bridge. The key stays server-side; results stream straight back.
-//   POST multipart  action=isolate      audio=<file>            -> audio/mpeg (voice only)
-//   POST multipart  action=transcribe   audio=<file>            -> { text, words:[{w,s,e}] }
+//   POST multipart  action=isolate      audio=<wav ≤ 120 s>     -> audio/mpeg (voice only)
+//   POST multipart  action=transcribe   audio=<wav ≤ 120 s>     -> { text, words:[{w,s,e}] }
 //   POST json       action=sfx          { prompt, seconds }     -> audio/mpeg
 //   POST json       action=tts          { text, voice? }        -> { audio (base64 mp3), words:[{w,s,e}] }
-//   POST json       action=music        { prompt, seconds }     -> audio/mpeg (paid plans)
+//   POST json       action=music        { prompt, seconds ≤ 120 } -> audio/mpeg (paid plans)
 //   GET  ?voices=1                                              -> { voices:[{id,name,labels}] }
+// Isolation and transcription bill per minute of input, so only uncompressed WAV is taken
+// (its length is exact from the header) and nothing longer than the longest film plus slack.
 
 export const maxDuration = 120;
+const MAX_AUDIO_SECONDS = 120;
+const MAX_MUSIC_MS = 120_000;
+const JSON_GROUPS = { sfx: "sfx", tts: "voice", music: "music" } as const;
 const EL = "https://api.elevenlabs.io/v1";
 const key = () => process.env.ELEVENLABS_API_KEY ?? "";
 
@@ -77,30 +84,39 @@ export async function POST(req: Request) {
   if (ct.startsWith("multipart/form-data")) {
     const form = await req.formData();
     const action = String(form.get("action") ?? "");
-    const audio = form.get("audio");
-    if (!(audio instanceof Blob)) return Response.json({ error: "No audio attached." }, { status: 400 });
+    if (action !== "isolate" && action !== "transcribe") return Response.json({ error: "Unknown action." }, { status: 400 });
+    const limited = await limit(req, "speech");
+    if (limited) return limited;
+    const file = form.get("audio");
+    if (!(file instanceof Blob)) return Response.json({ error: "No audio attached." }, { status: 400 });
+    // The measured audio rebuilt as a plain WAV, so ElevenLabs bills exactly the length checked here.
+    const wav = canonicalWav(new Uint8Array(await file.arrayBuffer()));
+    if (!wav) return Response.json({ error: "Send the audio as an uncompressed WAV." }, { status: 415 });
+    if (wav.info.seconds > MAX_AUDIO_SECONDS) return errorResponse(`That audio is ${Math.round(wav.info.seconds)} s long; the limit is ${MAX_AUDIO_SECONDS} s.`, 413);
+    const audio = new Blob([wav.wav], { type: "audio/wav" });
     const fd = new FormData();
     if (action === "isolate") {
       fd.append("audio", audio, "audio.wav");
       return passthrough(await fetch(`${EL}/audio-isolation`, { method: "POST", headers: H, body: fd }));
     }
-    if (action === "transcribe") {
-      fd.append("file", audio, "audio.wav");
-      fd.append("model_id", "scribe_v1");
-      fd.append("timestamps_granularity", "word");
-      const r = await fetch(`${EL}/speech-to-text`, { method: "POST", headers: H, body: fd });
-      if (!r.ok) return Response.json({ error: elError(r.status, await r.text()) }, { status: 502 });
-      const j = await r.json();
-      const words = ((j.words ?? []) as { text: string; start: number; end: number; type?: string }[])
-        .filter((w) => w.type !== "spacing")
-        .map((w) => ({ w: w.text, s: w.start, e: w.end }));
-      return Response.json({ text: j.text ?? "", language: j.language_code ?? null, words });
-    }
-    return Response.json({ error: "Unknown action." }, { status: 400 });
+    // transcribe
+    fd.append("file", audio, "audio.wav");
+    fd.append("model_id", "scribe_v1");
+    fd.append("timestamps_granularity", "word");
+    const r = await fetch(`${EL}/speech-to-text`, { method: "POST", headers: H, body: fd });
+    if (!r.ok) return Response.json({ error: elError(r.status, await r.text()) }, { status: 502 });
+    const j = await r.json();
+    const words = ((j.words ?? []) as { text: string; start: number; end: number; type?: string }[])
+      .filter((w) => w.type !== "spacing")
+      .map((w) => ({ w: w.text, s: w.start, e: w.end }));
+    return Response.json({ text: j.text ?? "", language: j.language_code ?? null, words });
   }
 
   const body = await req.json();
   const action = String(body.action ?? "");
+  if (!Object.hasOwn(JSON_GROUPS, action)) return Response.json({ error: "Unknown action." }, { status: 400 });
+  const limited = await limit(req, JSON_GROUPS[action as keyof typeof JSON_GROUPS]);
+  if (limited) return limited;
   if (action === "sfx") {
     const seconds = Math.min(22, Math.max(0.5, Number(body.seconds) || 2));
     return passthrough(
@@ -123,7 +139,7 @@ export async function POST(req: Request) {
     return Response.json({ audio: j.audio_base64, words: wordsFromAlignment(j.alignment ?? j.normalized_alignment ?? null) });
   }
   if (action === "music") {
-    const ms = Math.min(300_000, Math.max(3000, Math.round((Number(body.seconds) || 30) * 1000)));
+    const ms = Math.min(MAX_MUSIC_MS, Math.max(3000, Math.round((Number(body.seconds) || 30) * 1000)));
     return passthrough(
       await fetch(`${EL}/music`, {
         method: "POST",

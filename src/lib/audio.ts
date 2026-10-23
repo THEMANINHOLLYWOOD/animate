@@ -15,6 +15,7 @@ export type AudioClip = {
   prompt?: string; // sfx / music prompt
   words?: { w: string; s: number; e: number }[]; // voice word timings (film seconds)
   beats?: { bpm: number; beats: number[]; downbeats: number[]; hits: number[] }; // music grid (film seconds)
+  separated?: boolean; // an original stem split out by SAM Audio: scoring rebuilds it and mutes this one
 };
 
 let ctx: AudioContext | null = null;
@@ -59,13 +60,32 @@ export function toWav(buffer: AudioBuffer, mono = false): Blob {
   return new Blob([data.buffer], { type: "audio/wav" });
 }
 
-// A WAV copy that fits under maxBytes (server requests are capped at 4.5 MB in production):
-// the highest sample rate up to maxRate, in stereo while that still allows ≥ 22.05 kHz, else mono.
+// The first `seconds` of a buffer (the part a film actually plays).
+export function trimAudio(b: AudioBuffer, seconds: number): AudioBuffer {
+  const n = Math.max(1, Math.floor(seconds * b.sampleRate));
+  if (n >= b.length) return b;
+  const out = audioContext().createBuffer(b.numberOfChannels, n, b.sampleRate);
+  for (let c = 0; c < b.numberOfChannels; c++) out.copyToChannel(b.getChannelData(c).subarray(0, n), c);
+  return out;
+}
+
+// Channels, sample rate and length (frames) of a 16-bit WAV of `duration` seconds that fits in maxBytes:
+// the highest rate up to maxRate, in stereo while that still allows ≥ 22.05 kHz, else mono, never under
+// 8 kHz. Audio too long for even that is cut short rather than sent over the limit.
+export function wavPlan(duration: number, channels: number, maxBytes: number, maxRate: number, stereo: boolean) {
+  const room = Math.floor((maxBytes - 44) / 2); // 16-bit samples, all channels together
+  const rateFor = (ch: number) => Math.min(maxRate, Math.floor(room / (duration * ch)));
+  const ch = stereo && channels > 1 && rateFor(2) >= 22050 ? 2 : 1;
+  const rate = Math.max(8000, rateFor(ch));
+  const frames = Math.max(1, Math.min(Math.floor(duration * rate), Math.floor(room / ch)));
+  return { channels: ch, rate, frames };
+}
+
+// A WAV copy that fits under maxBytes (server requests are capped at 4.5 MB in production).
 export async function fittedWav(b: AudioBuffer, maxBytes = 3_600_000, maxRate = 24000, stereo = false): Promise<Blob> {
-  const rateFor = (ch: number) => Math.max(8000, Math.min(maxRate, Math.floor((maxBytes - 44) / (b.duration * 2 * ch))));
-  const ch = stereo && b.numberOfChannels > 1 && rateFor(2) >= 22050 ? 2 : 1;
-  const rate = rateFor(ch);
-  const off = new OfflineAudioContext(ch, Math.ceil(b.duration * rate), rate);
+  const { channels: ch, rate, frames } = wavPlan(b.duration, b.numberOfChannels, maxBytes, maxRate, stereo);
+  // Rendering stops at `frames`, so anything that doesn't fit is cut off the end.
+  const off = new OfflineAudioContext(ch, frames, rate);
   const s = off.createBufferSource();
   s.buffer = b;
   s.connect(off.destination);

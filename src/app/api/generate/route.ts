@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
+import { clip, errorResponse, meterStage, over } from "@/lib/limits";
 import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
 import type { BrandKit } from "@/lib/brand";
 
@@ -27,7 +29,98 @@ type Body = {
   notes?: string; // extra instructions for the animator (e.g. elements drawn as separate layers)
   critique?: string; // problems found by the review of rendered stills
   continuation?: string; // text produced so far by a run the time limit cut off
+  // A retry after a run that was still thinking at the limit. "none" is low effort plus an
+  // instruction to start writing at once (thinking can't be turned off on this model), so text
+  // starts early and the client's continuations carry it the rest of the way.
+  effortCap?: "none" | "low" | "medium" | "high";
 };
+
+// What a caller can put in front of the model, well above anything the Studio sends
+// (text attachments are cut to 200k characters there; reference frames are a few dozen images).
+const CAP = {
+  prompt: 30_000,
+  treatment: 150_000,
+  notes: 60_000,
+  critique: 10_000,
+  error: 10_000,
+  previousCode: 300_000,
+  continuation: 400_000,
+  history: 16,
+  historyText: 20_000,
+  files: 64,
+  pdfs: 5,
+  fileText: 200_000,
+  brands: 6,
+  totalText: 1_000_000,
+};
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+// The request with every field checked and capped, or the reason it was refused.
+function readBody(raw: unknown): Body | string {
+  const b = (raw ?? {}) as Record<string, unknown>;
+  if (b.stage !== "direct" && b.stage !== "animate") return "Unknown stage.";
+  const long = (["prompt", "treatment", "notes", "critique", "error", "previousCode", "continuation"] as const).find((k) => over(b[k], CAP[k]));
+  if (long) return `The ${long === "previousCode" ? "scene code" : long} is too long (over ${CAP[long].toLocaleString("en")} characters).`;
+  const files = Array.isArray(b.files) ? (b.files as InFile[]) : [];
+  if (files.length > CAP.files) return `Too many attachments (the limit is ${CAP.files}).`;
+  if (files.filter((f) => f?.kind === "pdf").length > CAP.pdfs) return `Too many PDFs (the limit is ${CAP.pdfs}).`;
+  const cleanFiles: InFile[] = [];
+  for (const f of files) {
+    const name = clip(f?.name, 200);
+    if (f?.kind === "image") {
+      if (!IMAGE_TYPES.includes(f.mediaType) || typeof f.data !== "string") return `"${name}" isn't a supported image.`;
+      cleanFiles.push({ kind: "image", name, mediaType: f.mediaType, data: f.data, asset: !!f.asset });
+    } else if (f?.kind === "pdf") {
+      if (typeof f.data !== "string") return `"${name}" isn't a readable PDF.`;
+      cleanFiles.push({ kind: "pdf", name, data: f.data });
+    } else if (f?.kind === "text") {
+      if (over(f.text, CAP.fileText)) return `"${name}" is too long (over ${CAP.fileText.toLocaleString("en")} characters).`;
+      cleanFiles.push({ kind: "text", name, text: clip(f.text, CAP.fileText) });
+    } else return "Unknown attachment.";
+  }
+  const history = (Array.isArray(b.history) ? (b.history as Body["history"])! : [])
+    .slice(-CAP.history)
+    .map((m) => ({ role: m?.role === "assistant" ? ("assistant" as const) : ("user" as const), text: clip(m?.text, CAP.historyText) }));
+  // Brand kits come back from the client; only the fields the notes use, each cut short.
+  const brands = (Array.isArray(b.brands) ? (b.brands as Partial<BrandKit>[]) : []).slice(0, CAP.brands).map(
+    (k): BrandKit => ({
+      url: clip(k?.url, 500),
+      host: clip(k?.host, 200),
+      name: clip(k?.name, 200),
+      description: clip(k?.description, 1000),
+      themeColor: clip(k?.themeColor, 40) || null,
+      colors: (Array.isArray(k?.colors) ? k.colors : []).slice(0, 8).map((c) => clip(c, 20)),
+      fonts: (Array.isArray(k?.fonts) ? k.fonts : []).slice(0, 4).map((f) => clip(f, 80)),
+      logo: null,
+      icon: null,
+      ogImage: null,
+    }),
+  );
+  const body: Body = {
+    stage: b.stage,
+    prompt: clip(b.prompt, CAP.prompt),
+    treatment: clip(b.treatment, CAP.treatment) || undefined,
+    duration: Math.min(120, Math.max(1, Number(b.duration) || 10)),
+    aspect: clip(b.aspect, 12) || "16:9",
+    files: cleanFiles,
+    previousCode: clip(b.previousCode, CAP.previousCode) || undefined,
+    error: clip(b.error, CAP.error) || undefined,
+    brands,
+    recreate: !!b.recreate,
+    history: history.length ? history : undefined,
+    notes: clip(b.notes, CAP.notes) || undefined,
+    critique: clip(b.critique, CAP.critique) || undefined,
+    continuation: clip(b.continuation, CAP.continuation) || undefined,
+    effortCap: b.effortCap === "none" || b.effortCap === "low" || b.effortCap === "medium" || b.effortCap === "high" ? b.effortCap : undefined,
+  };
+  const total =
+    body.prompt.length +
+    [body.treatment, body.notes, body.critique, body.error, body.previousCode, body.continuation].reduce((n, t) => n + (t?.length ?? 0), 0) +
+    history.reduce((n, m) => n + m.text.length, 0) +
+    cleanFiles.reduce((n, f) => n + (f.kind === "text" ? f.text.length : 0), 0);
+  if (total > CAP.totalText) return "This request carries too much text. Try fewer or shorter attachments.";
+  return body;
+}
 
 // Hobby functions stop at 300s; Pro allows more (set ANIMATE_FUNCTION_SECONDS=780 there).
 const LIMIT_MS = (Number(process.env.ANIMATE_FUNCTION_SECONDS) || 285) * 1000;
@@ -40,6 +133,37 @@ function animatorEffort(duration: number): "low" | "medium" | "high" {
   if (forced) return forced;
   if (LIMIT_MS >= 600_000) return duration > 30 ? "medium" : "high";
   return duration > 12 ? "low" : "medium";
+}
+
+// Upstream failures worth retrying: server-side errors, overloads and dropped connections (an
+// error event mid-stream arrives as an APIError without a status), never a bad request,
+// credentials, credits or a rate limit.
+function transient(e: unknown) {
+  if (e instanceof Anthropic.APIConnectionError) return true;
+  if (!(e instanceof Anthropic.APIError)) return false;
+  if (/credit balance/i.test(e.message)) return false;
+  return e.status === undefined || e.status >= 500;
+}
+
+const EFFORTS = ["low", "medium", "high"] as const;
+
+// Director plans at high effort (~1 min); the animator's effort fits the film length into the
+// limit. Repairs and review fixes start from existing code, so they can afford medium effort.
+// A recreation breakdown is forensic, not inventive: medium effort is enough. effortCap lowers
+// any of these for a retry after a run that was still thinking when the limit came.
+function stageEffort(body: Body): "low" | "medium" | "high" {
+  const base =
+    body.stage === "direct"
+      ? body.recreate && LIMIT_MS < 600_000
+        ? "medium"
+        : "high"
+      : body.error || body.critique
+        ? animatorEffort(body.duration) === "low"
+          ? "medium"
+          : animatorEffort(body.duration)
+        : animatorEffort(body.duration);
+  const cap = body.effortCap === "none" ? "low" : body.effortCap && EFFORTS.includes(body.effortCap) ? body.effortCap : "high";
+  return EFFORTS[Math.min(EFFORTS.indexOf(base), EFFORTS.indexOf(cap))];
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
@@ -61,10 +185,26 @@ function brandNotes(brands: BrandKit[]) {
     .join("\n\n");
 }
 
-export async function POST(req: Request) {
-  // Anyone can create: no sign-in needed to generate.
+const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("base64url");
 
-  const body = (await req.json()) as Body;
+// A stage is everything a request carries except where it resumes from and how hard it
+// thinks: the client resends exactly that for every part of a long answer. A film's stages
+// all share its brief, length, aspect and kind.
+const stageId = (body: Body) => hash({ ...body, continuation: undefined, effortCap: undefined });
+const filmId = (body: Body) => hash([body.prompt, body.duration, body.aspect, body.recreate]);
+
+export async function POST(req: Request) {
+  // Anyone can create: no sign-in needed to generate, but every caller is metered and capped.
+  const body = readBody(await req.json().catch(() => null));
+  if (typeof body === "string") return errorResponse(body, 400);
+  // Every request is one part, recorded when it's admitted (nothing is held back, so a film
+  // that is stopped or abandoned has spent only what it ran). A new stage needs room for a few
+  // parts; the parts of a long answer and its lighter retries come back on passes this route
+  // leaves when it cuts one short, and they and the film's later stages may run a bounded way
+  // past the limit, so a film that has started can finish. A request claiming to resume without
+  // a pass is metered like any other, so the claim can't buy anything.
+  const stage = await meterStage(req, { stageId: stageId(body), filmId: filmId(body), resumeFrom: body.continuation ?? "" });
+  if (stage.limited) return stage.limited;
 
   const content: Anthropic.Beta.BetaContentBlockParam[] = [];
   const assetNames: string[] = [];
@@ -134,15 +274,25 @@ export async function POST(req: Request) {
       }, 15_000);
       const signal = AbortSignal.any([req.signal, deadline.signal]);
       let acc = "";
+      // Out of time (or output) is never the end of a film: text written so far comes back to be
+      // continued, and a run still thinking tells the client to retry at lower effort. The pass
+      // for that follow-up goes down before the event, so the request the event sets off finds it.
+      const cutShort = async () => {
+        await stage.leave((body.continuation ?? "") + (acc.trim() ? acc : ""));
+        send(controller, acc.trim() ? { type: "partial", text: acc } : { type: "timeout", effort: body.effortCap === "none" ? "none" : stageEffort(body) });
+      };
       try {
         // The director researches any company or link in the brief with web search + fetch.
-        const research = body.stage === "direct" && !body.recreate && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
+        // A continuation already has its research in the text it carries.
+        const research = body.stage === "direct" && !body.recreate && !body.continuation && (!!body.prompt.match(URL_RE) || !!body.brands?.length || /\b(company|startup|brand|website|site)\b/i.test(body.prompt));
         const tools: Anthropic.Beta.BetaToolUnion[] = research
           ? [
               { type: "web_search_20260209", name: "web_search", max_uses: 6 },
               { type: "web_fetch_20260209", name: "web_fetch", max_uses: 10 },
             ]
           : [];
+        if (body.effortCap === "none")
+          content.push({ type: "text", text: "Time is short: the last attempt ran out of time while still planning. Start writing the answer right away and keep any planning to a few lines." });
         const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
         if (body.continuation) {
           // Resume a cut-off run: replay what was produced and ask for the rest only.
@@ -163,10 +313,7 @@ export async function POST(req: Request) {
               // Director plans at high effort (~1 min); the animator writes code at medium
               // so a full film fits inside the function time limit.
               // Repairs and review fixes start from existing code, so they can afford medium effort.
-              output_config: {
-                // A recreation breakdown is forensic, not inventive: medium effort keeps it inside a 5-minute limit.
-                effort: body.stage === "direct" ? (body.recreate && LIMIT_MS < 600_000 ? "medium" : "high") : body.error || body.critique ? (animatorEffort(body.duration) === "low" ? "medium" : animatorEffort(body.duration)) : animatorEffort(body.duration),
-              },
+              output_config: { effort: stageEffort(body) },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",
               system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
@@ -185,6 +332,7 @@ export async function POST(req: Request) {
             if (block.type !== "server_tool_use") return;
             const input = block.input as { query?: string; url?: string };
             // Anything written before a tool call is scratch work, not the treatment.
+            acc = "";
             send(controller, { type: "reset" });
             send(controller, {
               type: "status",
@@ -200,17 +348,28 @@ export async function POST(req: Request) {
         if (msg.stop_reason === "refusal") {
           send(controller, { type: "error", message: "Claude declined this request." });
         } else if (msg.stop_reason === "max_tokens") {
-          send(controller, { type: "error", message: "The output ran past the limit. Try a simpler brief." });
+          // One answer's output cap is no more the end of a long film than the time limit is.
+          await cutShort();
         } else {
           send(controller, { type: "done" });
         }
       } catch (e) {
-        // Scenes and recreation breakdowns (no tools in play) resume from where the limit cut them.
-        if (deadline.signal.aborted && (body.stage === "animate" || body.recreate) && acc.length > 2000) {
-          // Hand back the partial scene; the client asks for a continuation.
-          send(controller, { type: "partial", text: acc });
+        if (deadline.signal.aborted && !req.signal.aborted) {
+          await cutShort();
           return;
         }
+        // A passing failure on Anthropic's side (overloaded, "unable to complete", a dropped
+        // upstream connection) doesn't end the film either: text so far comes back to be
+        // continued, or the client retries the part after a pause.
+        if (!req.signal.aborted && transient(e)) {
+          console.warn(`[generate] transient upstream error, handing back ${acc.length} chars: ${(e as Error).message.slice(0, 160)}`);
+          await stage.leave((body.continuation ?? "") + (acc.trim() ? acc : ""));
+          send(controller, acc.trim() ? { type: "partial", text: acc } : { type: "retry" });
+          return;
+        }
+        // The client went away: its one retry of this part may come back. Any other failure
+        // ends the stage (the client shows it rather than retrying), so it leaves no pass.
+        if (req.signal.aborted) await stage.leave(body.continuation ?? "", true);
         const message = deadline.signal.aborted
           ? `This one took longer than the ${Math.round(LIMIT_MS / 60000)}-minute limit this plan allows. Try a shorter film (under 15 s works reliably), a simpler brief, or a longer limit (Vercel Pro).`
           : e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))

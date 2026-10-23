@@ -1,4 +1,5 @@
 import { anthropicClient } from "@/lib/anthropic";
+import { clip, limit } from "@/lib/limits";
 import { SOUND_PLAN_SCHEMA as SCHEMA, SOUND_PLAN_SYSTEM as SYSTEM } from "@/lib/soundPlan";
 
 export const maxDuration = 120;
@@ -8,17 +9,20 @@ export const maxDuration = 120;
 // timeline as a fraction of the film. Strict JSON so the client can act on it.
 
 export async function POST(req: Request) {
-  const b = await req.json();
-  const duration = Number(b.duration) || 10;
+  const limited = await limit(req, "audio-plan");
+  if (limited) return limited;
+  const b = (await req.json().catch(() => null)) ?? {};
+  const duration = Math.min(120, Math.max(1, Number(b.duration) || 10));
+  // Every field is cut to a cap well above what the Studio sends.
   const parts = [
-    `Film length: ${duration}s. Aspect: ${b.aspect ?? "16:9"}.`,
+    `Film length: ${duration}s. Aspect: ${clip(b.aspect, 12) || "16:9"}.`,
     b.recreate ? `RECREATION MODE${b.hasBackground ? " (a background stem from the original exists)" : ""}.` : "",
-    b.brief ? `Brief:\n${b.brief}` : "",
-    b.treatment ? `Treatment:\n${b.treatment}` : "",
-    b.transcript ? `Transcript of the reference audio with word timings (seconds):\n${b.transcript}` : "",
-    b.copy ? `On-screen copy in order:\n${b.copy}` : "",
-    b.grid ? String(b.grid) : "",
-    b.rebuild ? String(b.rebuild) : "",
+    b.brief ? `Brief:\n${clip(b.brief, 30_000)}` : "",
+    b.treatment ? `Treatment:\n${clip(b.treatment, 150_000)}` : "",
+    b.transcript ? `Transcript of the reference audio with word timings (seconds):\n${clip(b.transcript, 60_000)}` : "",
+    b.copy ? `On-screen copy in order:\n${clip(b.copy, 30_000)}` : "",
+    clip(b.grid, 5000),
+    clip(b.rebuild, 10_000),
   ].filter(Boolean);
   const ask = async (effort: "medium" | "high") => {
     const r = await anthropicClient().messages.create({

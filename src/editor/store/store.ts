@@ -5,7 +5,7 @@ import type { Doc } from "../doc/schema";
 
 enablePatches();
 
-type Step = { label: string; redo: Patch[]; undo: Patch[]; at: number; coalesce?: string };
+type Step = { label: string; redo: Patch[]; undo: Patch[]; at: number; coalesce?: string; gesture?: number };
 
 export type EditorState = {
   doc: Doc;
@@ -14,6 +14,10 @@ export type EditorState = {
   time: number;
   selection: string[];
   apply: (op: Op, label: string, opts?: { coalesce?: string }) => void;
+  // Everything applied between beginGesture and endGesture (a drag, from pointerdown to pointerup)
+  // is one undo step, however long it pauses. Gestures nest; the outermost one counts.
+  beginGesture: () => void;
+  endGesture: () => void;
   undo: () => void;
   redo: () => void;
   load: (doc: Doc) => void;
@@ -24,32 +28,51 @@ export type EditorState = {
 const COALESCE_MS = 600;
 const MAX_HISTORY = 300;
 
-export const createEditorStore = (initial: Doc) =>
-  create<EditorState>((set, get) => ({
+export const createEditorStore = (initial: Doc) => {
+  // The open gesture (an id, so a step knows which gesture made it), and how deeply it's nested.
+  let gesture = 0;
+  let depth = 0;
+  let gestures = 0;
+  const close = () => {
+    depth = 0;
+    gesture = 0;
+  };
+
+  return create<EditorState>((set, get) => ({
     doc: initial,
     past: [],
     future: [],
     time: 0,
     selection: [],
 
-    // Run an op, record patches. Consecutive ops sharing a coalesce key
-    // (one drag gesture) merge into a single undo step.
+    // Run an op, record patches. Ops in one open gesture merge into a single undo step, and so do
+    // consecutive ops sharing a coalesce key (typing in a field) within COALESCE_MS of each other.
     apply(op, label, opts) {
       const [next, redo, undo] = produceWithPatches(get().doc, op);
       if (!redo.length) return;
       const past = get().past;
       const prev = past[past.length - 1];
       const now = Date.now();
-      if (opts?.coalesce && prev?.coalesce === opts.coalesce && now - prev.at < COALESCE_MS) {
+      const merge = gesture ? prev?.gesture === gesture : !!opts?.coalesce && prev?.coalesce === opts.coalesce && !prev.gesture && now - prev.at < COALESCE_MS;
+      if (merge) {
         const merged: Step = { ...prev, redo: [...prev.redo, ...redo], undo: [...undo, ...prev.undo], at: now };
         set({ doc: next, past: [...past.slice(0, -1), merged], future: [] });
       } else {
-        const step: Step = { label, redo, undo, at: now, coalesce: opts?.coalesce };
+        const step: Step = { label, redo, undo, at: now, coalesce: opts?.coalesce, gesture: gesture || undefined };
         set({ doc: next, past: [...past, step].slice(-MAX_HISTORY), future: [] });
       }
     },
 
+    beginGesture() {
+      if (depth++ === 0) gesture = ++gestures;
+    },
+
+    endGesture() {
+      if (depth > 0 && --depth === 0) gesture = 0;
+    },
+
     undo() {
+      close();
       const { past, future, doc } = get();
       const step = past[past.length - 1];
       if (!step) return;
@@ -57,6 +80,7 @@ export const createEditorStore = (initial: Doc) =>
     },
 
     redo() {
+      close();
       const { past, future, doc } = get();
       const step = future[0];
       if (!step) return;
@@ -64,6 +88,7 @@ export const createEditorStore = (initial: Doc) =>
     },
 
     load(doc) {
+      close();
       set({ doc, past: [], future: [], selection: [], time: 0 });
     },
 
@@ -75,3 +100,4 @@ export const createEditorStore = (initial: Doc) =>
       set({ selection: ids });
     },
   }));
+};

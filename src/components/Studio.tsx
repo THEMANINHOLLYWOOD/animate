@@ -20,7 +20,7 @@ import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
 import Thumb from "@/components/Thumb";
 import { useFilmAudio } from "@/components/useFilmAudio";
-import { type AudioClip, decodeAudio, fittedWav, renderMix, speechWav, subtractAligned, toWav } from "@/lib/audio";
+import { type AudioClip, decodeAudio, fittedWav, renderMix, speechWav, subtractAligned, toWav, trimAudio } from "@/lib/audio";
 import { produce } from "immer";
 import { Doc, type Doc as DocT } from "@/editor/doc/schema";
 import { retime } from "@/editor/doc/ops";
@@ -33,6 +33,38 @@ import { detectBeats, snapToGrid } from "@/lib/beats";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 import { aspectFor, fitFrames, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
+import {
+  adoptFilm,
+  adoptStoredFilms,
+  announceFilm,
+  beat,
+  CLOUD_HEARTBEAT_MS,
+  codeLayerOf,
+  dropEditorDoc,
+  dropEditorSaves,
+  dropFilm,
+  dropGuestMedia,
+  endBeat,
+  FILMS_KEY,
+  HEARTBEAT_MS,
+  isQuotaError,
+  keepGuestMedia,
+  keepsOwnCopy,
+  lastBeat,
+  loadGuestMedia,
+  mergeFilms,
+  onFilmSaved,
+  patchStoredFilm,
+  pruneGuestMedia,
+  readFilmsIfValid,
+  sameDoc,
+  saveFilm,
+  sceneCodeOf,
+  settleBuilds,
+  STALE_MS,
+  withSceneCode,
+} from "@/lib/library";
+import { prunePreviews } from "@/lib/preview";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number; shareId?: string };
 
@@ -53,12 +85,16 @@ type Project = {
   doc?: DocT;
   // Set while a run is building this film (the run id); the tile shows progress.
   building?: string;
+  // The building run's heartbeat (ms): another tab, or the next load, treats a stale one as a dead build.
+  buildingAt?: number;
   // Why a new film never got made (its build failed or was interrupted).
   failed?: string;
   builtin?: boolean;
   favorite?: boolean;
   share?: { id: string; createdAt: number };
   createdAt: number;
+  // When it was last saved to the cloud (set by the server).
+  updatedAt?: number;
 };
 
 // One generation in flight (or finished): its own steps, stream and stop button.
@@ -76,6 +112,8 @@ type Run = {
   endedAt?: number;
 };
 type RunApi = { id: string; signal: AbortSignal; phase: (label: string) => void; note: (n: string) => void; think: (d: string) => void; stream: (s: string) => void; finish: (ok: boolean, error?: string) => void };
+// Sound pulled from a reference video (recreate mode); each run keeps its own until the film exists.
+type Stems = { clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string; separated?: boolean };
 
 // ElevenLabs allows a handful of concurrent requests; share that budget across runs.
 const elSlots = { active: 0, queue: [] as (() => void)[] };
@@ -112,6 +150,19 @@ const failedScene = (reason: string): SceneFn => (ctx, W, H, _t, _T, _p, lib) =>
 
 type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string; docBefore?: DocT };
 
+// A thread with new messages at the end (again, if they're already there), keeping only the
+// last few version snapshots: five code versions and three element docs can be restored.
+const withMessages = (thread: Msg[] = [], msgs: Msg[]) => {
+  const next = [...thread.filter((m) => !msgs.some((x) => x.id === m.id)), ...msgs];
+  const keepCode = next.filter((m) => m.codeBefore).slice(-5);
+  const keepDoc = next.filter((m) => m.docBefore).slice(-3);
+  return next.map((m) =>
+    (m.codeBefore && !keepCode.includes(m)) || (m.docBefore && !keepDoc.includes(m))
+      ? { ...m, codeBefore: keepCode.includes(m) ? m.codeBefore : undefined, docBefore: keepDoc.includes(m) ? m.docBefore : undefined }
+      : m,
+  );
+};
+
 type Attached = {
   id: string;
   name: string;
@@ -127,13 +178,41 @@ const EXAMPLES: Project[] = SHOWCASE.map((f, i) => ({ ...f, builtin: true, creat
 const FIRST = EXAMPLES[0];
 const isExample = (id: string) => EXAMPLES.some((p) => p.id === id);
 
-const LOCAL = "animate.projects.v1";
-// Base64 bytes of reference frames per request; the rest of the 4.5 MB request limit is brief, treatment and transcript.
-const FRAME_BUDGET = 3_300_000;
+const LOCAL = FILMS_KEY;
+// Browser storage, or the fallback where it's blocked (some private modes).
+const local = <T,>(f: (s: Storage) => T, fallback: T): T => {
+  try {
+    return f(localStorage);
+  } catch {
+    return fallback;
+  }
+};
+const guestBeat = (id: string) => local((s) => lastBeat(s, id), undefined);
+// A film another page is building, brought up to date from its saved copy: the same build still marked
+// there keeps the newer heartbeat; one that ended there (or made way for another) is what was saved.
+const fromCloud = (p: Project, saved: Project | undefined): Project => {
+  if (!saved) return p;
+  if (saved.building !== p.building) return saved;
+  const at = Math.max(p.buildingAt ?? 0, saved.buildingAt ?? 0);
+  return at === (p.buildingAt ?? 0) ? p : { ...p, buildingAt: at };
+};
+// Bytes of attachments per request (reference frames, images, PDFs, text); the rest of the 4.5 MB
+// request limit is brief, treatment and transcript. With a video, the frames keep at least FRAME_FLOOR.
+const ATTACH_BUDGET = 3_300_000;
+const FRAME_FLOOR = 900_000;
+const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
+// What an attachment adds to a request body: base64 data or UTF-8 text.
+const sizeOf = (f: unknown) => {
+  const x = f as { data?: string; text?: string };
+  return (x.data?.length ?? 0) + (x.text ? new TextEncoder().encode(x.text).length : 0);
+};
 const uid = () => Math.random().toString(36).slice(2, 12);
 const friendlyError = (m: string) =>
   /credit balance/i.test(m) ? "The Anthropic account is out of credits. Add credits at console.anthropic.com → Plans & Billing, then try again." : m;
 const nowMs = () => Date.now();
+// A stopped run: fetches reject with an AbortError, but a Blob upload stopped mid-PUT throws its own
+// (plainly named) error, so the run's signal decides.
+const isStop = (e: unknown, signal: AbortSignal) => signal.aborted || (e as Error | null)?.name === "AbortError";
 const fmt = (s: number) => {
   const m = Math.floor(s / 60);
   const r = s - m * 60;
@@ -145,6 +224,16 @@ const safeName = (s: string) => s.replace(/[^\w.\-]+/g, "_").slice(0, 80);
 const URL_RE = /\bhttps?:\/\/[^\s<>()"']+|\b(?:[a-z0-9-]+\.)+(?:com|io|ai|app|co|org|net|dev|so|xyz|tech|studio|design)\b(?:\/[^\s<>()"']*)?/gi;
 const linksIn = (s: string) =>
   [...new Set((s.match(URL_RE) ?? []).map((u) => (u.startsWith("http") ? u : `https://${u}`).replace(/[.,;:!?]+$/, "")))].slice(0, 3);
+// The prompt minus links to posts whose video is already attached as a reference.
+function withoutVideoLinks(prompt: string, videos: { url?: string }[]) {
+  const attached = new Set(videos.map((v) => (v.url && isXStatus(v.url) ? xStatusId(v.url) : null)).filter(Boolean));
+  if (!attached.size) return prompt.trim();
+  return prompt
+    .replace(URL_RE, (u) => (isXStatus(u) && attached.has(xStatusId(u)) ? "" : u))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const hostOf = (u: string) => {
   try {
     return new URL(u).hostname.replace(/^www\./, "");
@@ -180,17 +269,27 @@ const b64 = async (blob: Blob) => {
   return btoa(s);
 };
 
-// Downscale to the model's preferred input size; keep PNG for transparency.
-function imagePayload(img: HTMLImageElement, type: string) {
-  const max = 1568;
-  const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.round(img.naturalWidth * s));
-  c.height = Math.max(1, Math.round(img.naturalHeight * s));
-  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+// Downscale to the model's preferred input size; keep PNG for transparency. An image over maxBytes
+// of base64 is re-encoded smaller (PNG first, then JPEG on white) until it fits, or as small as it goes.
+function imagePayload(img: HTMLImageElement, type: string, maxBytes = Infinity) {
   const png = type === "image/png" || type === "image/svg+xml" || type === "image/webp" || type === "image/gif";
-  const mediaType = png ? "image/png" : "image/jpeg";
-  return { mediaType, data: c.toDataURL(mediaType, 0.9).split(",")[1] };
+  const tries: [number, "image/png" | "image/jpeg", number][] = png
+    ? [[1568, "image/png", 1], [1024, "image/png", 1], [768, "image/png", 1], [1024, "image/jpeg", 0.85], [768, "image/jpeg", 0.8], [512, "image/jpeg", 0.8], [384, "image/jpeg", 0.75]]
+    : [[1568, "image/jpeg", 0.9], [1024, "image/jpeg", 0.85], [768, "image/jpeg", 0.8], [512, "image/jpeg", 0.8], [384, "image/jpeg", 0.75]];
+  const c = document.createElement("canvas");
+  const g = c.getContext("2d")!;
+  let out = { mediaType: "", data: "" };
+  for (const [max, mediaType, q] of tries) {
+    const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    c.width = Math.max(1, Math.round(img.naturalWidth * s));
+    c.height = Math.max(1, Math.round(img.naturalHeight * s));
+    g.fillStyle = "#fff";
+    if (mediaType === "image/jpeg") g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    out = { mediaType, data: c.toDataURL(mediaType, q).split(",")[1] };
+    if (out.data.length <= maxBytes) break;
+  }
+  return out;
 }
 
 function parseScene(text: string) {
@@ -201,15 +300,16 @@ function parseScene(text: string) {
   return { title, note, code };
 }
 
-// A readable reason for a failed API response (JSON error, platform error page, or status).
-async function failure(res: Response) {
-  if (res.status === 413) return "The reference was too large to send. Try a shorter video.";
-  if (res.status === 504) return "The server timed out. Try again, or use a shorter video.";
+// A readable reason for a failed API response: the server's own JSON error when it sent one, else
+// what the status means (a platform error page for a body over the limit, or a timeout), else the status.
+async function failure(res: Response, tooLarge = "The reference was too large to send. Try a shorter video.") {
   const text = await res.text().catch(() => "");
   try {
     const j = JSON.parse(text);
     if (j?.error) return String(j.error);
   } catch {}
+  if (res.status === 413) return tooLarge;
+  if (res.status === 504) return "The server timed out. Try again, or use a shorter video.";
   return `Request failed (${res.status})${text && text.length < 160 ? `: ${text}` : ""}`;
 }
 
@@ -232,6 +332,9 @@ async function streamStage(
     body: JSON.stringify(payload),
     signal,
   });
+  // A refusal (a limit reached, a request too large, a bad request) is the server's answer, shown as it
+  // is and never retried; anything else (a 5xx, a platform timeout) may be a passing failure.
+  if (res.status >= 400 && res.status < 500) throw new StageError(await failure(res));
   if (!res.ok || !res.body) throw new Error(await failure(res));
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -257,16 +360,19 @@ async function streamStage(
         } else if (ev.type === "status") onStatus?.(ev.text);
         else if (ev.type === "thinking") onThinking?.(ev.text);
         else if (ev.type === "partial") throw new PartialOutput(ev.text);
+        else if (ev.type === "timeout") throw new StillThinking(ev.effort);
+        else if (ev.type === "retry") throw new Upstream();
         else if (ev.type === "done") finished = true;
-        else if (ev.type === "error") throw new Error(ev.message);
+        else if (ev.type === "error") throw new StageError(ev.message);
       }
     }
   } catch (e) {
-    if (e instanceof PartialOutput || signal.aborted) throw e;
-    // The connection dropped. If a complete answer already arrived, keep it.
+    if (e instanceof PartialOutput || e instanceof StillThinking || e instanceof StageError || signal.aborted) throw e;
+    // The connection dropped. A complete answer is kept; anything less is continued from where it stopped.
     const complete = /```[\s\S]*```\s*$/.test(text.trim()) || (text.length > 400 && !/```/.test(text));
-    if (!finished && !complete) throw new Error(`The connection dropped mid-way (${(e as Error).message}). Try again.`);
+    if (!finished && !complete) throw text.trim() ? new PartialOutput(text) : new Error(`The connection dropped (${(e as Error).message}).`);
   }
+  if (!finished && !text.trim()) throw new Error("The connection closed before anything came back.");
   return text;
 }
 
@@ -276,33 +382,82 @@ class PartialOutput extends Error {
     super("partial");
   }
 }
+// A run still thinking when the time limit came; retried at lower effort.
+class StillThinking extends Error {
+  constructor(public effort?: string) {
+    super("still thinking");
+  }
+}
+// The server's own message (a refusal, credits, a bad request): shown as is.
+class StageError extends Error {}
+const CHANGED_ELSEWHERE = "This film was changed in the editor while the edit ran, so the edit wasn't applied. Ask again to edit the latest version.";
+// A passing failure upstream before any text: retried after a pause.
+class Upstream extends Error {
+  constructor() {
+    super("Claude's servers were busy");
+  }
+}
 
-// A stage with automatic continuation when the time limit cuts it off (the animator, and recreation breakdowns).
-async function animateStage(
+// What the progress panel says when a stage carries on past one request.
+const resumeNote = (n: number, why: "continue" | "lighter" | "retry" | "busy") =>
+  why === "continue"
+    ? `Cut short (time limit or a server hiccup); continuing from where it stopped (part ${n + 1})`
+    : why === "lighter"
+      ? "Still thinking at the time limit; trying again with a lighter pass"
+      : why === "busy"
+        ? "Claude's servers were busy; trying again"
+        : "The connection dropped; trying again";
+
+// Effort steps down a rung per run that was still thinking at the limit; the last rung ("none")
+// is low effort told to start writing at once, tried twice.
+const LOWER: Record<string, "medium" | "low" | "none"> = { high: "medium", medium: "low", low: "none", none: "none" };
+
+// Every generation stage runs through here, so no single request's time limit ever ends a film:
+// text cut off by the limit is continued from where it stopped (up to 8 parts, enough for long
+// films), a run still thinking at the limit is retried at lower effort, and a dropped
+// connection is retried once.
+async function runStage(
   payload: Record<string, unknown>,
   signal: AbortSignal,
   onText: (s: string) => void,
   onThinking?: (d: string) => void,
-  onResume?: (n: number) => void,
+  onResume?: (n: number, why: "continue" | "lighter" | "retry" | "busy") => void,
   onStatus?: (s: string) => void,
 ) {
   let sofar = "";
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let effortCap: string | undefined;
+  let parts = 0, lighter = 0, retries = 0, hurried = 0, busy = 0;
+  for (;;) {
     try {
-      const rest = await streamStage({ ...payload, continuation: sofar || undefined }, signal, (s) => onText(sofar + s), onStatus, onThinking);
+      const rest = await streamStage({ ...payload, continuation: sofar || undefined, effortCap }, signal, (s) => onText(sofar + s), onStatus, onThinking);
       return sofar + rest;
     } catch (e) {
-      if (e instanceof PartialOutput) {
-        if (attempt === 2) throw e;
+      if (signal.aborted || (e as Error).name === "AbortError") throw e;
+      if (e instanceof PartialOutput && parts < 8) {
         sofar += e.text;
-        onResume?.(attempt + 1);
+        onResume?.(++parts, "continue");
         continue;
       }
-      if (/connection dropped/.test((e as Error).message) && attempt === 0) continue; // one retry
+      if (e instanceof Upstream && busy < 3) {
+        await new Promise((res) => setTimeout(res, [3000, 8000, 20000][busy++]));
+        onResume?.(busy, "busy");
+        continue;
+      }
+      if (e instanceof StillThinking && (effortCap !== "none" || hurried < 2)) {
+        if (effortCap === "none") hurried++;
+        effortCap = LOWER[effortCap ?? e.effort ?? "high"];
+        onResume?.(++lighter, "lighter");
+        continue;
+      }
+      if (!(e instanceof StageError) && !(e instanceof PartialOutput) && !(e instanceof StillThinking) && !(e instanceof Upstream) && retries < 1) {
+        onResume?.(++retries, "retry");
+        continue;
+      }
+      if (e instanceof Upstream) throw new Error("Claude's servers are busy right now. Try again in a minute.");
+      if (e instanceof PartialOutput || e instanceof StillThinking) throw new Error("This film is too long to finish within the time limit, even in parts. Try a shorter length or a simpler brief.");
       throw e;
     }
   }
-  return sofar;
 }
 
 export default function Studio() {
@@ -311,7 +466,9 @@ export default function Studio() {
   const [currentId, setCurrentId] = useState(FIRST.id);
   const [prompt, setPrompt] = useState("");
   const [enhanced, setEnhanced] = useState<null | { brief: string; recreate?: boolean }>(null);
-  const [mode, setMode] = useState<"new" | "edit">("new");
+  const [modeState, setMode] = useState<"new" | "edit">("new");
+  // A format picked for the next new film while the selected film's own can't change (its doc is laid out for it).
+  const [newFormat, setNewFormat] = useState<{ film: string; aspect: Aspect } | null>(null);
   const [files, setFiles] = useState<Attached[]>([]);
   const [brands, setBrands] = useState<BrandKit[]>([]);
   const [reading, setReading] = useState<string[]>([]);
@@ -330,13 +487,13 @@ export default function Studio() {
   const [burnCaptions, setBurnCaptions] = useState(true);
   // Explainer brief: who it's for, what they believe, what they should be able to do after.
   const [explainer, setExplainer] = useState<null | { audience: string; believe: string; outcome: string }>(null);
-  // Stems pulled from a reference video (recreate mode), waiting for the film to exist.
-  const pendingStems = useRef<{ clips: AudioClip[]; blobs: Record<string, Blob>; transcript?: string; separated?: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [draftCode, setDraftCode] = useState("");
+  // The scene code the draft started from, to tell whether it was changed elsewhere (the editor) since.
+  const [draftBase, setDraftBase] = useState("");
   const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -344,15 +501,52 @@ export default function Studio() {
   const fileInput = useRef<HTMLInputElement>(null);
   const tRef = useRef(0);
   const playingRef = useRef(true);
-  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  // Guests have no cloud storage: images drawn in their films live in memory for the session.
-  const guestImgs = useRef<Record<string, Record<string, HTMLImageElement>>>({});
+  // A cloud save waiting out its debounce: its timer, and the save itself (run early before leaving for the editor).
+  const saveTimers = useRef<Record<string, { timer: ReturnType<typeof setTimeout>; run: () => Promise<unknown> }>>({});
+  // Each film's cloud saves go out one at a time, so an older copy can never land after a newer one (or a delete).
+  const saveChain = useRef<Record<string, Promise<unknown>>>({});
+  // Cloud saves of a film waiting or on their way, and when this page last changed it: while either is
+  // recent, this page's copy is newer than any list read from the cloud.
+  const unsaved = useRef<Record<string, number>>({});
+  const touched = useRef<Record<string, number>>({});
+  // Films whose latest cloud save failed: this page's copy stays newer than the cloud's until a save lands,
+  // or until another page saves the film (then the cloud's copy is newer: its save time passed `synced`).
+  const saveFailed = useRef(new Set<string>());
+  // The cloud's save time (updatedAt) of the copy of each film this page's copy was last in step with:
+  // the one loaded or adopted, or the one this page's last save that landed made.
+  const synced = useRef<Record<string, number>>({});
+  // Guests' blobs being written to this browser's storage (waited for before leaving for the editor).
+  const mediaWrites = useRef(new Set<Promise<unknown>>());
+  // The library really loaded (not an unreachable cloud read as empty): only then may cached previews be pruned.
+  const libraryLoaded = useRef(false);
+  // A film asked for by the address (/?film=<id>, e.g. coming back from the editor), selected once the library loads.
+  const wantFilm = useRef<string | null>(null);
+  // Films deleted in this page: a run that finishes later must not bring them back.
+  const deleted = useRef(new Set<string>());
+  const runsRef = useRef(runs);
+  const projectsRef = useRef(projects);
+  // Guests have no cloud storage: images drawn in their films live here, and are kept in this browser
+  // (keepGuestMedia) so they come back after leaving the page.
+  const [guestImgs, setGuestImgs] = useState<Record<string, Record<string, HTMLImageElement>>>({});
+  // Guest films whose kept images have been read back this session.
+  const guestImgsRead = useRef(new Set<string>());
+  // Guest films this page couldn't write to the browser's list (it was full): they stay on screen anyway.
+  const notStored = useRef(new Set<string>());
 
   const project = projects.find((p) => p.id === currentId) ?? FIRST;
-  const [W, H] = SIZES[project.aspect];
+  // A doc is laid out in its own pixels: it plays, and exports, at that size.
+  const [W, H] = project.doc ? [project.doc.meta.size.w, project.doc.meta.size.h] : SIZES[project.aspect];
   const cloud = !!isSignedIn;
+  // An example can't be edited in place: while one is open, the composer always makes a new film.
+  const mode = project.builtin ? "new" : modeState;
+  // The brief without the links that became reference videos: pasting just a post's link is a
+  // request to recreate its video, not a brief that happens to contain a URL.
+  const briefText = withoutVideoLinks(prompt, videos);
   // No brief + a reference video = recreate that video as closely as possible.
-  const recreate = mode === "new" && !prompt.trim() && videos.length > 0;
+  const recreate = mode === "new" && !briefText && videos.length > 0;
+  // The format a new film gets: the selected film's, or the one picked for it while that film's is fixed.
+  const fixedFormat = !!project.doc;
+  const newAspect = mode === "new" && fixedFormat && newFormat?.film === project.id ? newFormat.aspect : project.aspect;
 
   // ── load fonts + library ──
   useEffect(() => {
@@ -360,27 +554,63 @@ export default function Studio() {
   }, []);
 
   useEffect(() => {
+    runsRef.current = runs;
+  }, [runs]);
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+  // Builds this page is running: their marks are live whatever their heartbeat says.
+  const liveRun = (runId: string) => runsRef.current[runId]?.status === "running";
+
+  // The film the address asks for (/?film=<id>), taken once; the address is then tidied back to "/".
+  useEffect(() => {
+    const url = new URL(location.href);
+    const want = url.searchParams.get("film");
+    if (!want) return;
+    wantFilm.current = want;
+    url.searchParams.delete("film");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }, []);
+
+  useEffect(() => {
     if (!isLoaded) return;
     let cancelled = false;
     (async () => {
       let list: Project[] = [];
+      let ok = !isSignedIn;
       if (isSignedIn) {
         try {
           const r = await fetch("/api/projects");
-          if (r.ok) list = (await r.json()).projects;
+          if (r.ok) {
+            list = (await r.json()).projects;
+            ok = true;
+            for (const p of list) synced.current[p.id] = p.updatedAt ?? 0;
+          }
         } catch {}
       } else {
-        try {
-          list = JSON.parse(localStorage.getItem(LOCAL) || "[]");
-        } catch {}
+        // Storage that can't be read (blocked, or a corrupt list) says nothing about what's stored, so
+        // nothing that belongs to films is pruned on its word.
+        const read = local<Project[] | null>((s) => readFilmsIfValid<Project>(s, LOCAL), null);
+        list = read ?? [];
+        ok = read !== null;
       }
       if (cancelled) return;
-      // Runs live in this page; a film still marked as building was cut off by a reload or a closed tab.
-      list = list.map((p) =>
-        p.building ? { ...p, building: undefined, ...(p.code || p.doc ? {} : { failed: p.failed ?? "This build was interrupted: the page was closed or reloaded before it finished." }) } : p,
-      );
+      // A film still marked as building with a stale heartbeat was cut off by a reload or a closed tab.
+      // A fresher mark may be one too (a reload mid-build): the sweeps below settle it once it goes stale.
+      list = settleBuilds(list, nowMs(), liveRun, isSignedIn ? undefined : guestBeat).filter((p) => !deleted.current.has(p.id));
       setProjects([...EXAMPLES, ...list]);
-      setCurrentId((id) => (isExample(id) || list.some((p) => p.id === id) ? id : FIRST.id));
+      const want = wantFilm.current;
+      const has = (id: string) => isExample(id) || list.some((p) => p.id === id);
+      if (want && has(want)) {
+        wantFilm.current = null;
+        setCurrentId(want);
+        setMode(isExample(want) ? "new" : "edit");
+        tRef.current = 0;
+      } else setCurrentId((id) => (has(id) ? id : FIRST.id));
+      libraryLoaded.current = ok;
+      // Forget what belonged to films that are gone: their cached preview clips, and (guests) their kept sound and images.
+      if (ok) void prunePreviews([...EXAMPLES, ...list]).catch(() => {});
+      if (ok && !isSignedIn) void pruneGuestMedia(list);
     })();
     return () => {
       cancelled = true;
@@ -388,35 +618,147 @@ export default function Studio() {
   }, [isLoaded, isSignedIn]);
 
   // ── persistence: cloud when signed in, this browser otherwise ──
+  // Saves run inside state updaters, so the warning is posted afterwards.
+  const outOfSpace = useCallback(
+    (title?: string) =>
+      queueMicrotask(() => setError(`This browser is out of space, so ${title ? `“${title}”` : "a film"} wasn't saved. Sign in to keep your films in the cloud, or delete some here.`)),
+    [],
+  );
+  // Guests: merge just this film into the browser's list. Never write this page's copy of the
+  // whole list: it can miss other tabs' films, or hold cloud films after signing in.
+  const saveLocal = useCallback(
+    (p: Project) => {
+      try {
+        saveFilm(localStorage, LOCAL, p);
+        notStored.current.delete(p.id);
+      } catch (e) {
+        if (isQuotaError(e)) {
+          notStored.current.add(p.id);
+          outOfSpace(p.title);
+        }
+      }
+    },
+    [outOfSpace],
+  );
+
+  const inOrder = useCallback((id: string, send: () => Promise<unknown>) => {
+    const next = (saveChain.current[id] ?? Promise.resolve()).then(send).catch(() => {});
+    saveChain.current[id] = next;
+    return next;
+  }, []);
+
+  // `toCloud` is the library the film belongs to: a run saves where it started, even if the guest signs in meanwhile.
+  // Every save tells other pages (another Studio tab, an open editor) the film changed.
   const persist = useCallback(
-    (p: Project, list: Project[], immediate = false) => {
-      if (p.builtin) return;
-      if (!cloud) {
-        try {
-          localStorage.setItem(LOCAL, JSON.stringify(list.filter((x) => !x.builtin)));
-        } catch {}
+    (p: Project, immediate = false, toCloud = cloud) => {
+      if (p.builtin || deleted.current.has(p.id)) return;
+      touched.current[p.id] = nowMs();
+      if (!toCloud) {
+        saveLocal(p);
+        announceFilm(p.id);
         return;
       }
-      clearTimeout(saveTimers.current[p.id]);
-      const run = () =>
-        fetch("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) }).catch(
-          () => setError("Couldn't save to your library. Check your connection."),
-        );
+      // A save already waiting is replaced (it counts as this one); otherwise one more is unsaved.
+      const waiting = saveTimers.current[p.id];
+      if (waiting) clearTimeout(waiting.timer);
+      else unsaved.current[p.id] = (unsaved.current[p.id] ?? 0) + 1;
+      const run = () => {
+        delete saveTimers.current[p.id];
+        return inOrder(p.id, () =>
+          fetch("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) })
+            .then(async (r) => {
+              if (!r.ok) throw new Error(r.status === 413 ? "it's too large (over 4.5 MB)" : await failure(r));
+              const saved = (await r.json().catch(() => null))?.project as Project | undefined;
+              if (saved?.updatedAt !== undefined) synced.current[p.id] = saved.updatedAt;
+              saveFailed.current.delete(p.id);
+              announceFilm(p.id);
+            })
+            .catch((e) => {
+              saveFailed.current.add(p.id);
+              setError(e instanceof TypeError ? "Couldn't save to your library. Check your connection." : `Couldn't save “${p.title}” to your library: ${(e as Error).message}`);
+            }),
+        ).then(() => {
+          unsaved.current[p.id] = Math.max(0, (unsaved.current[p.id] ?? 1) - 1);
+        });
+      };
       if (immediate) return run();
-      saveTimers.current[p.id] = setTimeout(run, 700);
+      saveTimers.current[p.id] = { timer: setTimeout(run, 700), run };
     },
-    [cloud],
+    [cloud, saveLocal, inOrder],
   );
+
+  // Before leaving for the editor: a film's waiting cloud save goes out now and every save of it lands,
+  // along with (guests) any sound or images still being written to this browser.
+  const flushFilm = useCallback(
+    async (id: string) => {
+      const waiting = saveTimers.current[id];
+      if (waiting) {
+        clearTimeout(waiting.timer);
+        void waiting.run();
+      }
+      await Promise.all([saveChain.current[id], ...mediaWrites.current]);
+    },
+    [],
+  );
+  // "Open in editor": the editor reads the film from storage, so it opens on what's saved. A plain click
+  // waits for this film's saves first; one that opens a new tab starts them and lets the browser go on.
+  const openEditor = (e: React.MouseEvent<HTMLAnchorElement>, id: string) => {
+    const flushed = flushFilm(id);
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    const href = e.currentTarget.href;
+    void flushed.finally(() => location.assign(href));
+  };
+
+  // Guests: keep a blob of a film in this browser, so its sound and images survive leaving the page.
+  const keepMedia = useCallback((filmId: string, kind: "audio" | "image", name: string, blob: Blob) => {
+    const w = keepGuestMedia(filmId, kind, name, blob).then((ok) => {
+      if (!ok) setNotice("This browser couldn't keep this film's sound or images, so they last only while this page is open.");
+    });
+    mediaWrites.current.add(w);
+    void w.finally(() => mediaWrites.current.delete(w));
+  }, []);
 
   const upsert = useCallback(
     (p: Project, immediate = false) => {
       setProjects((list) => {
+        if (deleted.current.has(p.id)) return list;
         const next = list.some((x) => x.id === p.id) ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p];
-        persist(p, next, immediate);
+        persist(p, immediate);
         return next;
       });
     },
     [persist],
+  );
+
+  // What a run saves lands on the film as it is now, not on the snapshot the run started from, and only
+  // while the film exists: one deleted mid-run stays deleted. A guest film missing from the list because the
+  // library was swapped out (the guest signed in mid-run) is updated where it's stored, if it still is.
+  // Patch functions must be idempotent (React may run updaters twice); returning null skips.
+  const patchFilm = useCallback(
+    (id: string, patch: Partial<Project> | ((cur: Project) => Partial<Project> | null), toCloud: boolean, immediate = true) => {
+      if (deleted.current.has(id)) return;
+      const delta = (cur: Project) => (typeof patch === "function" ? patch(cur) : patch);
+      setProjects((list) => {
+        const cur = list.find((x) => x.id === id);
+        if (!cur) {
+          if (!toCloud) {
+            try {
+              patchStoredFilm<Project>(localStorage, LOCAL, id, delta);
+            } catch (e) {
+              if (isQuotaError(e)) outOfSpace();
+            }
+          }
+          return list;
+        }
+        const d = delta(cur);
+        if (!d) return list;
+        const p = { ...cur, ...d };
+        persist(p, immediate, toCloud);
+        return list.map((x) => (x.id === id ? p : x));
+      });
+    },
+    [persist, outOfSpace],
   );
 
   const updateProject = useCallback(
@@ -425,13 +767,176 @@ export default function Studio() {
         const cur = list.find((x) => x.id === currentId);
         if (!cur) return list;
         const p = { ...cur, ...patch };
-        const next = list.map((x) => (x.id === p.id ? p : x));
-        persist(p, next);
-        return next;
+        persist(p);
+        return list.map((x) => (x.id === p.id ? p : x));
       });
     },
     [currentId, persist],
   );
+
+  // Guests: other tabs (another Studio, the editor) save films into the same browser list; show what they
+  // wrote, heartbeats included, as soon as they write it ('storage') and whenever this tab comes back
+  // into view. A build whose heartbeat then goes stale (its tab closed) stops showing as building.
+  useEffect(() => {
+    if (!isLoaded || cloud) return;
+    const refresh = () => {
+      const readAt = nowMs();
+      // Storage that can't be read (blocked in some private modes) says nothing about what's stored.
+      const read = local<Project[] | null>((s) => readFilmsIfValid<Project>(s, LOCAL), null);
+      if (!read) return;
+      const stored = settleBuilds(read, nowMs(), liveRun, guestBeat).filter((p) => !deleted.current.has(p.id));
+      // Films this page couldn't store are newer here than anything stored (a build's placeholder, say,
+      // that would now settle as interrupted), and so are films it changed after the read began: their
+      // saves run in state updates still queued ahead of this one, so they weren't written when it read.
+      const mine = (id: string) => keepsOwnCopy({ pending: notStored.current.has(id), touchedAt: touched.current[id] }, readAt);
+      setProjects((list) => {
+        // Unchanged parts of the rest keep their identity, so an unchanged scene isn't recompiled or its
+        // tile re-rendered; this page's own builds keep their mark.
+        const { films, kept, lost } = adoptStoredFilms(list, stored, mine, liveRun, (id) => guestBeat(id) !== undefined);
+        queueMicrotask(() => {
+          for (const p of kept) saveLocal(p);
+          for (const p of lost) runsRef.current[p.building!]?.abort.abort();
+        });
+        return films;
+      });
+      const building = (id: string) => Object.values(runsRef.current).some((r) => r.status === "running" && r.projectId === id) && guestBeat(id) !== undefined;
+      // (The film list's updates run before the selection's in a render, so a film created in a queued update counts as touched here.)
+      setCurrentId((id) => (isExample(id) || stored.some((p) => p.id === id) || building(id) || mine(id) ? id : FIRST.id));
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LOCAL || e.key === null) refresh();
+    };
+    const onShow = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const sweep = setInterval(() => setProjects((list) => settleBuilds(list, nowMs(), liveRun, guestBeat)), 30_000);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onShow);
+    window.addEventListener("pageshow", onShow);
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onShow);
+      window.removeEventListener("pageshow", onShow);
+      document.removeEventListener("visibilitychange", onShow);
+      clearInterval(sweep);
+    };
+  }, [isLoaded, cloud, saveLocal]);
+
+  // Signed in: edits made elsewhere (the editor, another tab or device) show up here. The library is read
+  // again whenever this tab comes back into view, and a film another page of this browser says it saved
+  // or deleted is read again at once. This page's own changes win while a save of them is waiting or on
+  // its way, when they were made after the read began, or after one failed, until another page saves the
+  // film (the editor, say: then its copy is shown, and this page's next saves build on it rather than
+  // overwrite it); a film this page is building keeps its mark.
+  useEffect(() => {
+    if (!isLoaded || !cloud) return;
+    let cancelled = false;
+    let lastFull = 0;
+    const mine = (since: number, stored = new Map<string, Project>()) => (id: string) =>
+      keepsOwnCopy(
+        {
+          pending: !!saveTimers.current[id] || (unsaved.current[id] ?? 0) > 0,
+          touchedAt: touched.current[id],
+          failed: saveFailed.current.has(id),
+          synced: synced.current[id],
+        },
+        since,
+        stored.get(id),
+      );
+    const adopt = (stored: Project[], since: number) => {
+      const fresh = stored.filter((p) => !deleted.current.has(p.id));
+      const byId = new Map(fresh.map((p) => [p.id, p]));
+      setProjects((list) => {
+        const own = mine(since, byId);
+        const next = mergeFilms(list, fresh, own, liveRun);
+        // What was taken is the cloud's copy now: nothing of it is left unsaved here. Changes whose save
+        // failed are dropped for the newer copy saved elsewhere, which is said.
+        const dropped: string[] = [];
+        for (const s of fresh) {
+          if (own(s.id)) continue;
+          synced.current[s.id] = s.updatedAt ?? 0;
+          const cur = list.find((p) => p.id === s.id);
+          if (saveFailed.current.delete(s.id) && cur && adoptFilm(cur, s) !== cur) dropped.push(`“${cur.title}”`);
+        }
+        const one = dropped.length === 1;
+        if (dropped.length)
+          queueMicrotask(() => setNotice(`${dropped.join(", ")} changed elsewhere after ${one ? "its" : "their"} last save here failed, so ${one ? "that newer version is" : "those newer versions are"} shown.`));
+        return next;
+      });
+    };
+    const pullAll = async () => {
+      const since = nowMs();
+      // Focus, visibility and pageshow often fire together.
+      if (since - lastFull < 2000) return;
+      lastFull = since;
+      try {
+        const r = await fetch("/api/projects", { cache: "no-store" });
+        if (r.ok && !cancelled) adopt((await r.json()).projects as Project[], since);
+      } catch {}
+    };
+    const pullOne = async (id: string) => {
+      if (isExample(id) || deleted.current.has(id)) return;
+      const since = nowMs();
+      try {
+        const r = await fetch(`/api/projects?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+        if (cancelled) return;
+        if (r.ok) adopt([(await r.json()).project as Project], since);
+        else if (r.status === 404 && !mine(since)(id)) {
+          // Deleted in another page: it goes here too (unless this page is building it).
+          setProjects((list) => list.filter((p) => p.id !== id || p.builtin || (!!p.building && liveRun(p.building))));
+          setCurrentId((cur) => (cur === id && !projectsRef.current.some((p) => p.id === id && p.building && liveRun(p.building)) ? FIRST.id : cur));
+        }
+      } catch {}
+    };
+    const onShow = () => {
+      if (document.visibilityState === "visible") void pullAll();
+    };
+    const stop = onFilmSaved((id) => void pullOne(id));
+    window.addEventListener("focus", onShow);
+    window.addEventListener("pageshow", onShow);
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      cancelled = true;
+      stop();
+      window.removeEventListener("focus", onShow);
+      window.removeEventListener("pageshow", onShow);
+      document.removeEventListener("visibilitychange", onShow);
+    };
+  }, [isLoaded, cloud]);
+
+  // Signed in: other tabs' (and devices') saves aren't pushed here, so a film marked as building by a run
+  // this page doesn't own (a reload cut it off, or another tab is building it) is re-read from the cloud once
+  // its heartbeat here goes stale. Still beating there, it stays; ended there, it's what was saved; neither,
+  // it was cut off and settles. Unreadable, it settles too: it must never stay "building" for good.
+  useEffect(() => {
+    if (!isLoaded || !cloud) return;
+    let cancelled = false;
+    let busy = false;
+    const foreign = (p: Project) => !!p.building && !liveRun(p.building);
+    const check = async () => {
+      if (busy || !projectsRef.current.some((p) => foreign(p) && nowMs() - (p.buildingAt ?? -Infinity) > STALE_MS)) return;
+      busy = true;
+      let saved = new Map<string, Project>();
+      try {
+        const r = await fetch("/api/projects");
+        if (r.ok) saved = new Map(((await r.json()).projects as Project[]).map((p) => [p.id, p]));
+      } catch {}
+      busy = false;
+      if (cancelled) return;
+      const now = nowMs();
+      setProjects((list) => {
+        const next = list.map((p) => (foreign(p) ? fromCloud(p, saved.get(p.id)) : p));
+        const settled = settleBuilds(next, now, liveRun);
+        return settled === next && next.every((p, i) => p === list[i]) ? list : settled;
+      });
+    };
+    const timer = setInterval(check, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isLoaded, cloud]);
 
   // ── images that belong to the current project ──
   useEffect(() => {
@@ -446,10 +951,37 @@ export default function Studio() {
     };
   }, [project.assets, cloud]);
 
+  // Guests: a film's sound and images kept in this browser come back when it's opened (after a reload,
+  // or coming back from the editor). What this page already holds wins over what was kept.
+  useEffect(() => {
+    if (!isLoaded || cloud || project.builtin || guestImgsRead.current.has(project.id)) return;
+    const id = project.id;
+    guestImgsRead.current.add(id);
+    void loadGuestMedia(id).then(async ({ audio, images }) => {
+      if (Object.keys(audio).length) setAudioBlobs((m) => ({ ...audio, ...m }));
+      const pairs = await Promise.all(
+        Object.entries(images).map(async ([name, blob]) => {
+          // A loaded image keeps drawing after its URL is let go (as attachments' do).
+          const url = URL.createObjectURL(blob);
+          try {
+            return [name, await loadImage(url)] as const;
+          } catch {
+            return null;
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        }),
+      );
+      const imgs = Object.fromEntries(pairs.filter((x) => x !== null));
+      if (Object.keys(imgs).length && !deleted.current.has(id)) setGuestImgs((m) => ({ ...m, [id]: { ...imgs, ...m[id] } }));
+    });
+  }, [isLoaded, cloud, project.id, project.builtin]);
+
   // ── scene ──
   const compiled = useMemo<{ fn: SceneFn | null; err: string | null }>(() => {
     try {
-      if (project.building && !project.code) return { fn: buildingScene(project.title), err: null };
+      // A film being built shows that until it has something of its own to show.
+      if (project.building && !project.code && !project.doc) return { fn: buildingScene(project.title), err: null };
       if (!project.code && !project.doc) return { fn: failedScene(project.failed ?? "This film has no scene yet."), err: null };
       if (project.doc) return { fn: docScene(project.doc), err: null };
       return { fn: compileScene(project.code), err: null };
@@ -459,10 +991,10 @@ export default function Studio() {
   }, [project.code, project.doc, project.building, project.title, project.failed]);
 
   const assets = useMemo<Assets>(() => {
-    const byName: Record<string, HTMLImageElement> = { ...guestImgs.current[project.id], ...(project.assets?.length ? projectImgs : {}) };
+    const byName: Record<string, HTMLImageElement> = { ...guestImgs[project.id], ...(project.assets?.length ? projectImgs : {}) };
     for (const f of files) if (f.img && f.asset) byName[f.name] = f.img;
     return { images: Object.entries(byName).map(([name, img]) => ({ name, img })), byName };
-  }, [files, projectImgs, project.assets, project.id]);
+  }, [files, projectImgs, project.assets, project.id, guestImgs]);
 
   const clips = useMemo(() => project.audio ?? [], [project.audio]);
   const { loaded: loadedAudio, mixer } = useFilmAudio(clips, audioBlobs);
@@ -584,14 +1116,31 @@ export default function Studio() {
       return list.filter((x) => x.id !== id);
     });
 
-  const filePayload = () =>
-    Promise.all(
-      files.map(async (f) => {
-        if (f.kind === "image") return { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type) };
-        if (f.kind === "pdf") return { kind: "pdf", name: f.name, data: await b64(f.file) };
-        return { kind: "text", name: f.name, text: (await f.file.text()).slice(0, 200_000) };
-      }),
-    );
+  // Attachments for a request. They share ATTACH_BUDGET (less FRAME_FLOOR when a video's frames come too):
+  // images are re-encoded to share what PDFs and text leave, and anything that still can't fit is named.
+  const filePayload = async (withFrames: boolean) => {
+    const room = ATTACH_BUDGET - (withFrames ? FRAME_FLOOR : 0);
+    const docs = new Map<string, { kind: string; name: string; data?: string; text?: string }>();
+    for (const f of files) {
+      if (f.kind === "pdf") docs.set(f.id, { kind: "pdf", name: f.name, data: await b64(f.file) });
+      else if (f.kind === "text") docs.set(f.id, { kind: "text", name: f.name, text: (await f.file.text()).slice(0, 200_000) });
+    }
+    for (const d of docs.values())
+      if (d.kind === "pdf" && sizeOf(d) > room)
+        throw new Error(`“${d.name}” is too large to send (${mb(sizeOf(d))} encoded; about ${mb(room)} fits${withFrames ? " beside the video frames" : ""}). Use a smaller PDF, or paste the text you need.`);
+    const docBytes = [...docs.values()].reduce((n, d) => n + sizeOf(d), 0);
+    const images = files.length - docs.size;
+    const perImage = Math.max(150_000, Math.min(900_000, Math.floor((room - docBytes) / Math.max(1, images))));
+    const out = files.map((f) => docs.get(f.id) ?? { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type, perImage) });
+    const total = out.reduce((n, x) => n + sizeOf(x), 0);
+    if (total > room) {
+      const largest = out.map((x) => ({ name: x.name, size: sizeOf(x) })).sort((a, b) => b.size - a.size).slice(0, 3);
+      throw new Error(
+        `The attachments are too large to send together (${mb(total)}; about ${mb(room)} fits${withFrames ? " beside the video frames" : ""}). Largest: ${largest.map((x) => `${x.name} (${mb(x.size)})`).join(", ")}. Remove some and try again.`,
+      );
+    }
+    return out;
+  };
 
   // ── paste a link: read the brand kit, attach the logo and preview image ──
   const importImage = useCallback(
@@ -669,7 +1218,8 @@ export default function Studio() {
 
   // Frames from reference videos, as image attachments plus a note with timestamps.
   // Recreate mode samples densely (~2 fps, up to 32 per film) so motion can be matched.
-  const videoPayload = async (recreate: boolean) => {
+  // `room` is what the other attachments leave of the request budget.
+  const videoPayload = async (recreate: boolean, room: number) => {
     const out: unknown[] = [];
     const budget = recreate ? 32 : 8;
     for (const v of videos) {
@@ -678,7 +1228,7 @@ export default function Studio() {
       // Every request that carries the frames (treatment, elements, animation) must stay under 4.5 MB.
       const frames = await fitFrames(
         await sampleFrames(v.blobUrl, n, 768, (i) => setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `Sampling frames ${i}/${n}` } : x)))),
-        FRAME_BUDGET / videos.length,
+        room / videos.length,
       );
       setVideos((l) => l.map((x) => (x.id === v.id ? { ...x, status: `${frames.length} frames sent` } : x)));
       const tag = v.id.replace(/[^\w-]/g, "");
@@ -787,12 +1337,7 @@ export default function Studio() {
     const researching = !film.recreate && (brands.length > 0 || linksIn(brief).length > 0);
     R.phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
     let writing = !researching;
-    // Breakdowns of long videos can outlast one request; they resume like the animator does.
-    const run = film.recreate
-      ? (payload: Record<string, unknown>, signal: AbortSignal, onText: (s: string) => void, onStatus: (s: string) => void, onThinking: (d: string) => void) =>
-          animateStage(payload, signal, onText, onThinking, (n) => R.note(`Hit the time limit; continuing the breakdown (${n})`), onStatus)
-      : streamStage;
-    return run(
+    return runStage(
       {
         stage: "direct",
         prompt: brief,
@@ -801,7 +1346,7 @@ export default function Studio() {
         recreate: film.recreate,
         files: payloadFiles,
         brands,
-        previousCode: editing ? project.code : undefined,
+        previousCode: editing ? sceneCodeOf(project) || undefined : undefined,
       },
       R.signal,
       (s) => {
@@ -811,8 +1356,9 @@ export default function Studio() {
         }
         R.stream(s);
       },
-      R.note,
       R.think,
+      (n, why) => R.note(resumeNote(n, why)),
+      R.note,
     );
   }
 
@@ -834,25 +1380,28 @@ export default function Studio() {
     const v = videos[0];
     return recreating && v
       ? { duration: Math.min(90, Math.max(3, Math.round(v.duration * 10) / 10)), aspect: aspectFor(v.w, v.h), recreate: true }
-      : { duration: project.duration, aspect: project.aspect, recreate: false };
+      : { duration: project.duration, aspect: newAspect, recreate: false };
   };
-  const collectFiles = async (R: RunApi, recreating: boolean) => {
+  // The request's attachments, plus (recreating) the reference video's sound for this run alone.
+  const collectFiles = async (R: RunApi, recreating: boolean): Promise<{ files: unknown[]; stems: Stems | null }> => {
+    // Other attachments first: the frames get whatever room they leave.
+    const attached = await filePayload(videos.length > 0);
     if (videos.length) R.phase(recreating ? "Sampling the video frame by frame" : "Sampling the reference video");
-    const vids = await videoPayload(recreating);
+    const vids = await videoPayload(recreating, ATTACH_BUDGET - attached.reduce((n, x) => n + sizeOf(x), 0));
+    let stems: Stems | null = null;
     if (recreating && videos[0]) {
       R.phase("Pulling the sound apart");
       try {
-        const stems = await extractStems(R, videos[0].blobUrl, videos[0].duration);
-        pendingStems.current = stems;
+        stems = await extractStems(R, videos[0].blobUrl, filmFor(true).duration);
         if (stems?.transcript) vids.push({ kind: "text", name: "reference-audio-transcript.txt", text: `Transcript of the reference video's voice, with word start times in seconds:\n${stems.transcript}` });
         if (!stems) R.note("The video has no audio track");
       } catch (e) {
+        R.signal.throwIfAborted();
         R.note(`Sound: ${(e as Error).message}`);
-        pendingStems.current = null;
       }
     }
     if (videos.length) R.note(`${vids.filter((x) => (x as { kind: string }).kind === "image").length} frames from ${videos.length} video${videos.length > 1 ? "s" : ""}`);
-    return [...(await filePayload()), ...vids];
+    return { files: [...attached, ...vids], stems };
   };
 
   async function enhance() {
@@ -861,14 +1410,14 @@ export default function Studio() {
     setError(null);
     try {
       const recreating = recreate;
-      const brief = withExplainer(prompt.trim() || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
+      const brief = withExplainer(briefText || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       const film = filmFor(recreating);
-      const treatment = await direct(R, brief, await collectFiles(R, recreating), mode === "edit" && !project.builtin, film);
+      const treatment = await direct(R, brief, (await collectFiles(R, recreating)).files, mode === "edit" && !project.builtin, film);
       setPrompt(treatment.trim());
       setEnhanced({ brief, recreate: recreating });
       R.finish(true);
     } catch (e) {
-      if ((e as Error).name === "AbortError") R.finish(false, "Stopped.");
+      if (isStop(e, R.signal)) R.finish(false, "Stopped.");
       else {
         setError((e as Error).message);
         R.finish(false, (e as Error).message);
@@ -877,7 +1426,7 @@ export default function Studio() {
   }
 
   // ── chat edits for element-based films: the editing agent changes layers and keyframes ──
-  const agentEdit = async (R: RunApi, target: Project, request: string) => {
+  const agentEdit = async (R: RunApi, target: Project, request: string, toCloud: boolean) => {
     if (!target.doc) return;
     R.phase("Editing the elements");
     const history = [...(target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })), { role: "user" as const, text: request }];
@@ -887,8 +1436,10 @@ export default function Studio() {
       body: JSON.stringify({ doc: target.doc, time: tRef.current, selection: [], messages: history }),
       signal: R.signal,
     });
-    if (res.status === 401) throw new Error("Sign in to edit films.");
-    if (!res.body) throw new Error(`Request failed (${res.status})`);
+    // A failed request (a limit reached, the doc too large to send, a server error) is shown as such,
+    // never read as an answer that changed nothing.
+    if (!res.ok || !res.body)
+      throw new StageError(res.status === 401 ? "Sign in to edit films." : await failure(res, "This film is too large to send to the editing agent. Make the change in the editor instead."));
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -912,19 +1463,32 @@ export default function Studio() {
         else if (ev.type === "done") result = ev;
         else if (ev.type === "error") {
           if (ev.doc) result = { doc: ev.doc, changes: 1 };
-          else throw new Error(ev.message);
+          else throw new StageError(ev.message);
         }
       }
     }
+    if (!result) throw new Error("The connection closed before the edit finished. Try again.");
     const now = nowMs();
     const userMsg: Msg = { id: uid(), role: "user", text: request, at: now };
-    const changed = !!result?.doc && (result.changes ?? 0) > 0;
+    const changed = !!result.doc && (result.changes ?? 0) > 0;
     const botMsg: Msg = { id: uid(), role: "assistant", text: text.trim() || (changed ? "Updated the film." : "No change was needed."), at: now + 1, docBefore: changed ? target.doc : undefined };
-    const thread = [...(target.thread ?? []), userMsg, botMsg];
-    const keep = thread.filter((m) => m.docBefore).slice(-3);
-    for (const m of thread) if (m.docBefore && !keep.includes(m)) delete m.docBefore;
-    const nextDoc = changed ? Doc.parse(result!.doc) : target.doc!;
-    upsert({ ...target, doc: nextDoc, duration: nextDoc.meta.duration, thread }, true);
+    const nextDoc = changed ? Doc.parse(result.doc) : target.doc!;
+    // The edit was made to the doc as it was when it started: if it was saved elsewhere meanwhile (the
+    // editor in another tab), that save stands and this edit is refused rather than written over it.
+    const stale = (cur: Project | undefined) => changed && !!cur && !sameDoc(cur.doc, target.doc);
+    if (stale(projectsRef.current.find((p) => p.id === target.id))) throw new StageError(CHANGED_ELSEWHERE);
+    patchFilm(
+      target.id,
+      (cur) => {
+        if (stale(cur)) {
+          queueMicrotask(() => setError(CHANGED_ELSEWHERE));
+          return { building: undefined, buildingAt: undefined };
+        }
+        // An edit that changed nothing leaves the doc alone (it may be newer than the one sent).
+        return { ...(changed ? { doc: nextDoc, duration: nextDoc.meta.duration } : {}), thread: withMessages(cur.thread, [userMsg, botMsg]), building: undefined, buildingAt: undefined };
+      },
+      toCloud,
+    );
     if (result?.seek !== undefined) tRef.current = Math.min(result.seek, nextDoc.meta.duration);
   };
 
@@ -933,7 +1497,9 @@ export default function Studio() {
     if (!prompt.trim() && !files.length && !videos.length) return;
     const editing = mode === "edit" && !project.builtin;
     const target = project; // snapshot: the user can move on while this runs
-    const request = prompt.trim();
+    // The library the film lives in, fixed for the run: signing in midway doesn't move a guest's film.
+    const toCloud = cloud;
+    const request = briefText;
     const briefShown = request || (videos.length ? "Recreating a video" : "New film");
     // A readable working title: the first few words of the brief.
     const workingTitle = briefShown.split(/\s+/).slice(0, 6).join(" ").replace(/[,:;.!?]+$/, "") + (briefShown.split(/\s+/).length > 6 ? "…" : "");
@@ -941,28 +1507,35 @@ export default function Studio() {
     const id = editing ? target.id : uid();
     const R = startRun(id, editing ? "edit" : "new", briefShown.slice(0, 60));
     if (!editing) {
-      upsert({ id, title: workingTitle, code: "", duration: filmFor(enhanced?.recreate ?? recreate).duration, aspect: filmFor(enhanced?.recreate ?? recreate).aspect, building: R.id, thread: [], createdAt: nowMs() });
+      upsert({ id, title: workingTitle, code: "", duration: filmFor(enhanced?.recreate ?? recreate).duration, aspect: filmFor(enhanced?.recreate ?? recreate).aspect, building: R.id, buildingAt: nowMs(), thread: [], createdAt: nowMs() });
       setCurrentId(id);
       setMode("edit");
       tRef.current = 0;
-    } else upsert({ ...target, building: R.id });
+    } else patchFilm(id, { building: R.id, buildingAt: nowMs() }, toCloud, false);
+    // Other tabs (and the next page load) tell a live build from a dead one by its heartbeat: buildingAt
+    // on the saved film in the cloud; for a guest, a key of its own, so beats don't rewrite the shared list.
+    const pulse = () =>
+      toCloud ? patchFilm(id, (cur) => (cur.building === R.id ? { buildingAt: nowMs() } : null), true, false) : local((s) => beat(s, id, nowMs()), undefined);
+    if (!toCloud) pulse();
+    const heartbeat = setInterval(pulse, toCloud ? CLOUD_HEARTBEAT_MS : HEARTBEAT_MS);
     // The composer is free immediately; attachments are released once they've been read.
     setPrompt("");
     setEnhanced(null);
     setExplainer(null);
     setError(null);
     let ok = false;
+    let failed = false;
     try {
       const recreating = enhanced?.recreate ?? recreate;
       const film = filmFor(recreating);
       const [fw, fh] = SIZES[film.aspect];
-      const payloadFiles = await collectFiles(R, recreating);
+      const { files: payloadFiles, stems } = await collectFiles(R, recreating);
       clearAttachments();
       const brief = enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       // Small edits go straight to the animator; new films always get a treatment first.
       // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
       if (editing && target.doc) {
-        await agentEdit(R, target, request);
+        await agentEdit(R, target, request, toCloud);
         ok = true;
         return;
       }
@@ -1000,11 +1573,8 @@ export default function Studio() {
         history: editing ? (target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
         notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
       };
-      const resumed = (n: number) => {
-        R.note(`Hit the time limit; continuing from where it stopped (${n})`);
-        R.phase("Continuing the scene");
-      };
-      let reply = parseScene(await animateStage(base, R.signal, onText, R.think, resumed));
+      const resumed = (n: number, why: "continue" | "lighter" | "retry" | "busy") => R.note(resumeNote(n, why));
+      let reply = parseScene(await runStage(base, R.signal, onText, R.think, resumed));
       if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
 
       // Dry-run across the timeline; ask for one repair if it throws.
@@ -1021,7 +1591,7 @@ export default function Studio() {
       if (problem) {
         R.note(problem);
         R.phase("Fixing a runtime error");
-        const fixed = parseScene(await streamStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, undefined, R.think));
+        const fixed = parseScene(await runStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, R.think, resumed));
         if (fixed.code) reply = { ...reply, code: fixed.code };
       }
 
@@ -1058,7 +1628,7 @@ export default function Studio() {
           R.phase(`Fixing the ${worst.length} worst problem${worst.length > 1 ? "s" : ""}`);
           try {
             const fixed = parseScene(
-              await animateStage(
+              await runStage(
                 { ...base, previousCode: reply.code, critique: worst.map((p) => `- at ${p.t.toFixed(1)}s: ${p.issue} → ${p.fix}`).join("\n"), files: [] },
                 R.signal,
                 onText,
@@ -1069,7 +1639,7 @@ export default function Studio() {
             if (fixed.code && !check(fixed.code)) reply = { ...reply, code: fixed.code };
             else R.note("The fix didn't pass the frame check; keeping the previous version");
           } catch (e) {
-            if ((e as Error).name === "AbortError") throw e;
+            if (isStop(e, R.signal)) throw e;
             // A failed fix never costs the film.
             R.note(`Fix pass failed (${(e as Error).message.slice(0, 80)}); keeping the previous version`);
             break;
@@ -1084,14 +1654,17 @@ export default function Studio() {
         R.phase("Saving your images");
         const up = await Promise.all(
           assetFiles.map((f) =>
-            upload(`users/${userId}/assets/${id}/${f.name}`, f.file, { access: "private", handleUploadUrl: "/api/upload" }).then(
+            upload(`users/${userId}/assets/${id}/${f.name}`, f.file, { access: "private", handleUploadUrl: "/api/upload", abortSignal: R.signal }).then(
               (b) => ({ name: f.name, pathname: b.pathname }),
             ),
           ),
         );
         assetRefs = [...assetRefs.filter((a) => !up.some((u) => u.name === a.name)), ...up];
       } else if (assetFiles.length) {
-        guestImgs.current[id] = { ...guestImgs.current[id], ...Object.fromEntries(assetFiles.filter((f) => f.img).map((f) => [f.name, f.img!])) };
+        const drawn = assetFiles.filter((f) => f.img);
+        setGuestImgs((m) => ({ ...m, [id]: { ...m[id], ...Object.fromEntries(drawn.map((f) => [f.name, f.img!])) } }));
+        // Kept in this browser too, so they're still drawn after leaving the page (the editor, a reload).
+        for (const f of drawn) keepMedia(id, "image", f.name, f.file);
       }
 
       const title = reply.title || prev?.title || brief.slice(0, 40) || "Untitled";
@@ -1104,16 +1677,10 @@ export default function Studio() {
         at: now + 1,
         codeBefore: prev?.code,
       };
-      // Keep the last few code snapshots so earlier versions can be restored.
-      const thread = [...(prev?.thread ?? []), userMsg, botMsg];
-      const keep = thread.filter((m) => m.codeBefore).slice(-5);
-      for (const m of thread) if (m.codeBefore && !keep.includes(m)) delete m.codeBefore;
 
-      const p: Project = {
-        ...(prev ?? {}),
-        id,
+      // The result, applied to the film as it is by now (a favorite starred meanwhile, say, stays).
+      const result: Partial<Project> = {
         title,
-        thread,
         doc: docFor(reply.code) ?? (editing ? prev?.doc : undefined),
         code: reply.code,
         duration: film.duration,
@@ -1121,58 +1688,65 @@ export default function Studio() {
         prompt: brief,
         treatment: treatment ?? prev?.treatment,
         assets: assetRefs,
-        videos: prev?.videos ?? [],
         builtin: false,
         building: undefined,
-        createdAt: prev?.createdAt ?? nowMs(),
+        buildingAt: undefined,
+        failed: undefined,
       };
-      let saved = p;
-      if (film.recreate && pendingStems.current) {
+      const withThread = (cur: Project) => ({ ...result, thread: withMessages(cur.thread, [userMsg, botMsg]) });
+      // What scoring reads (it saves the sound it makes as its own patch).
+      const built: Project = { ...(prev ?? { id, createdAt: nowMs() }), ...result } as Project;
+      if (film.recreate && stems) {
         R.phase("Saving the original's sound elements");
-        const { clips: stemClips, blobs: stemBlobs, transcript, separated } = pendingStems.current;
-        pendingStems.current = null;
-        setAudioBlobs((m) => ({ ...m, ...stemBlobs }));
-        const stored = await Promise.all(stemClips.map((c) => storeClipBlob(p.id, c, stemBlobs[c.id])));
-        saved = { ...p, audio: stored };
-        upsert(saved, true);
+        setAudioBlobs((m) => ({ ...m, ...stems.blobs }));
+        const stored = await Promise.all(stems.clips.map((c) => storeClipBlob(id, c, stems.blobs[c.id], R.signal)));
+        patchFilm(id, (cur) => ({ ...withThread(cur), audio: stored }), toCloud);
         ok = true;
         // Rebuild the original's sound effects on top of its stems.
         // Separated stems are rebuilt in ElevenLabs; an isolated voice + background keep the original and add effects.
-        await scoreFilm(R, saved, { recreate: true, transcript, hasBackground: stored.some((c) => c.kind === "background"), rebuild: !!separated });
+        await scoreFilm(R, { ...built, audio: stored }, { recreate: true, transcript: stems.transcript, hasBackground: stored.some((c) => c.kind === "background"), rebuild: !!stems.separated });
       } else {
-        upsert(p, true);
+        patchFilm(id, withThread, toCloud);
         ok = true;
         // Every new film gets a soundtrack; edits keep the one they have.
-        if (!editing) await scoreFilm(R, p);
+        if (!editing) await scoreFilm(R, built);
       }
     } catch (e) {
-      const stopped = (e as Error).name === "AbortError";
+      failed = true;
+      const stopped = isStop(e, R.signal);
       const message = stopped ? "Stopped." : (e as Error).message;
       if (!stopped && currentId === id) setError(friendlyError(message));
       R.finish(false, message);
       // Clear the building mark (saved too, or the tile spins forever after a reload).
       // A failed new film keeps its tile, with the reason, until it's deleted.
-      setProjects((list) => {
-        const next = list.map((x) => (x.id === id && x.building === R.id ? { ...x, building: undefined, ...(x.code || x.doc ? {} : { title: `${x.title} (failed)`, failed: message }) } : x));
-        const p = next.find((x) => x.id === id);
-        if (p) persist(p, next, true);
-        return next;
-      });
-      return;
+      patchFilm(
+        id,
+        (x) => (x.building === R.id ? { building: undefined, buildingAt: undefined, ...(x.code || x.doc ? {} : { title: `${x.title} (failed)`, failed: message }) } : null),
+        toCloud,
+      );
+    } finally {
+      clearInterval(heartbeat);
+      if (!toCloud) local((s) => endBeat(s, id), undefined);
+      // Every way out of a run that didn't fail (the agent edit returns early) finishes it here.
+      if (!failed) {
+        R.finish(ok);
+        setProjects((list) => list.map((x) => (x.id === id && x.building === R.id ? { ...x, building: undefined, buildingAt: undefined } : x)));
+      }
     }
-    if (ok) R.finish(true);
-    else R.finish(false);
-    setProjects((list) => list.map((x) => (x.id === id ? { ...x, building: undefined } : x)));
   }
 
   // ── sound: clips, uploads, stems, scoring ──
   const audioExt = (type: string) => (type.includes("wav") ? "wav" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : "m4a");
 
-  // Persist a clip's audio (private Blob when signed in; memory otherwise).
-  const storeClipBlob = async (projectId: string, clip: AudioClip, blob: Blob): Promise<AudioClip> => {
+  // Persist a clip's audio: a private Blob when signed in; for a guest, this browser's storage (so the
+  // soundtrack is still there after leaving the page, for the editor or a reload).
+  const storeClipBlob = async (projectId: string, clip: AudioClip, blob: Blob, signal?: AbortSignal): Promise<AudioClip> => {
     setAudioBlobs((m) => ({ ...m, [clip.id]: blob }));
-    if (!cloud || !userId) return clip;
-    const res = await upload(`users/${userId}/audio/${projectId}/${clip.id}.${audioExt(blob.type)}`, blob, { access: "private", handleUploadUrl: "/api/upload", contentType: blob.type || "audio/mpeg" });
+    if (!cloud || !userId) {
+      keepMedia(projectId, "audio", clip.id, blob);
+      return clip;
+    }
+    const res = await upload(`users/${userId}/audio/${projectId}/${clip.id}.${audioExt(blob.type)}`, blob, { access: "private", handleUploadUrl: "/api/upload", contentType: blob.type || "audio/mpeg", abortSignal: signal });
     return { ...clip, pathname: res.pathname };
   };
 
@@ -1200,19 +1774,19 @@ export default function Studio() {
           setAudioBusy(`Transcribing ${file.name}…`);
           const f = new FormData();
           f.append("action", "transcribe");
-          f.append("audio", toWav(buf, true), "voice.wav");
-          const r = await fetch("/api/audio", { method: "POST", body: f });
-          if (r.ok) {
-            const j = await r.json();
-            if (j.words?.length) {
-              clip.words = j.words;
-              clip.text = j.text;
-            }
-          }
+          // Only the part the film plays, at speech quality, so the upload fits a request.
+          f.append("audio", await speechWav(trimAudio(buf, project.duration)), "voice.wav");
+          const r = await elFetch("/api/audio", { method: "POST", body: f });
+          const j = r.ok ? await r.json().catch(() => null) : null;
+          if (j?.words?.length) {
+            clip.words = j.words;
+            clip.text = j.text;
+          } else setNotice(`Couldn't transcribe ${file.name} (${r.ok ? "no speech found" : await failure(r)}), so it has no captions.`);
         }
         added.push(await storeClipBlob(project.id, clip, file));
       }
-      upsert({ ...project, audio: [...clips, ...added] }, true);
+      // Onto the film as it is now: something else may have changed it while this was transcribing.
+      patchFilm(project.id, (cur) => ({ audio: [...(cur.audio ?? []).filter((c) => !added.some((a) => a.id === c.id)), ...added] }), cloud);
     } catch (e) {
       setError(`Couldn't read that audio: ${(e as Error).message}`);
     } finally {
@@ -1234,7 +1808,7 @@ export default function Studio() {
     const sfd = new FormData();
     sfd.append("action", "transcribe");
     sfd.append("audio", await speechWav(original), "audio.wav");
-    const [sepRes, sttRes] = await Promise.all([fetch("/api/separate", { method: "POST", body: fd, signal: R.signal }), elFetch("/api/audio", { method: "POST", body: sfd })]);
+    const [sepRes, sttRes] = await Promise.all([fetch("/api/separate", { method: "POST", body: fd, signal: R.signal }), elFetch("/api/audio", { method: "POST", body: sfd, signal: R.signal })]);
     const sep = await jsonOf<{ stems: { prompt: string; url?: string; error?: string }[] }>(sepRes);
     const stt = sttRes.ok ? await sttRes.json() : { text: "", words: [] };
     const len = Math.min(original.duration, duration);
@@ -1261,7 +1835,7 @@ export default function Studio() {
         R.note(`${def.label}: silent, skipped`);
         continue;
       }
-      const clip: AudioClip = { id: uid(), kind: def.kind, label: def.label, start: 0, duration: Math.min(buf.duration, len), gain: 1, muted: false, source: "original" };
+      const clip: AudioClip = { id: uid(), kind: def.kind, label: def.label, start: 0, duration: Math.min(buf.duration, len), gain: 1, muted: false, source: "original", separated: true };
       if (def.kind === "voice" && stt.text?.trim()) Object.assign(clip, { text: stt.text, words: words.length ? words : undefined });
       // Tempo from the music, hit times from the effects: the rebuilt versions line up with both.
       if (def.kind !== "voice") clip.beats = detectBeats(buf);
@@ -1275,22 +1849,26 @@ export default function Studio() {
   };
 
   // Pull the audio out of a reference video: original, isolated voice, background (= original − voice), transcript.
-  const extractStems = async (R: RunApi, videoBlobUrl: string, duration: number) => {
-    const blob = await (await fetch(videoBlobUrl)).blob();
+  // `duration` is the film's length: only that much of the soundtrack is kept, or sent anywhere.
+  const extractStems = async (R: RunApi, videoBlobUrl: string, duration: number): Promise<Stems | null> => {
+    const blob = await (await fetch(videoBlobUrl, { signal: R.signal })).blob();
     let original: AudioBuffer;
     try {
-      original = await decodeAudio(blob);
+      original = trimAudio(await decodeAudio(blob), duration);
     } catch {
       return null; // no audio track
     }
     if (original.duration < 0.5) return null;
     // With SAM Audio available, split into real voice / music / effects stems.
-    const sam = await fetch("/api/separate")
+    const sam = await fetch("/api/separate", { signal: R.signal })
       .then((r) => r.json())
       .then((j) => !!j.available)
       .catch(() => false);
+    R.signal.throwIfAborted();
     if (sam) {
       const split = await separateStems(R, original, duration).catch((e) => {
+        // Stopping isn't a failure: never fall back to (paid) voice isolation for a stopped run.
+        R.signal.throwIfAborted();
         R.note(`Stem separation failed (${(e as Error).message}); using voice isolation instead`);
         return null;
       });
@@ -1307,8 +1885,8 @@ export default function Studio() {
     };
     R.note("Separating voice from background");
     const [isoRes, sttRes] = await Promise.all([
-      elFetch("/api/audio", { method: "POST", body: fd("isolate") }),
-      elFetch("/api/audio", { method: "POST", body: fd("transcribe") }),
+      elFetch("/api/audio", { method: "POST", body: fd("isolate"), signal: R.signal }),
+      elFetch("/api/audio", { method: "POST", body: fd("transcribe"), signal: R.signal }),
     ]);
     const stt = sttRes.ok ? await sttRes.json() : { text: "", words: [] };
     const blobs: Record<string, Blob> = {};
@@ -1348,6 +1926,7 @@ export default function Studio() {
     if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
     const own = !Rin;
     const R = Rin ?? startRun(target.id, "score", "Sound");
+    const { signal } = R;
     // A film built from a reference video keeps the original's voice and background; re-scoring only redoes the effects.
     const stems = (target.audio ?? []).filter((c) => c.source === "original");
     if (stems.length && !opts.recreate) {
@@ -1356,9 +1935,11 @@ export default function Studio() {
         recreate: true,
         transcript: voice?.words?.length ? voice.words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ") : voice?.text,
         hasBackground: stems.some((c) => c.kind === "background"),
-        rebuild: stems.some((c) => c.kind === "music" || c.kind === "sfx"),
+        // SAM-separated stems are always rebuilt (older films without the flag: they're the ones with music or effects stems).
+        rebuild: stems.some((c) => c.separated || c.kind === "music" || c.kind === "sfx"),
       };
     }
+    let failure: string | undefined;
     // Rebuilding separated stems: match the original music's tempo and the effects' hit times.
     const origMusic = stems.find((c) => c.kind === "music" && c.beats);
     const origFx = stems.find((c) => c.kind === "sfx" && c.beats);
@@ -1384,6 +1965,7 @@ export default function Studio() {
             return m?.beats ? `Music grid: ${Math.round(m.beats.bpm)} BPM; downbeats at ${m.beats.downbeats.slice(0, 16).map((t) => (t + m.start).toFixed(2)).join(", ")}s. Place cues on beats or downbeats.` : undefined;
           })(),
         }),
+        signal,
       });
       let plan = await r.json();
       if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
@@ -1394,6 +1976,7 @@ export default function Studio() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
+          signal,
         });
         if (r2.ok) plan = await r2.json();
       }
@@ -1412,7 +1995,7 @@ export default function Studio() {
       for (let i = 0; i < voiceLines.length; i++) {
         const line = voiceLines[i];
         setAudioBusy(`Voicing line ${i + 1} of ${voiceLines.length}…`);
-        const vr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "tts", text: line.text }) });
+        const vr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "tts", text: line.text }), signal });
         const vj = await vr.json();
         if (!vr.ok) {
           R.note(`Voice: ${vj.error}`);
@@ -1436,7 +2019,7 @@ export default function Studio() {
         while (cursor < cues.length) {
           const i = cursor++;
           const cue = cues[i];
-          const ask = () => elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }) });
+          const ask = () => elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }), signal });
           let sr = await ask();
           for (let attempt = 0; !sr.ok && attempt < 2; attempt++) {
             await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
@@ -1462,7 +2045,7 @@ export default function Studio() {
       // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background is kept.
       if (plan.music && (opts.rebuild || !(opts.recreate && opts.hasBackground))) {
         setAudioBusy("Composing music…");
-        const mr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }) });
+        const mr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }), signal });
         if (mr.ok) {
           const blob = await mr.blob();
           const buf = await decodeAudio(blob);
@@ -1512,17 +2095,28 @@ export default function Studio() {
 
       setAudioBusy("Saving sound…");
       setAudioBlobs((m) => ({ ...m, ...blobsNew }));
-      const stored = await Promise.all(made.map((c) => storeClipBlob(target.id, c, blobsNew[c.id])));
-      // A rebuilt stem replaces its original in the mix; the original stays, muted, for comparison.
-      const rebuilt = new Set(opts.rebuild ? made.map((c) => c.kind) : []);
-      const keepOld = (target.audio ?? []).filter((c) => c.source !== "generated").map((c) => (c.source === "original" && rebuilt.has(c.kind) ? { ...c, muted: true } : c));
-      upsert({ ...target, audio: [...keepOld, ...stored] }, true);
+      const stored = await Promise.all(made.map((c) => storeClipBlob(target.id, c, blobsNew[c.id], signal)));
+      // A rebuilt stem replaces its original in the mix; the original stays, muted, for comparison. The old
+      // generated clips all go, so an original whose stem wasn't rebuilt this time plays again.
+      const rebuilt = new Set(made.map((c) => c.kind));
+      const keepOld = (audio: AudioClip[] = []) =>
+        audio
+          .filter((c) => c.source !== "generated")
+          .map((c) => (opts.rebuild && c.source === "original" && (c.kind === "voice" || c.kind === "music" || c.kind === "sfx") ? { ...c, muted: rebuilt.has(c.kind) } : c));
+      patchFilm(target.id, (cur) => ({ audio: [...keepOld(cur.audio), ...stored] }), cloud);
       setNotice(`Scored: ${stored.length} sound element${stored.length === 1 ? "" : "s"} added.`);
     } catch (e) {
-      setError(friendlyError((e as Error).message));
+      if (isStop(e, signal)) {
+        // Part of a bigger run: that run reports the stop.
+        if (!own) throw e;
+        failure = "Stopped.";
+      } else {
+        failure = friendlyError((e as Error).message);
+        setError(failure);
+      }
     } finally {
       setAudioBusy(null);
-      if (own) R.finish(true);
+      if (own) R.finish(!failure, failure);
     }
   };
 
@@ -1538,7 +2132,7 @@ export default function Studio() {
       const buf = await decodeAudio(blob);
       const fresh: AudioClip = { ...c, id: uid(), duration: c.kind === "music" ? Math.min(buf.duration, project.duration) : buf.duration };
       const stored = await storeClipBlob(project.id, fresh, blob);
-      upsert({ ...project, audio: clips.map((x) => (x.id === id ? stored : x)) }, true);
+      patchFilm(project.id, (cur) => ({ audio: (cur.audio ?? []).map((x) => (x.id === id ? stored : x)) }), cloud);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1584,7 +2178,7 @@ export default function Studio() {
           onUploadProgress: ({ percentage }) => setExporting({ label: "Saving to your library", k: percentage / 100 }),
         });
         const render: Render = { pathname: res.pathname, fps, w: W, h: H, duration: project.duration, size: blob.size, createdAt: ts };
-        upsert({ ...project, videos: [render, ...(project.videos ?? [])] }, true);
+        patchFilm(project.id, (cur) => ({ videos: [render, ...(cur.videos ?? []).filter((v) => v.pathname !== render.pathname)] }), cloud);
         setNotice("Saved to your library.");
       } else if (cloud && project.builtin) {
         setNotice("Downloaded. Examples aren't saved to your library; edit it to make your own copy.");
@@ -1622,17 +2216,52 @@ export default function Studio() {
 
   const remove = async (id: string, silent = false) => {
     if (!silent && !confirm("Delete this animation and its saved videos?")) return;
-    setProjects((list) => {
-      const next = list.filter((p) => p.id !== id);
-      if (!cloud) persist({ ...FIRST, builtin: false, id: "_" }, next);
+    deleted.current.add(id);
+    notStored.current.delete(id);
+    saveFailed.current.delete(id);
+    delete synced.current[id];
+    // Stop anything still building or scoring it: it would spend credits, then save the film back.
+    for (const r of Object.values(runs)) if (r.projectId === id && r.status === "running") r.abort.abort();
+    // A save still waiting out its debounce never goes.
+    const waiting = saveTimers.current[id];
+    if (waiting) {
+      clearTimeout(waiting.timer);
+      delete saveTimers.current[id];
+    }
+    if (!projects.some((p) => p.favorite && p.id !== id)) setFavOnly(false);
+    const left = projects.filter((p) => p.id !== id);
+    setProjects((list) => list.filter((p) => p.id !== id));
+    setGuestImgs((m) => {
+      const next = { ...m };
+      delete next[id];
       return next;
     });
-    if (cloud) {
-      const gone = projects.find((p) => p.id === id);
-      await Promise.all((gone?.videos ?? []).filter((v) => v.shareId).map((v) => fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" }).catch(() => {})));
-      await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
+    if (id === currentId) select(FIRST.id);
+    // Everything this browser kept for it: the editor's saved doc (and its older autosaves), and its
+    // cached preview clip.
+    void dropEditorDoc(id);
+    try {
+      dropEditorSaves(localStorage, id);
+      // The heartbeat first: a tab still building it reads its absence as "deleted", not "saved over".
+      if (!cloud) {
+        endBeat(localStorage, id);
+        dropFilm(localStorage, LOCAL, id);
+      }
+    } catch {}
+    if (libraryLoaded.current) void prunePreviews(left).catch(() => {});
+    if (!cloud) {
+      void dropGuestMedia(id);
+      announceFilm(id);
+      return;
     }
-    if (id === currentId) setCurrentId(FIRST.id);
+    const gone = projects.find((p) => p.id === id);
+    await Promise.all((gone?.videos ?? []).filter((v) => v.shareId).map((v) => fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" }).catch(() => {})));
+    // After any save still on its way, so that save can't recreate the film.
+    await inOrder(id, async () => {
+      const r = await fetch(`/api/projects?id=${id}`, { method: "DELETE" }).catch(() => null);
+      if (r?.ok) announceFilm(id);
+      else setError(`Couldn't delete “${gone?.title ?? "that film"}” from your library${r ? ` (${await failure(r)})` : ". Check your connection"}. It'll be back after a reload.`);
+    });
   };
 
   // ── Share: a public page for a rendered MP4 (never scene code) ──
@@ -1725,8 +2354,10 @@ export default function Studio() {
   const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
-  // Your films first (favorites on top), then the examples.
-  const ownFilms = projects.filter((p) => !p.builtin && (!favOnly || p.favorite)).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
+  // Your films first (favorites on top), then the examples. With no favorites left the filter can't apply
+  // (its toggle is hidden then), so the whole library shows.
+  const favFilter = favOnly && projects.some((p) => p.favorite);
+  const ownFilms = projects.filter((p) => !p.builtin && (!favFilter || p.favorite)).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
   const tile = (p: Project) => (
     <button key={p.id} className={`lib-item${p.id === currentId ? " on" : ""}${p.favorite ? " fav" : ""}${p.building ? " building" : ""}`} onClick={() => select(p.id)} title={p.title}>
       <Thumb film={p} fonts={fonts} />
@@ -1744,6 +2375,7 @@ export default function Studio() {
             title={p.favorite ? "Remove from favorites" : "Add to favorites"}
             onClick={(e) => {
               e.stopPropagation();
+              if (p.favorite && !projects.some((x) => x.favorite && x.id !== p.id)) setFavOnly(false);
               upsert({ ...p, favorite: !p.favorite }, true);
             }}
           >
@@ -1861,10 +2493,10 @@ export default function Studio() {
             </span>
             {projects.some((p) => p.favorite) && (
               <span className="lib-filter">
-                <button className={favOnly ? "" : "on"} onClick={() => setFavOnly(false)}>
+                <button className={favFilter ? "" : "on"} onClick={() => setFavOnly(false)}>
                   All
                 </button>
-                <button className={favOnly ? "on" : ""} onClick={() => setFavOnly(true)}>
+                <button className={favFilter ? "on" : ""} onClick={() => setFavOnly(true)}>
                   ★ Favorites
                 </button>
               </span>
@@ -1872,7 +2504,7 @@ export default function Studio() {
           </div>
           )}
           {ownFilms.length > 0 && <div className="library">{ownFilms.map(tile)}</div>}
-          {!favOnly && (
+          {!favFilter && (
             <>
               <div className="section-label lib-head">
                 <span className="lib-head-title">
@@ -1887,7 +2519,7 @@ export default function Studio() {
             <div className="elements">
               <div className="section-label lib-head">
                 <span>Elements · {project.doc.layers.filter((l) => l.type !== "code").length}</span>
-                <a className="linkish" href={`/editor/${project.id}`}>
+                <a className="linkish" href={`/editor/${project.id}`} onClick={(e) => openEditor(e, project.id)}>
                   Edit every element →
                 </a>
               </div>
@@ -2228,9 +2860,16 @@ export default function Studio() {
           <div className="row">
             <div className="field">
               <div className="label">Format</div>
-              <div className="seg">
+              {/* A doc film's elements are laid out at its doc's size: its format is set there (in the editor), not here.
+                  Composing a new film with one selected, the format picked is the new film's alone. */}
+              <div className="seg" title={fixedFormat && mode !== "new" ? "This film's elements are laid out for its format, so it can't be changed here." : undefined}>
                 {(["16:9", "9:16", "1:1"] as Aspect[]).map((a) => (
-                  <button key={a} className={project.aspect === a ? "on" : ""} onClick={() => updateProject({ aspect: a })}>
+                  <button
+                    key={a}
+                    className={newAspect === a ? "on" : ""}
+                    disabled={fixedFormat && mode !== "new" && project.aspect !== a}
+                    onClick={() => (fixedFormat ? setNewFormat({ film: project.id, aspect: a }) : updateProject({ aspect: a }))}
+                  >
                     {a}
                   </button>
                 ))}
@@ -2261,7 +2900,8 @@ export default function Studio() {
             <button
               className="linkish"
               onClick={() => {
-                setDraftCode(project.code);
+                setDraftCode(sceneCodeOf(project));
+                setDraftBase(sceneCodeOf(project));
                 setShowCode((s) => !s);
               }}
             >
@@ -2279,7 +2919,7 @@ export default function Studio() {
                 Reuse treatment
               </button>
             )}
-            <a className="linkish" href={`/editor/${project.id}`}>
+            <a className="linkish" href={`/editor/${project.id}`} onClick={(e) => openEditor(e, project.id)}>
               Open in editor →
             </a>
           </div>
@@ -2288,15 +2928,45 @@ export default function Studio() {
             <div className="code">
               <textarea value={draftCode} onChange={(e) => setDraftCode(e.target.value)} spellCheck={false} />
               <div className="code-bar">
-                <span className="hint">Pure function of t. Runs every frame.</span>
+                <span className="hint">
+                  {project.doc
+                    ? codeLayerOf(project.doc)
+                      ? "What draws everything that isn't an element. Pure function of t. Runs every frame."
+                      : "This film is all elements. Code applied here draws underneath them."
+                    : "Pure function of t. Runs every frame."}
+                </span>
                 <button
                   className="linkish"
                   onClick={() => {
+                    // Scene code changed elsewhere since the draft was opened (the editor, say) isn't replaced
+                    // unasked: the first Apply says so, a second one replaces it.
+                    const latest = sceneCodeOf(project);
+                    if (latest !== draftBase && latest !== draftCode) {
+                      setDraftBase(latest);
+                      setError("This film's scene code was changed in the editor since you opened it. Apply again to replace it with yours, or reopen “View scene code” to start from the latest.");
+                      return;
+                    }
+                    // A doc film plays its doc, so the code goes into the doc's code layer.
                     if (project.builtin) {
-                      const p = { ...project, id: uid(), builtin: false, title: project.title + " (copy)", code: draftCode, createdAt: Date.now() };
-                      upsert(p, true);
-                      setCurrentId(p.id);
-                    } else updateProject({ code: draftCode });
+                      const change = withSceneCode(project, draftCode);
+                      const id = uid();
+                      const copy = { ...project, ...change, id, builtin: false, title: project.title + " (copy)", createdAt: Date.now() };
+                      upsert(copy.doc ? { ...copy, doc: { ...copy.doc, meta: { ...copy.doc.meta, id, title: copy.title } } } : copy, true);
+                      setCurrentId(id);
+                      setMode("edit");
+                    } else {
+                      // Applied to the film as it is now, so the rest of a doc saved meanwhile is kept.
+                      setDraftBase(draftCode);
+                      patchFilm(
+                        project.id,
+                        (cur) => {
+                          const change = withSceneCode(cur, draftCode);
+                          return change.code !== undefined || change.doc ? change : null;
+                        },
+                        cloud,
+                        false,
+                      );
+                    }
                   }}
                 >
                   Apply

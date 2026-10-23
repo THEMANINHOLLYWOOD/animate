@@ -1,11 +1,20 @@
+import { createFalClient } from "@fal-ai/client";
+import { errorResponse, limit } from "@/lib/limits";
+import { canonicalWav } from "@/lib/media";
+
 // Stem separation with Meta's SAM Audio, hosted on fal.ai.
 //   GET                                              -> { available }
-//   POST multipart audio=<wav ≤ 4 MB> prompts=["speech","music","sound effects"]
+//   POST multipart audio=<wav ≤ 120 s> prompts=["speech","music","sound effects"]
 //                                                    -> { stems: [{ prompt, url } | { prompt, error }] }
 // One prompt per call (target + residual); the calls run in parallel.
-// The stems come back as fal-hosted URLs the browser downloads.
+// The audio goes to fal's storage once and every job reads it from there (fal refuses a data URI
+// of a few MB as "URL too long"); the stems come back as fal-hosted URLs the browser downloads.
+// Each prompt is a billed job on the whole file, so only the three stems the Studio
+// uses are accepted, and only uncompressed WAV whose length the header proves.
 
 export const maxDuration = 300;
+const PROMPTS = ["speech", "music", "sound effects"];
+const MAX_AUDIO_SECONDS = 120;
 
 const FAL = "https://fal.run/fal-ai/sam-audio/separate";
 const key = () => process.env.FAL_KEY ?? "";
@@ -16,18 +25,30 @@ export async function GET() {
 
 export async function POST(req: Request) {
   if (!key()) return Response.json({ error: "Stem separation isn't set up (FAL_KEY is missing)." }, { status: 503 });
+  const limited = await limit(req, "separate");
+  if (limited) return limited;
   const form = await req.formData();
   const audio = form.get("audio");
   if (!(audio instanceof Blob)) return Response.json({ error: "No audio attached." }, { status: 400 });
   let prompts: string[] = [];
   try {
-    prompts = (JSON.parse(String(form.get("prompts") ?? "[]")) as unknown[]).map(String).filter(Boolean).slice(0, 5);
+    const asked = JSON.parse(String(form.get("prompts") ?? "[]"));
+    prompts = PROMPTS.filter((p) => Array.isArray(asked) && asked.includes(p));
   } catch {}
-  if (!prompts.length) return Response.json({ error: "No prompts." }, { status: 400 });
+  if (!prompts.length) return Response.json({ error: `No prompts (choose from ${PROMPTS.join(", ")}).` }, { status: 400 });
 
-  // fal takes the audio inline as a data URI (no public upload needed).
-  const bytes = Buffer.from(await audio.arrayBuffer());
-  const audio_url = `data:${audio.type || "audio/wav"};base64,${bytes.toString("base64")}`;
+  // The measured audio rebuilt as a plain WAV, so each job runs on exactly the length checked here.
+  const wav = canonicalWav(new Uint8Array(await audio.arrayBuffer()));
+  if (!wav) return Response.json({ error: "Send the audio as an uncompressed WAV." }, { status: 415 });
+  if (wav.info.seconds > MAX_AUDIO_SECONDS) return errorResponse(`That audio is ${Math.round(wav.info.seconds)} s long; the limit is ${MAX_AUDIO_SECONDS} s.`, 413);
+  const bytes = Buffer.from(wav.wav.buffer);
+  let audio_url: string;
+  try {
+    audio_url = await createFalClient({ credentials: key() }).storage.upload(new Blob([bytes], { type: "audio/wav" }));
+  } catch (e) {
+    console.error(`[separate] upload failed: ${(e as Error).message}`);
+    return errorResponse("Couldn't hand the audio to the stem separator. Try again.", 502);
+  }
 
   const stems = await Promise.all(
     prompts.map(async (prompt) => {

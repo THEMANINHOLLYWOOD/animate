@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
+import { clip, errorResponse, limit } from "@/lib/limits";
 
 export const maxDuration = 120;
 
@@ -51,15 +52,21 @@ List the 3 biggest problems with timestamps. Hunt specifically for: text overlap
 Be concrete: say which element, where, at what time, and exactly what to change. If the film is genuinely strong, say so and give fewer problems. Never invent problems to fill the list.`;
 
 export async function POST(req: Request) {
-  const b = await req.json();
+  const limited = await limit(req, "critique");
+  if (limited) return limited;
+  const b = (await req.json().catch(() => null)) ?? {};
+  // The Studio sends two sheets (a contact sheet and a phone strip).
+  const images = (Array.isArray(b.images) ? b.images : []) as { name: string; data: string }[];
+  if (!images.length || images.length > 4 || images.some((img) => typeof img?.data !== "string")) return errorResponse("Send one to four frame sheets.", 400);
   const content: Anthropic.ContentBlockParam[] = [];
-  for (const img of (b.images ?? []) as { name: string; data: string }[]) {
-    content.push({ type: "text", text: `${img.name}:` });
+  for (const img of images) {
+    content.push({ type: "text", text: `${clip(img.name, 100)}:` });
     content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.data } });
   }
+  const duration = Math.min(120, Math.max(1, Number(b.duration) || 10));
   content.push({
     type: "text",
-    text: [`Film: ${b.duration}s, ${b.aspect}.`, b.treatment ? `Treatment:\n${String(b.treatment).slice(0, 6000)}` : "", b.cues ? `Sound cues: ${b.cues}` : "No sound cues yet.", "Review the frames."].filter(Boolean).join("\n\n"),
+    text: [`Film: ${duration}s, ${clip(b.aspect, 12)}.`, b.treatment ? `Treatment:\n${clip(b.treatment, 6000)}` : "", b.cues ? `Sound cues: ${clip(b.cues, 6000)}` : "No sound cues yet.", "Review the frames."].filter(Boolean).join("\n\n"),
   });
   try {
     const r = await anthropicClient().messages.create({
