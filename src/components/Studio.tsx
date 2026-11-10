@@ -48,6 +48,7 @@ import {
   endBeat,
   FILMS_KEY,
   HEARTBEAT_MS,
+  INTERRUPTED,
   isQuotaError,
   keepGuestMedia,
   keepsOwnCopy,
@@ -66,6 +67,7 @@ import {
   withSceneCode,
 } from "@/lib/library";
 import { prunePreviews } from "@/lib/preview";
+import { canContinue, lostNote, planOf, planText, progressOf, type Resume, REVIEW_ROUNDS, type Stage, STAGES } from "@/lib/resume";
 
 type Render = { pathname: string; fps: number; w: number; h: number; duration: number; size: number; createdAt: number; shareId?: string };
 
@@ -90,6 +92,9 @@ type Project = {
   buildingAt?: number;
   // Why a new film never got made (its build failed or was interrupted).
   failed?: string;
+  // An unfinished build's checkpoint: what its finished stages made, so it can be continued from the
+  // first unfinished one (src/lib/resume.ts). Read through planOf only; cleared when the build completes.
+  resume?: Resume;
   builtin?: boolean;
   favorite?: boolean;
   // The animation style it was made in (src/lib/styles.ts); edits keep it.
@@ -142,13 +147,14 @@ const buildingScene = (brief: string): SceneFn => (ctx, W, H, t, _T, _p, lib) =>
   lib.text(ctx, brief, W / 2, H / 2 + 120 * u, { size: 34 * u, family: "sans", color: C.slate, align: "center", maxWidth: W * 0.6, lineHeight: 1.4 });
 };
 
-// What a film that never got made shows instead.
-const failedScene = (reason: string): SceneFn => (ctx, W, H, _t, _T, _p, lib) => {
+// What a film that never got made shows instead: why, and what to do (delete it, or, when its build left
+// a checkpoint, what's finished and what Continue has left to do).
+const failedScene = (reason: string, plan?: string): SceneFn => (ctx, W, H, _t, _T, _p, lib) => {
   const { C, u } = lib;
   lib.bg(ctx, W, H, C.ivory);
   lib.text(ctx, "Didn't finish", W / 2, H / 2 - 30 * u, { size: 30 * u, family: "mono", color: C.clay, align: "center", tracking: 0.12 });
   lib.text(ctx, reason, W / 2, H / 2 + 30 * u, { size: 32 * u, family: "sans", color: C.slate, align: "center", maxWidth: W * 0.7, lineHeight: 1.4 });
-  lib.text(ctx, "Delete it and try again.", W / 2, H / 2 + 170 * u, { size: 26 * u, family: "sans", color: C.stone, align: "center" });
+  lib.text(ctx, plan ?? "Delete it and try again.", W / 2, H / 2 + 170 * u, { size: 26 * u, family: "sans", color: C.stone, align: "center", maxWidth: W * 0.8, lineHeight: 1.4 });
 };
 
 type Msg = { id: string; role: "user" | "assistant"; text: string; at: number; codeBefore?: string; docBefore?: DocT };
@@ -212,6 +218,10 @@ const sizeOf = (f: unknown) => {
 const uid = () => Math.random().toString(36).slice(2, 12);
 const friendlyError = (m: string) =>
   /credit balance/i.test(m) ? "The Anthropic account is out of credits. Add credits at console.anthropic.com → Plans & Billing, then try again." : m;
+// Out of credits, in the API's words or the server's: nothing after it in a build can work either.
+const outOfCredits = (m: string) => /credit balance|out of credits/i.test(m);
+// A build's attachments as its requests carry them, held by the page so the build can be continued with them.
+type Kept = { files: unknown[]; stems: Stems | null; brands: BrandKit[]; images: Attached[]; assets: Assets };
 const nowMs = () => Date.now();
 // A stopped run: fetches reject with an AbortError, but a Blob upload stopped mid-PUT throws its own
 // (plainly named) error, so the run's signal decides.
@@ -484,6 +494,8 @@ export default function Studio() {
   const [playing, setPlaying] = useState(true);
   const [time, setTime] = useState(0);
   const [runs, setRuns] = useState<Record<string, Run>>({});
+  // Unfinished builds' attachments, by film: a build continued in this page gets them again (a reload loses them).
+  const [kept, setKept] = useState<Record<string, Kept>>({});
   const [error, setError] = useState<string | null>(null);
   const [favOnly, setFavOnly] = useState(false);
   const [audioBlobs, setAudioBlobs] = useState<Record<string, Blob>>({});
@@ -541,6 +553,8 @@ export default function Studio() {
   const notStored = useRef(new Set<string>());
 
   const project = projects.find((p) => p.id === currentId) ?? FIRST;
+  // This page still holds the attachments the open film's build started with.
+  const canResume = !!kept[project.id];
   // A doc is laid out in its own pixels: it plays, and exports, at that size.
   const [W, H] = project.doc ? [project.doc.meta.size.w, project.doc.meta.size.h] : SIZES[project.aspect];
   const cloud = !!isSignedIn;
@@ -993,13 +1007,18 @@ export default function Studio() {
     try {
       // A film being built shows that until it has something of its own to show.
       if (project.building && !project.code && !project.doc) return { fn: buildingScene(project.title), err: null };
-      if (!project.code && !project.doc) return { fn: failedScene(project.failed ?? "This film has no scene yet."), err: null };
+      if (!project.code && !project.doc) {
+        // A build that left a checkpoint says what's finished and what's left; Continue is on the stage.
+        const plan = planOf({ code: project.code, doc: project.doc, resume: project.resume });
+        if (plan && canContinue(plan, canResume)) return { fn: failedScene(friendlyError(plan.reason ?? project.failed ?? INTERRUPTED), planText(plan)), err: null };
+        return { fn: failedScene(project.failed ?? "This film has no scene yet."), err: null };
+      }
       if (project.doc) return { fn: docScene(project.doc), err: null };
       return { fn: compileScene(project.code), err: null };
     } catch (e) {
       return { fn: null, err: (e as Error).message };
     }
-  }, [project.code, project.doc, project.building, project.title, project.failed]);
+  }, [project.code, project.doc, project.building, project.title, project.failed, project.resume, canResume]);
 
   const assets = useMemo<Assets>(() => {
     const byName: Record<string, HTMLImageElement> = { ...guestImgs[project.id], ...(project.assets?.length ? projectImgs : {}) };
@@ -1336,6 +1355,17 @@ export default function Studio() {
   const currentRun = runsFor(currentId).at(-1) ?? null;
   const isBuilding = !!project.building || currentRun?.status === "running";
   const dismissRun = (id: string) => setRuns((rs) => Object.fromEntries(Object.entries(rs).filter(([k]) => k !== id)));
+  // The open film's build stopped short and left a checkpoint it can be picked up from (src/lib/resume.ts).
+  const unfinished = project.builtin || isBuilding ? null : planOf(project);
+  const resumable = unfinished && canContinue(unfinished, canResume) ? unfinished : null;
+  const stoppedWhy = resumable ? friendlyError(resumable.reason ?? project.failed ?? INTERRUPTED) : null;
+  const continueFilm = () => {
+    if (!resumable || !fonts) return;
+    setError(null);
+    // With only the sound left the film is already saved: scoring it completes the build.
+    if (resumable.stage === "sound") void scoreFilm(null, project);
+    else void generate(project);
+  };
 
   // ── stage 1: direct (also the ✦ Enhance button) ──
   async function direct(
@@ -1344,8 +1374,10 @@ export default function Studio() {
     payloadFiles: unknown[],
     editing: boolean,
     film: { duration: number; aspect: Aspect; recreate: boolean } = { duration: project.duration, aspect: project.aspect, recreate: false },
+    // The brand kits and style it was briefed with: the composer's, or (a build continued) that build's own.
+    look: { brands: BrandKit[]; style?: string } = { brands, style: style || undefined },
   ) {
-    const researching = !film.recreate && (brands.length > 0 || linksIn(brief).length > 0);
+    const researching = !film.recreate && (look.brands.length > 0 || linksIn(brief).length > 0);
     R.phase(film.recreate ? "Breaking the video down shot by shot" : researching ? "Researching the company" : "Writing the creative treatment");
     let writing = !researching;
     return runStage(
@@ -1356,9 +1388,9 @@ export default function Studio() {
         aspect: film.aspect,
         recreate: film.recreate,
         files: payloadFiles,
-        brands,
+        brands: look.brands,
         previousCode: editing ? sceneCodeOf(project) || undefined : undefined,
-        style: editing ? project.style : style || undefined,
+        style: editing ? project.style : look.style,
       },
       R.signal,
       (s) => {
@@ -1505,25 +1537,32 @@ export default function Studio() {
   };
 
   // ── stage 2: animate ──
-  async function generate() {
-    if (!prompt.trim() && !files.length && !videos.length) return;
-    const editing = mode === "edit" && !project.builtin;
-    const target = project; // snapshot: the user can move on while this runs
+  // `from`: a film whose build stopped, picked up at its checkpoint's first unfinished stage with what the
+  // finished ones made. Nothing is read from the composer then: it may hold the next film's brief.
+  async function generate(from?: Project) {
+    const plan = from ? planOf(from) : null;
+    if (from ? !plan || plan.stage === "sound" || !!from.building : !prompt.trim() && !files.length && !videos.length) return;
+    const editing = !plan && mode === "edit" && !project.builtin;
+    const target = from ?? project; // snapshot: the user can move on while this runs
     // The library the film lives in, fixed for the run: signing in midway doesn't move a guest's film.
     const toCloud = cloud;
-    const request = briefText;
-    const briefShown = request || (videos.length ? "Recreating a video" : "New film");
+    const request = plan ? plan.request : briefText;
+    const briefShown = request || ((plan ? plan.recreate : videos.length) ? "Recreating a video" : "New film");
     // A readable working title: the first few words of the brief.
     const workingTitle = briefShown.split(/\s+/).slice(0, 6).join(" ").replace(/[,:;.!?]+$/, "") + (briefShown.split(/\s+/).length > 6 ? "…" : "");
     // A new film gets its id and a placeholder tile right away, so it shows up in the library while it builds.
-    const id = editing ? target.id : uid();
+    const id = editing || plan ? target.id : uid();
     const R = startRun(id, editing ? "edit" : "new", briefShown.slice(0, 60));
-    if (!editing) {
-      upsert({ id, title: workingTitle, code: "", duration: filmFor(enhanced?.recreate ?? recreate).duration, aspect: filmFor(enhanced?.recreate ?? recreate).aspect, building: R.id, buildingAt: nowMs(), thread: [], createdAt: nowMs() });
+    const startedAt = nowMs();
+    if (plan) {
+      // A film picked up again is building again (if this run fails too, its failed mark comes back).
+      patchFilm(id, (cur) => ({ building: R.id, buildingAt: startedAt, failed: undefined, title: cur.title.replace(/ \(failed\)$/, "") }), toCloud, false);
+    } else if (!editing) {
+      upsert({ id, title: workingTitle, code: "", duration: filmFor(enhanced?.recreate ?? recreate).duration, aspect: filmFor(enhanced?.recreate ?? recreate).aspect, building: R.id, buildingAt: startedAt, thread: [], createdAt: startedAt });
       setCurrentId(id);
       setMode("edit");
       tRef.current = 0;
-    } else patchFilm(id, { building: R.id, buildingAt: nowMs() }, toCloud, false);
+    } else patchFilm(id, { building: R.id, buildingAt: startedAt }, toCloud, false);
     // Other tabs (and the next page load) tell a live build from a dead one by its heartbeat: buildingAt
     // on the saved film in the cloud; for a guest, a key of its own, so beats don't rewrite the shared list.
     const pulse = () =>
@@ -1531,19 +1570,38 @@ export default function Studio() {
     if (!toCloud) pulse();
     const heartbeat = setInterval(pulse, toCloud ? CLOUD_HEARTBEAT_MS : HEARTBEAT_MS);
     // The composer is free immediately; attachments are released once they've been read.
-    setPrompt("");
-    setEnhanced(null);
-    setExplainer(null);
+    if (!plan) {
+      setPrompt("");
+      setEnhanced(null);
+      setExplainer(null);
+    }
     setError(null);
     let ok = false;
     let failed = false;
+    // The film's checkpoint as this run last wrote it (new films only): every finished stage adds what it
+    // made, and a failure adds why, so the build can be continued from there.
+    let saved = null as Resume | null;
     try {
-      const recreating = enhanced?.recreate ?? recreate;
-      const film = filmFor(recreating);
+      const recreating = plan ? plan.recreate : (enhanced?.recreate ?? recreate);
+      const film = plan ? { duration: plan.duration, aspect: plan.aspect, recreate: plan.recreate } : filmFor(recreating);
       const [fw, fh] = SIZES[film.aspect];
-      const { files: payloadFiles, stems } = await collectFiles(R, recreating);
-      clearAttachments();
-      const brief = enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
+      let att: Kept;
+      if (plan) {
+        // The attachments it started with, while this page still holds them; after a reload it goes on without.
+        att = kept[id] ?? { files: [], stems: null, brands: [], images: [], assets };
+        R.phase("Picking up where it stopped");
+        R.note(planText(plan));
+        const lost = lostNote(plan, !!kept[id]);
+        if (lost) R.note(lost);
+      } else {
+        const read = await collectFiles(R, recreating);
+        att = { files: read.files, stems: read.stems, brands, images: files.filter((f) => f.kind === "image" && f.asset), assets };
+        if (!editing) setKept((m) => ({ ...m, [id]: att }));
+        clearAttachments();
+      }
+      const { files: payloadFiles, stems } = att;
+      const look = { brands: att.brands, style: plan ? plan.style : style || undefined };
+      const brief = plan ? plan.brief : (enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.")));
       // Small edits go straight to the animator; new films always get a treatment first.
       // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
       if (editing && target.doc) {
@@ -1551,11 +1609,35 @@ export default function Studio() {
         ok = true;
         return;
       }
-      const treatment = enhanced ? prompt.trim() : editing ? undefined : await direct(R, brief, payloadFiles, false, film);
+      if (plan) {
+        const { draft, rounds, ...rest } = plan;
+        saved = { ...rest, rounds: rounds || undefined, treatment: draft && target.treatment ? undefined : plan.treatment };
+      } else if (!editing)
+        saved = { v: 1, stage: "direct", brief, request, recreate: film.recreate, duration: film.duration, aspect: film.aspect, style: look.style, attached: payloadFiles.length || undefined, at: startedAt };
+      // Written on the film while this run is still the one building it, along with anything else the stage made.
+      const checkpoint = (next: Partial<Resume>, more?: (cur: Project) => Partial<Project>) => {
+        if (!saved) return;
+        const resume: Resume = { ...saved, ...next, reason: undefined, at: nowMs() };
+        saved = resume;
+        patchFilm(id, (cur) => (cur.building === R.id ? { ...more?.(cur), resume } : null), toCloud);
+      };
+      checkpoint({});
+      // A stage the checkpoint says is finished isn't run again.
+      const done = (s: Stage) => !!plan && STAGES.indexOf(plan.stage) > STAGES.indexOf(s);
+      const treatment = done("direct") ? plan?.treatment : !plan && enhanced ? prompt.trim() : editing ? undefined : await direct(R, brief, payloadFiles, false, film, look);
+      if (!done("direct") && treatment) checkpoint({ stage: film.recreate ? "elements" : "animate", treatment });
 
       // Recreations are stripped into editable elements; the animator then draws only the leftovers.
-      let elementsPlan: ElementsPlan | null = null;
-      if (film.recreate && !editing && treatment) {
+      let elementsPlan: ElementsPlan | null = (done("elements") && plan?.elements) || null;
+      if (elementsPlan) {
+        // A kept plan that no longer makes a doc is asked for again.
+        try {
+          elementsToDoc(elementsPlan, { id, title: "Recreation", w: fw, h: fh, duration: film.duration });
+        } catch {
+          elementsPlan = null;
+        }
+      }
+      if (film.recreate && !editing && treatment && !elementsPlan && !plan?.draft) {
         R.phase("Stripping the video into elements");
         const er = await fetch("/api/elements", {
           method: "POST",
@@ -1567,69 +1649,94 @@ export default function Studio() {
         if (ej.elements) {
           elementsPlan = ej as ElementsPlan;
           R.note(`${elementsPlan.elements.length} elements: ${elementsPlan.elements.slice(0, 6).map((e) => e.name).join(", ")}${elementsPlan.elements.length > 6 ? "…" : ""}`);
+          checkpoint({ stage: "animate", elements: elementsPlan });
+          // (Without elements the checkpoint stays here: a build continued before its draft tries them again.)
         } else R.note(`Elements: ${ej.error ?? "unavailable"}; building as one scene`);
       }
 
-      R.phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
       const onText = (s: string) => R.stream(s);
       const base = {
         stage: "animate",
         prompt: brief,
         treatment,
-        brands,
+        brands: att.brands,
         recreate: film.recreate,
         duration: film.duration,
         aspect: film.aspect,
         files: payloadFiles,
         previousCode: editing ? target.code : undefined,
         history: editing ? (target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
-        notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
-        style: editing ? target.style : style || undefined,
+        notes: elementsPlan ? elementsSummary(elementsPlan) : plan?.draft ? plan.notes : undefined,
+        style: editing ? target.style : look.style,
       };
       const resumed = (n: number, why: "continue" | "lighter" | "retry" | "busy") => R.note(resumeNote(n, why));
-      let reply = parseScene(await runStage(base, R.signal, onText, R.think, resumed));
-      if (!reply.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
-
       // Dry-run across the timeline; ask for one repair if it throws.
       const check = (code: string) => {
         try {
-          return probeScene(compileScene(code), fonts!, fw, fh, assets, film.duration);
+          return probeScene(compileScene(code), fonts!, fw, fh, att.assets, film.duration);
         } catch (e) {
           return `Syntax error: ${(e as Error).message}`;
         }
       };
-      R.phase("Checking every frame");
-      const problem = check(reply.code);
-      const docFor = (code: string) => (elementsPlan ? elementsToDoc(elementsPlan, { id, title: reply.title || "Recreation", w: fw, h: fh, duration: film.duration, code }) : undefined);
-      if (problem) {
-        R.note(problem);
-        R.phase("Fixing a runtime error");
-        const fixed = parseScene(await runStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, R.think, resumed));
-        if (fixed.code) reply = { ...reply, code: fixed.code };
+      const prev = editing ? target : null;
+      // A working draft continued: its code, and the doc it's in (its elements, or one the editor made since).
+      const draftCode = plan?.draft ? sceneCodeOf(target) || target.code : undefined;
+      const draftDoc = plan?.draft ? target.doc : undefined;
+      let reply: { title?: string; note?: string; code: string };
+      const docFor = (code: string) =>
+        elementsPlan
+          ? elementsToDoc(elementsPlan, { id, title: reply.title || "Recreation", w: fw, h: fh, duration: film.duration, code })
+          : draftDoc
+            ? (withSceneCode({ code: "", doc: draftDoc }, code).doc ?? draftDoc)
+            : undefined;
+      // What makes the film draw `code`. A draft continued keeps its doc as it is by now around new code
+      // (and is left alone when the code is the same); any other film's doc is rebuilt from its elements.
+      const sceneOn = (cur: Project, code: string): Partial<Project> =>
+        plan?.draft ? (code === draftCode ? {} : { code, ...withSceneCode(cur, code) }) : { doc: docFor(code) ?? (editing ? prev?.doc : undefined), code };
+      // A draft that runs is already a film: saved now (still marked as building), so stopping, leaving the
+      // page or a failure during the review below keeps it. From here the film itself carries the treatment
+      // and the elements, so the checkpoint lets go of its copies.
+      const saveDraft = (code: string, rounds?: number) =>
+        checkpoint({ stage: "review", treatment: undefined, elements: undefined, notes: base.notes, note: reply.note, rounds }, (cur) => ({
+          title: reply.title || cur.title,
+          ...sceneOn(cur, code),
+          prompt: brief,
+          treatment,
+          builtin: false,
+          style: look.style,
+        }));
+      if (plan?.draft) reply = { title: target.title, note: plan.note, code: draftCode ?? "" };
+      else {
+        R.phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
+        const first = parseScene(await runStage(base, R.signal, onText, R.think, resumed));
+        if (!first.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
+        reply = { ...first, code: first.code };
+
+        R.phase("Checking every frame");
+        const problem = check(reply.code);
+        if (problem) {
+          R.note(problem);
+          R.phase("Fixing a runtime error");
+          const fixed = parseScene(await runStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, R.think, resumed));
+          if (fixed.code) reply = { ...reply, code: fixed.code };
+        }
+        if (!editing && (!problem || !check(reply.code))) saveDraft(reply.code);
       }
 
-      // A first draft that runs is already a film: saved now (still marked as building), so stopping,
-      // leaving the page or a failure during the review below keeps it.
-      if (!editing && (!problem || !check(reply.code)))
-        patchFilm(
-          id,
-          (cur) =>
-            cur.building === R.id
-              ? { title: reply.title || cur.title, doc: docFor(reply.code), code: reply.code, prompt: brief, treatment, builtin: false, style: style || undefined }
-              : null,
-          toCloud,
-        );
-
-      // Claude watches its own frames: score the stills, fix the worst problems, up to two rounds.
+      // Claude watches its own frames: score the stills, fix the worst problems, up to two rounds
+      // (a build continued takes up the rounds it hadn't finished).
       if (!editing) {
-        const sceneOf = (code: string) => (elementsPlan ? docScene(docFor(code)!) : compileScene(code));
-        for (let round = 1; round <= 2; round++) {
+        const sceneOf = (code: string) => {
+          const doc = docFor(code);
+          return doc ? docScene(doc) : compileScene(code);
+        };
+        for (let round = (plan?.rounds ?? 0) + 1; round <= REVIEW_ROUNDS; round++) {
           R.phase(round === 1 ? "Looking at its own frames" : "Looking again");
           const n = Math.min(24, Math.max(8, Math.round(film.duration)));
           const times = Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * film.duration);
           const scene = sceneOf(reply.code);
-          const sheet = contactSheet(scene, fonts!, fw, fh, assets, film.duration, times, 320, 4);
-          const phone = contactSheet(scene, fonts!, fw, fh, assets, film.duration, times.filter((_, i) => i % 2 === 0), 200, 6);
+          const sheet = contactSheet(scene, fonts!, fw, fh, att.assets, film.duration, times, 320, 4);
+          const phone = contactSheet(scene, fonts!, fw, fh, att.assets, film.duration, times.filter((_, i) => i % 2 === 0), 200, 6);
           const cr = await fetch("/api/critique", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1638,6 +1745,9 @@ export default function Studio() {
           });
           const cj = await jsonOf(cr).catch((e) => ({ error: (e as Error).message, failed: true }));
           if ("failed" in cj) {
+            // Out of credits, the sound couldn't be planned either: the build stops here, to be continued
+            // from its review. Any other failure only skips the review.
+            if (outOfCredits(String(cj.error))) throw new StageError(String(cj.error));
             R.note(`Review skipped: ${cj.error}`);
             break;
           }
@@ -1647,6 +1757,7 @@ export default function Studio() {
           const low = Math.min(...Object.entries(scores).filter(([k]) => k !== "sound").map(([, v]) => v));
           if (low >= 8 || !worst.length) {
             R.note(String(cj.verdict));
+            checkpoint({ rounds: REVIEW_ROUNDS });
             break;
           }
           worst.forEach((p) => R.note(`${p.t.toFixed(1)}s · ${p.issue}`));
@@ -1661,10 +1772,16 @@ export default function Studio() {
                 resumed,
               ),
             );
-            if (fixed.code && !check(fixed.code)) reply = { ...reply, code: fixed.code };
-            else R.note("The fix didn't pass the frame check; keeping the previous version");
+            if (fixed.code && !check(fixed.code)) {
+              reply = { ...reply, code: fixed.code };
+              // The fixed version is the draft now, and this round is behind it.
+              saveDraft(reply.code, round);
+            } else {
+              R.note("The fix didn't pass the frame check; keeping the previous version");
+              checkpoint({ rounds: round });
+            }
           } catch (e) {
-            if (isStop(e, R.signal)) throw e;
+            if (isStop(e, R.signal) || outOfCredits((e as Error).message)) throw e;
             // A failed fix never costs the film.
             R.note(`Fix pass failed (${(e as Error).message.slice(0, 80)}); keeping the previous version`);
             break;
@@ -1672,8 +1789,7 @@ export default function Studio() {
         }
       }
 
-      const prev = editing ? target : null;
-      const assetFiles = files.filter((f) => f.kind === "image" && f.asset);
+      const assetFiles = att.images;
       let assetRefs = prev?.assets ?? [];
       if (cloud && userId && assetFiles.length) {
         R.phase("Saving your images");
@@ -1703,11 +1819,12 @@ export default function Studio() {
         codeBefore: prev?.code,
       };
 
+      // Saved, a new film has only its sound left, and its checkpoint says so until scoring has made it
+      // (scoreFilm clears it). An edit ends whatever build the film had left unfinished.
+      const soundLeft: Resume | null = saved ? { v: 1, stage: "sound", brief, request, recreate: film.recreate, duration: film.duration, aspect: film.aspect, style: look.style, at: now } : null;
       // The result, applied to the film as it is by now (a favorite starred meanwhile, say, stays).
       const result: Partial<Project> = {
         title,
-        doc: docFor(reply.code) ?? (editing ? prev?.doc : undefined),
-        code: reply.code,
         duration: film.duration,
         aspect: film.aspect,
         prompt: brief,
@@ -1715,25 +1832,33 @@ export default function Studio() {
         assets: assetRefs,
         builtin: false,
         building: undefined,
-        style: editing ? prev?.style : style || undefined,
+        style: editing ? prev?.style : look.style,
         buildingAt: undefined,
         failed: undefined,
+        resume: soundLeft ?? undefined,
       };
-      const withThread = (cur: Project) => ({ ...result, thread: withMessages(cur.thread, [userMsg, botMsg]) });
+      const code = reply.code;
+      const withThread = (cur: Project) => ({ ...result, ...sceneOn(cur, code), thread: withMessages(cur.thread, [userMsg, botMsg]) });
       // What scoring reads (it saves the sound it makes as its own patch).
-      const built: Project = { ...(prev ?? { id, createdAt: nowMs() }), ...result } as Project;
+      const built: Project = { ...(prev ?? (plan ? target : { id, createdAt: nowMs() })), ...result, ...sceneOn(target, code) } as Project;
+      // The attachments have done their job.
+      const release = () => setKept((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)));
       if (film.recreate && stems) {
         R.phase("Saving the original's sound elements");
         setAudioBlobs((m) => ({ ...m, ...stems.blobs }));
         const stored = await Promise.all(stems.clips.map((c) => storeClipBlob(id, c, stems.blobs[c.id], R.signal)));
         patchFilm(id, (cur) => ({ ...withThread(cur), audio: stored }), toCloud);
+        saved = soundLeft;
         ok = true;
+        release();
         // Rebuild the original's sound effects on top of its stems.
         // Separated stems are rebuilt in ElevenLabs; an isolated voice + background keep the original and add effects.
         await scoreFilm(R, { ...built, audio: stored }, { recreate: true, transcript: stems.transcript, hasBackground: stored.some((c) => c.kind === "background"), rebuild: !!stems.separated });
       } else {
         patchFilm(id, withThread, toCloud);
+        saved = soundLeft;
         ok = true;
+        release();
         // Every new film gets a soundtrack; edits keep the one they have.
         if (!editing) await scoreFilm(R, built);
       }
@@ -1744,10 +1869,19 @@ export default function Studio() {
       if (!stopped && currentId === id) setError(friendlyError(message));
       R.finish(false, message);
       // Clear the building mark (saved too, or the tile spins forever after a reload).
-      // A failed new film keeps its tile, with the reason, until it's deleted.
+      // A failed new film keeps its tile, with the reason, until it's deleted; its checkpoint (when the
+      // build got that far) says why it stopped too, and is what Continue picks it up from. A film
+      // already saved whose sound was stopped has no mark left to clear, only the reason to note.
+      const last = saved;
+      const why = last ? { resume: { ...last, reason: message, at: nowMs() } } : {};
       patchFilm(
         id,
-        (x) => (x.building === R.id ? { building: undefined, buildingAt: undefined, ...(x.code || x.doc ? {} : { title: `${x.title} (failed)`, failed: message }) } : null),
+        (x) =>
+          x.building === R.id
+            ? { building: undefined, buildingAt: undefined, ...(x.code || x.doc ? {} : { title: `${x.title} (failed)`, failed: message }), ...why }
+            : last && !x.building && x.resume?.at === last.at
+              ? why
+              : null,
         toCloud,
       );
     } finally {
@@ -1952,6 +2086,8 @@ export default function Studio() {
     if (target.builtin) return setNotice("Make your own film first; the example can't be changed.");
     const own = !Rin;
     const R = Rin ?? startRun(target.id, "score", "Sound");
+    // A film whose build had only its sound left (its checkpoint says so).
+    const soundLeft = (cur: Project) => planOf(cur)?.stage === "sound";
     const { signal } = R;
     // A film built from a reference video keeps the original's voice and background; re-scoring only redoes the effects.
     const stems = (target.audio ?? []).filter((c) => c.source === "original");
@@ -2129,7 +2265,8 @@ export default function Studio() {
         audio
           .filter((c) => c.source !== "generated")
           .map((c) => (opts.rebuild && c.source === "original" && (c.kind === "voice" || c.kind === "music" || c.kind === "sfx") ? { ...c, muted: rebuilt.has(c.kind) } : c));
-      patchFilm(target.id, (cur) => ({ audio: [...keepOld(cur.audio), ...stored] }), cloud);
+      // With its sound made, a build that had only that left is complete.
+      patchFilm(target.id, (cur) => ({ audio: [...keepOld(cur.audio), ...stored], ...(soundLeft(cur) ? { resume: undefined } : {}) }), cloud);
       setNotice(`Scored: ${stored.length} sound element${stored.length === 1 ? "" : "s"} added.`);
     } catch (e) {
       if (isStop(e, signal)) {
@@ -2140,6 +2277,9 @@ export default function Studio() {
         failure = friendlyError((e as Error).message);
         setError(failure);
       }
+      // The build's checkpoint keeps why its sound is still left.
+      const why = { reason: failure, at: nowMs() };
+      patchFilm(target.id, (cur) => (soundLeft(cur) ? { resume: { ...cur.resume!, ...why } } : null), cloud);
     } finally {
       setAudioBusy(null);
       if (own) R.finish(!failure, failure);
@@ -2262,6 +2402,7 @@ export default function Studio() {
       delete next[id];
       return next;
     });
+    setKept((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)));
     if (id === currentId) select(FIRST.id);
     // Everything this browser kept for it: the editor's saved doc (and its older autosaves), and its
     // cached preview clip.
@@ -2452,19 +2593,45 @@ export default function Studio() {
               style={fit ? { width: fit.w, height: fit.h } : { visibility: "hidden" }}
               onClick={() => setPlaying((p) => !p)}
             />
-            {currentRun && (
-              <Progress
-                steps={currentRun.steps}
-                running={currentRun.status === "running"}
-                output={currentRun.stream}
-                onCancel={() => currentRun.abort.abort()}
-                onDismiss={() => {
-                  dismissRun(currentRun.id);
-                  if (project.building && !project.code) remove(project.id, true);
-                }}
-              />
+            {(currentRun || resumable) && (
+              <div className="stage-dock">
+                {currentRun && (
+                  <Progress
+                    steps={currentRun.steps}
+                    running={currentRun.status === "running"}
+                    output={currentRun.stream}
+                    onCancel={() => currentRun.abort.abort()}
+                    onDismiss={() => {
+                      dismissRun(currentRun.id);
+                      if (project.building && !project.code) remove(project.id, true);
+                    }}
+                  />
+                )}
+                {/* A build that stopped: why, what's finished and what's left, and Continue from there. */}
+                {resumable && (
+                  <div className="resume-card">
+                    <b>{resumable.draft ? "Not finished yet" : "Didn't finish"}</b>
+                    <p>{stoppedWhy}</p>
+                    <p className="resume-plan">{planText(resumable)}</p>
+                    <div className="resume-actions">
+                      <button className="pill" onClick={continueFilm} disabled={!fonts} title={`Picks up at the ${progressOf(resumable).left[0]}; what's finished is kept`}>
+                        Continue
+                      </button>
+                      {resumable.draft ? (
+                        <button className="linkish" onClick={() => patchFilm(project.id, { resume: undefined }, cloud)} title="Keep the film as it is and forget what was left">
+                          keep as it is
+                        </button>
+                      ) : (
+                        <button className="linkish" onClick={() => remove(project.id)}>
+                          delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
-            {shownError && currentRun?.status !== "running" && (
+            {shownError && shownError !== stoppedWhy && currentRun?.status !== "running" && (
               <div className="error-card">
                 <span>{shownError}</span>
                 <button className="linkish" onClick={() => setError(null)}>
@@ -2897,7 +3064,7 @@ export default function Studio() {
               )}
               <button
                 className={`send${recreate || enhanced?.recreate ? " wide" : ""}`}
-                onClick={generate}
+                onClick={() => generate()}
                 disabled={!canAsk || !fonts || (mode === "edit" && isBuilding)}
                 aria-label={recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
                 title={recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}

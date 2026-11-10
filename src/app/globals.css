@@ -1130,6 +1130,73 @@ input[type="range"]:active::-webkit-slider-thumb {
   mask-image: linear-gradient(to bottom, transparent, #000 45%);
 }
 
+/* The run panel and, under it, what's left of a build that stopped (with Continue). */
+
+.stage-dock {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: min(380px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 5;
+}
+
+.stage-dock .progress {
+  position: static;
+  width: 100%;
+  max-height: none;
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.resume-card {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--ivory);
+  border: 1px solid #e9c9bb;
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(20, 20, 19, 0.1);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--slate);
+  animation: rise 0.35s var(--ease);
+}
+
+.resume-card b {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.resume-card p {
+  margin: 0;
+}
+
+.resume-card .resume-plan {
+  color: var(--stone);
+}
+
+.resume-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.resume-actions .pill {
+  height: 30px;
+}
+
+.resume-actions .pill:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* ── Favorites ─────────────────────────────────────── */
 
 .lib-head {

@@ -43,7 +43,7 @@ export type TapHooks = {
 
 const TEXT_FNS = new Set(["text", "words", "typewriter"]);
 // Kit helpers that call back into scene code; they draw no text of their own.
-const CALLBACK_FNS = new Set(["camera", "mask"]);
+const CALLBACK_FNS = new Set(["camera", "mask", "layer"]);
 
 type M = TextDraw["m"];
 
@@ -153,6 +153,9 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
   const t0 = ctx.getTransform();
   const base: M = { a: t0.a, b: t0.b, c: t0.c, d: t0.d, e: t0.e, f: t0.f };
   let inKit = 0;
+  // Inside a lib.layer block: its text belongs to that object (it moves, scales and hides with it), so
+  // it stays in code.
+  let inPart = 0;
   // Inside a movable draw's own painting (not paint over it).
   let own_ = 0;
   let clip = false;
@@ -203,6 +206,7 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
     });
 
   const plain = (color: unknown, m: M) =>
+    inPart === 0 &&
     !clip &&
     typeof color === "string" &&
     (!ctx.filter || ctx.filter === "none") &&
@@ -354,6 +358,14 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
 
   // Same kit, with text calls observed and every other helper marked as kit-internal.
   const lib: any = { ...kit };
+  lib.layer = (c: CanvasRenderingContext2D, name: string, draw: () => void) => {
+    inPart++;
+    try {
+      return (kit as any).layer(c, name, draw);
+    } finally {
+      inPart--;
+    }
+  };
   for (const [name, fn] of Object.entries(kit)) {
     if (typeof fn !== "function" || CALLBACK_FNS.has(name)) continue;
     if (TEXT_FNS.has(name)) {

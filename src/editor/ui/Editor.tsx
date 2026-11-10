@@ -19,6 +19,7 @@ import { renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
 import { splitLive } from "../extract/codeHash";
 import { fromUnchecked } from "../extract/legacy";
+import { invert, partsOp, partsStale, type Mat } from "../extract/parts";
 import { applySplit, splitCodeLayer } from "../extract/splitText";
 import AgentPanel from "./AgentPanel";
 import { dropLegacy, dropSaved, forkOf, openFilm, rememberFork, showFilmUrl, SPLIT_VERSION, writeSaved, type Session } from "./open";
@@ -34,6 +35,7 @@ type Field = { label: string; path: string; kind: "number" | "text" | "color" | 
 const TRANSFORM: Field[] = [
   { label: "X", path: "transform.x", kind: "number" },
   { label: "Y", path: "transform.y", kind: "number" },
+  { label: "Scale %", path: "transform.scale", kind: "number" },
   { label: "Rotation", path: "transform.rotation", kind: "number" },
   { label: "Opacity", path: "transform.opacity", kind: "number", step: 0.05 },
 ];
@@ -181,6 +183,8 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boundsRef = useRef<Record<string, Bounds>>({});
+  // The space each part of a code layer was drawn in on the last frame (a drag moves it in that space).
+  const spacesRef = useRef<Record<string, Mat>>({});
   const selBoxRef = useRef<HTMLDivElement>(null);
   const hoverBoxRef = useRef<HTMLDivElement>(null);
   const playingRef = useRef(false);
@@ -341,6 +345,24 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
     router.push(`/?film=${encodeURIComponent(saver.film.id)}`);
   };
 
+  // ── The objects each code layer draws (lib.layer in its code) are layers of their own: found again
+  // when a code layer's code or clip changes, as part of the edit that changed it ──
+  useEffect(() => {
+    if (!kit) return;
+    const todo = doc.layers.filter(partsStale);
+    if (!todo.length) return;
+    const ac = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        for (const l of todo) store.getState().amend(await partsOp(l, store.getState().doc, kit, assets, ac.signal));
+      } catch {}
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+  }, [doc.layers, kit, assets, store]);
+
   // ── Code layers whose code changed after their text was split: the code paints all its own text
   // again and their text layers stand down, until the text is split anew ──
   const stale = useMemo(() => doc.layers.filter((l) => l.type === "code" && l.props.skipText && !splitLive(l.props)), [doc.layers]);
@@ -426,7 +448,9 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         heard = null;
       }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      boundsRef.current = renderDoc(ctx, st.doc, t, kit, assets, { onError });
+      const spaces: Record<string, Mat> = {};
+      boundsRef.current = renderDoc(ctx, st.doc, t, kit, assets, { onError, partBounds: true, onPart: (l, s) => (spaces[l.id] = s.entry) });
+      spacesRef.current = spaces;
       for (const lid of Object.keys(boundsRef.current)) failing.delete(lid);
       const sig = [...failing].join("|");
       if (sig !== shown) {
@@ -434,6 +458,8 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         setErrors(Object.fromEntries(failing));
       }
       place(selBoxRef.current, st.selection[0] ? boundsRef.current[st.selection[0]] : undefined);
+      const one = st.selection.length === 1 ? st.doc.layers.find((l) => l.id === st.selection[0]) : undefined;
+      selBoxRef.current?.classList.toggle("sizable", one?.type === "part" && !one.locked);
       place(hoverBoxRef.current, hoverRef.current && hoverRef.current !== st.selection[0] ? boundsRef.current[hoverRef.current] : undefined);
       raf = requestAnimationFrame(frame);
     };
@@ -462,15 +488,59 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
     const r = canvasRef.current!.getBoundingClientRect();
     return [((e.clientX - r.left) / r.width) * W, ((e.clientY - r.top) / r.height) * H];
   };
-  const hitTest = (x: number, y: number) => {
+  // Layers first, topmost first; then the objects a code layer draws whose boxes hold the point,
+  // smallest first.
+  const under = (x: number, y: number): { layer: string | null; parts: string[] } => {
     const { doc: d } = store.getState();
+    const parts: { id: string; area: number }[] = [];
     for (let i = d.layers.length - 1; i >= 0; i--) {
       const l = d.layers[i];
       const b = boundsRef.current[l.id];
       if (!b || l.locked || l.type === "code") continue;
-      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return l.id;
+      if (!(x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h)) continue;
+      if (l.type !== "part") return { layer: l.id, parts: [] };
+      parts.push({ id: l.id, area: b.w * b.h });
     }
-    return null;
+    return { layer: null, parts: parts.sort((a, b) => a.area - b.area).map((p) => p.id) };
+  };
+  // Which of several objects is the one seen at a point: the one the picture there changes most
+  // without (a sun in front of a sky is the sun; a faint vignette over everything is never it).
+  const pickRef = useRef<HTMLCanvasElement | null>(null);
+  const seenAt = (ids: string[], x: number, y: number): string | null => {
+    if (ids.length < 2 || !kit) return ids[0] ?? null;
+    const N = 9;
+    const c = (pickRef.current ??= Object.assign(document.createElement("canvas"), { width: N, height: N }));
+    const g = c.getContext("2d", { willReadFrequently: true })!;
+    const { doc: d, time: t } = store.getState();
+    const shot = (mutePart?: string) => {
+      g.setTransform(1, 0, 0, 1, Math.round(N / 2 - x), Math.round(N / 2 - y));
+      try {
+        renderDoc(g, d, t, kit, assets, { onError: () => {}, mutePart });
+      } catch {}
+      return g.getImageData(0, 0, N, N).data;
+    };
+    const full = shot();
+    let best = ids[0], most = 0;
+    for (const id of ids) {
+      const px = shot(id);
+      let diff = 0;
+      for (let i = 0; i < px.length; i++) diff += Math.abs(px[i] - full[i]);
+      if (diff > most) {
+        most = diff;
+        best = id;
+      }
+    }
+    return best;
+  };
+  const hitTest = (x: number, y: number) => {
+    const u = under(x, y);
+    return u.layer ?? seenAt(u.parts, x, y);
+  };
+  // A move on the canvas, in the space a part is drawn in (under a camera, a zoom…).
+  const inSpace = (id: string, dx: number, dy: number): [number, number] => {
+    const m = spacesRef.current[id];
+    const inv = m ? invert({ ...m, e: 0, f: 0 }) : null;
+    return inv ? [inv.a * dx + inv.c * dy, inv.b * dx + inv.d * dy] : [dx, dy];
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -495,8 +565,10 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
       if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 3) return;
       moved = true;
       const r = canvasRef.current!.getBoundingClientRect();
-      const nx = Math.round(ox + ((ev.clientX - e.clientX) / r.width) * W);
-      const ny = Math.round(oy + ((ev.clientY - e.clientY) / r.height) * H);
+      const [dx, dy] = [((ev.clientX - e.clientX) / r.width) * W, ((ev.clientY - e.clientY) / r.height) * H];
+      const [lx, ly] = layer.type === "part" ? inSpace(hit, dx, dy) : [dx, dy];
+      const nx = Math.round(ox + lx);
+      const ny = Math.round(oy + ly);
       const cur = store.getState().doc.layers.find((l) => l.id === hit);
       if (!cur || cur.locked) return; // undone, deleted or locked mid-drag
       store.getState().apply((d) => {
@@ -520,9 +592,52 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
     window.addEventListener("pointercancel", stop);
   };
 
+  // Hovering works out what's under the pointer a few times a second (while playing, by boxes alone).
+  const hovered = useRef(0);
   const onPointerMove = (e: React.PointerEvent) => {
     const [x, y] = toCanvas(e);
-    hoverRef.current = hitTest(x, y);
+    if (playingRef.current) {
+      const u = under(x, y);
+      hoverRef.current = u.layer ?? u.parts[0] ?? null;
+    } else if (performance.now() - hovered.current > 90) {
+      hovered.current = performance.now();
+      hoverRef.current = hitTest(x, y);
+    }
+  };
+
+  // The selection's corner handle: drag away from the centre to make it bigger, towards it smaller.
+  const onResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const st = store.getState();
+    const id = st.selection[0];
+    const layer = st.doc.layers.find((l) => l.id === id);
+    const b = boundsRef.current[id];
+    if (!layer || layer.locked || !b) return;
+    pause();
+    const t = st.time;
+    const r = canvasRef.current!.getBoundingClientRect();
+    const [cx, cy] = [r.left + ((b.x + b.w / 2) / W) * r.width, r.top + ((b.y + b.h / 2) / H) * r.height];
+    const from = Math.max(4, Math.hypot(e.clientX - cx, e.clientY - cy));
+    const s0 = propAt(layer, "transform.scale", t);
+    const [sx, sy] = Array.isArray(s0) ? [Number(s0[0]) || 1, Number(s0[1] ?? s0[0]) || 1] : [1, 1];
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    st.beginGesture();
+    const move = (ev: PointerEvent) => {
+      const k = Math.min(20, Math.max(0.05, Math.hypot(ev.clientX - cx, ev.clientY - cy) / from));
+      const cur = store.getState().doc.layers.find((l) => l.id === id);
+      if (!cur || cur.locked) return;
+      store.getState().apply(setProp(id, "transform.scale", [Math.round(sx * k * 1000) / 1000, Math.round(sy * k * 1000) / 1000], t), "Resize layer");
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      store.getState().endGesture();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
 
   // ── Keyboard ──
@@ -794,7 +909,9 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
           <div className="ed-canvas-wrap" style={fit ? { width: fit.w, height: fit.h } : { visibility: "hidden" }}>
             <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerLeave={() => (hoverRef.current = null)} />
             <div ref={hoverBoxRef} className="ed-box hover" />
-            <div ref={selBoxRef} className="ed-box sel" />
+            <div ref={selBoxRef} className="ed-box sel">
+              <span className="ed-handle" onPointerDown={onResize} title="Drag to resize" />
+            </div>
           </div>
         </div>
 
@@ -957,6 +1074,7 @@ function Inspector({
   // Words change for the whole clip (and every linked copy); on split text, where it is and how big
   // moves its whole recorded track; anything else is set (or keyed) at the playhead.
   const set = (f: Field, v: Value) => {
+    if (f.path === "transform.scale" && typeof v === "number") v = [v / 100, v / 100];
     const op =
       f.path === "props.text" && typeof v === "string" ? setText(layer.id, v, time)
       : recorded && MOVES_TRACK.has(f.path) && typeof v === "number" ? offsetPropTo(layer.id, f.path, v, time)
@@ -1012,11 +1130,22 @@ function Inspector({
         </p>
       )}
       {layer.type === "code" && <SplitNote doc={doc} layer={layer} resplitting={resplitting} onResplit={onResplit} />}
+      {layer.type === "part" && (
+        <p className="ed-note">
+          An object the scene&apos;s code draws. Drag it on the canvas, pull its corner to resize it, fade or hide it, and trim its clip to change when it shows. Its drawing lives in{" "}
+          <button className="ed-link" onClick={() => onSelect(String(layer.props.partOf))}>
+            {doc.layers.find((l) => l.id === layer.props.partOf)?.name ?? "the code layer"}
+          </button>
+          .
+        </p>
+      )}
       <fieldset className="ed-fields" disabled={layer.locked}>
         {fields.map((f) => {
           const fallback = f.kind === "color" && (f.path === "props.color" || f.path === "props.fill") ? "#141413" : undefined;
           // Typed text shows its whole words: an edit changes them for the whole clip.
-          const raw = f.path === "props.text" ? wordsOf(layer, time) : (propAt(layer, f.path, time) ?? fallback);
+          const at = f.path === "props.text" ? wordsOf(layer, time) : (propAt(layer, f.path, time) ?? fallback);
+          // Scale is kept as [x, y]; shown and set as one percentage.
+          const raw = f.path === "transform.scale" ? (Array.isArray(at) ? Number(at[0]) * 100 : 100) : at;
           if (raw === undefined && f.path === "props.number") return null;
           const animated = !!layer.anim[f.path]?.length;
           const onKey = !!keyAt(layer.anim[f.path], localT, fps);

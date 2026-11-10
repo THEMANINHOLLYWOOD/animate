@@ -138,12 +138,20 @@ export const removeLayers =
       grew = false;
       for (const l of doc.layers) {
         if (gone.has(l.id)) continue;
-        const owner = typeof l.props.splitFrom === "string" ? l.props.splitFrom : null;
+        const owner = typeof l.props.splitFrom === "string" ? l.props.splitFrom : l.type === "part" && typeof l.props.partOf === "string" ? l.props.partOf : null;
         if ((l.parentId && gone.has(l.parentId)) || (owner && gone.has(owner) && doc.layers.some((o) => o.id === owner && o.type === "code"))) {
           gone.add(l.id);
           grew = true;
         }
       }
+    }
+    // A deleted part is still in its code layer's code: the layer remembers not to paint it.
+    for (const l of doc.layers) {
+      if (!gone.has(l.id) || l.type !== "part") continue;
+      const owner = doc.layers.find((o) => o.id === l.props.partOf && o.type === "code" && !gone.has(o.id));
+      if (!owner || typeof l.props.part !== "string") continue;
+      const dropped = Array.isArray(owner.props.dropParts) ? (owner.props.dropParts as unknown[]).filter((x): x is string => typeof x === "string") : [];
+      if (!dropped.includes(l.props.part)) owner.props.dropParts = [...dropped, l.props.part];
     }
     doc.layers = doc.layers.filter((l) => !gone.has(l.id));
     pruneLinks(doc); // a copy whose other copies went links nothing

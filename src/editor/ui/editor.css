@@ -202,6 +202,25 @@
   outline-offset: 3px;
 }
 
+.ed-handle {
+  display: none;
+  position: absolute;
+  right: -9px;
+  bottom: -9px;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: #fff;
+  border: 1.5px solid var(--clay);
+  pointer-events: auto;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.ed-box.sel.sizable .ed-handle {
+  display: block;
+}
+
 .ed-box.hover {
   outline: 1px dashed color-mix(in srgb, var(--clay) 60%, transparent);
   outline-offset: 3px;

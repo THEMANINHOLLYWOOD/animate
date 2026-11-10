@@ -25,7 +25,7 @@ const prettyPath = (p: string) =>
     "transform.scale": "Scale",
   })[p] ?? p.replace(/^props\./, "").replace(/^./, (c) => c.toUpperCase());
 
-const TYPE_GLYPH: Record<string, string> = { text: "T", shape: "◻", globe: "◍", waveform: "≋", image: "▣", video: "▶", code: "</>", group: "▤" };
+const TYPE_GLYPH: Record<string, string> = { text: "T", shape: "◻", globe: "◍", waveform: "≋", image: "▣", video: "▶", code: "</>", part: "◆", group: "▤" };
 
 const STOOD_DOWN = "Stood down: its code changed after its text was split, so the code draws this text. Select it to split the text again.";
 

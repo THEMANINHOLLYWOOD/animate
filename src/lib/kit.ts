@@ -483,6 +483,18 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     ctx.restore();
   }
 
+  // One named object of the scene (a whale, a cloud, a chart): the editor shows each as a layer of
+  // its own that can be selected, moved, scaled, faded and hidden. Canvas state set inside (styles,
+  // transforms) ends with it.
+  function layer(ctx: CanvasRenderingContext2D, _name: string, draw: () => void) {
+    ctx.save();
+    try {
+      draw();
+    } finally {
+      ctx.restore();
+    }
+  }
+
   // Clip drawing to a path built by shape(ctx).
   function mask(ctx: CanvasRenderingContext2D, shape: (c: CanvasRenderingContext2D) => void, draw: () => void) {
     ctx.save();
@@ -504,6 +516,7 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     loopT,
     stagger,
     camera,
+    layer,
     mask,
     count,
     C: PALETTE,

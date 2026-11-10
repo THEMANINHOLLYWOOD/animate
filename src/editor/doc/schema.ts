@@ -49,7 +49,8 @@ export const Effect = z.object({
 });
 export type Effect = z.infer<typeof Effect>;
 
-export const LayerType = z.enum(["text", "shape", "image", "video", "group", "code", "globe", "chart", "particles", "waveform"]);
+// "part": one object a code layer draws (lib.layer in its code), as a layer of its own: see extract/parts.ts.
+export const LayerType = z.enum(["text", "shape", "image", "video", "group", "code", "part", "globe", "chart", "particles", "waveform"]);
 export type LayerType = z.infer<typeof LayerType>;
 
 export const Layer = z.object({

@@ -5,6 +5,7 @@ import type { Kit } from "@/lib/kit";
 import { propAt } from "../doc/interpolate";
 import type { Doc, Layer } from "../doc/schema";
 import { sceneClock, splitCovers, splitLive } from "../extract/codeHash";
+import { droppedParts, isPart, muted, pivoted, tapParts, type PartSeen, type PartState } from "../extract/parts";
 import { skipRule, tapText, type TextDraw } from "../extract/textTap";
 
 export type Bounds = { x: number; y: number; w: number; h: number };
@@ -36,7 +37,7 @@ const TOP: Record<string, number> = { top: 0, hanging: -0.1, middle: -0.5, botto
 // Run a code scene with its save/restore depth counted: a scene that throws mid-way is unwound to
 // where it started (its saves restored), and a restore it never saved for can't pop the renderer's
 // own state. Installed over whatever save/restore the canvas has (the text tap's), then put back.
-function balanced(ctx: CanvasRenderingContext2D, fn: () => void) {
+function balanced(ctx: CanvasRenderingContext2D, fn: () => void, onRestore?: () => void) {
   const before = { save: Object.getOwnPropertyDescriptor(ctx, "save"), restore: Object.getOwnPropertyDescriptor(ctx, "restore") };
   const save = ctx.save, restore = ctx.restore;
   let depth = 0;
@@ -49,6 +50,7 @@ function balanced(ctx: CanvasRenderingContext2D, fn: () => void) {
     if (depth === 0) return;
     depth--;
     restore.call(ctx);
+    onRestore?.();
   });
   try {
     fn();
@@ -77,7 +79,7 @@ function codeFn(code: string) {
 }
 
 // Draw one layer's content at its local origin; returns its local bounding box.
-function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<string, any>, t: number, doc: Doc, kit: Kit, assets: Assets, opts: RenderOptions): Bounds | null {
+function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<string, any>, t: number, doc: Doc, kit: Kit, assets: Assets, opts: RenderOptions, bounds: Record<string, Bounds>): Bounds | null {
   const u = kit.u;
   switch (layer.type) {
     case "text": {
@@ -182,20 +184,68 @@ function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<stri
       // only holds for the code it was made from (edited code paints all its own text again), and over
       // the stretch of the scene it was made from (lengthened past it, the code paints its text there).
       let tap: ReturnType<typeof tapText> | null = null;
+      const { w: W, h: H } = doc.meta.size;
+      const run = (lib: Kit, after?: () => void) => balanced(ctx, () => f(ctx, W, H, lt, T, T > 0 ? clamp01(lt / T) : 0, lib, assets), after);
+      // The objects its code draws (lib.layer) that are layers of their own: each is drawn as its
+      // part layer says (moved, scaled, faded), or not at all (hidden, outside its clip, deleted).
+      const mine = new Map(doc.layers.filter((l) => isPart(l) && l.props.partOf === layer.id).map((l) => [String(l.props.part), l]));
+      const dropped = new Set(droppedParts(p));
+      let parts: ReturnType<typeof tapParts> | null = null;
+      if (mine.size || dropped.size || opts.partBounds) {
+        const state = (name: string): PartState | "mute" | null => {
+          if (dropped.has(name)) return "mute";
+          const pl = mine.get(name);
+          if (!pl) return null;
+          if (pl.hidden || pl.id === opts.mutePart || t < pl.start || t >= pl.end + 1e-9) return "mute";
+          const { tr } = resolved(pl, t);
+          const s = Array.isArray(tr.scale) ? tr.scale : [1, 1];
+          return { x: tr.x ?? 0, y: tr.y ?? 0, scale: [s[0] ?? 1, s[1] ?? s[0] ?? 1], rotation: tr.rotation ?? 0, opacity: tr.opacity ?? 1, blend: pl.blend };
+        };
+        // Scaling or turning a part happens about its centre, where the code draws it on this frame:
+        // found by running the scene once more with painting off.
+        let pivots: Map<string, [number, number]> | undefined;
+        if ([...mine.keys()].some((name) => {
+          const st = state(name);
+          return st && st !== "mute" && pivoted(st);
+        })) {
+          const dry = tapParts(ctx, kit, { track: true });
+          try {
+            muted(ctx, () => run(dry.lib, dry.restored));
+          } finally {
+            dry.restore();
+          }
+          pivots = new Map();
+          for (const [name, s] of dry.seen) if (s.box) pivots.set(name, [(s.box.x0 + s.box.x1) / 2, (s.box.y0 + s.box.y1) / 2]);
+        }
+        parts = tapParts(ctx, kit, { state, track: !!opts.partBounds, pivots });
+      }
+      const base = parts ? parts.lib : kit;
       if (splitLive(p) && splitCovers(p, lt)) {
         const rule = skipRule(Array.isArray(p.keepText) ? p.keepText : []);
-        tap = tapText(ctx, kit, (d, movable) => {
+        tap = tapText(ctx, base, (d, movable) => {
           const v = rule(d, movable);
           if (v === "skip") opts.onTextSkipped?.(layer, d);
           return v;
         });
       }
       try {
-        balanced(ctx, () => f(ctx, doc.meta.size.w, doc.meta.size.h, lt, T, T > 0 ? clamp01(lt / T) : 0, tap ? tap.lib : kit, assets));
+        run(tap ? tap.lib : base, parts?.restored);
       } finally {
         tap?.restore();
+        parts?.restore();
       }
-      return { x: 0, y: 0, w: doc.meta.size.w, h: doc.meta.size.h };
+      if (parts && opts.partBounds) {
+        for (const [name, s] of parts.seen) {
+          const pl = mine.get(name);
+          if (!pl) continue;
+          opts.onPart?.(pl, s);
+          const b = s.box;
+          if (!b) continue;
+          const x0 = Math.max(0, b.x0), y0 = Math.max(0, b.y0), x1 = Math.min(W, b.x1), y1 = Math.min(H, b.y1);
+          if (x1 > x0 && y1 > y0) bounds[pl.id] = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        }
+      }
+      return { x: 0, y: 0, w: W, h: H };
     }
     default:
       return null;
@@ -208,6 +258,12 @@ export type RenderOptions = {
   onError?: (layer: Layer, error: unknown) => void;
   // Text a split code layer left to its text layers (didn't paint) on this frame.
   onTextSkipped?: (layer: Layer, d: TextDraw) => void;
+  // Work out where each part of a code layer paints (the editor's selection boxes), and report the
+  // space each was drawn in.
+  partBounds?: boolean;
+  onPart?: (part: Layer, seen: PartSeen) => void;
+  // Leave one part out of the frame (the editor finds what's under the pointer by what changes without it).
+  mutePart?: string;
 };
 
 // Paint the whole doc at time t. Returns canvas-space bounds per drawn layer
@@ -259,7 +315,8 @@ export function renderDoc(ctx: CanvasRenderingContext2D, doc: Doc, t: number, ki
 
   let failed: { error: unknown } | null = null;
   for (const layer of doc.layers) {
-    if (layer.type === "group" || !visible(layer)) continue;
+    // A part is painted by its code layer.
+    if (layer.type === "group" || layer.type === "part" || !visible(layer)) continue;
     ctx.save();
     try {
       // Split text is drawn in its code layer's space, then moved by its own transform and groups,
@@ -271,7 +328,7 @@ export function renderDoc(ctx: CanvasRenderingContext2D, doc: Doc, t: number, ki
         const blend = layer.blend === "normal" && owner ? owner.blend : layer.blend;
         ctx.globalCompositeOperation = blend === "add" ? "lighter" : blend === "normal" ? "source-over" : blend;
         const { props } = resolved(layer, t);
-        const b = drawContent(ctx, layer, props, t, doc, kit, assets, opts);
+        const b = drawContent(ctx, layer, props, t, doc, kit, assets, opts, bounds);
         if (b) {
           const m = ctx.getTransform();
           const pts = [

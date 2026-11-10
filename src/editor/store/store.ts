@@ -14,6 +14,9 @@ export type EditorState = {
   time: number;
   selection: string[];
   apply: (op: Op, label: string, opts?: { coalesce?: string }) => void;
+  // A change that follows from the last one (the layers of a scene's objects, after its code changed):
+  // it joins that step, so one undo takes both back, and what was undone can still be redone.
+  amend: (op: Op) => void;
   // Everything applied between beginGesture and endGesture (a drag, from pointerdown to pointerup)
   // is one undo step, however long it pauses. Gestures nest; the outermost one counts.
   beginGesture: () => void;
@@ -61,6 +64,14 @@ export const createEditorStore = (initial: Doc) => {
         const step: Step = { label, redo, undo, at: now, coalesce: opts?.coalesce, gesture: gesture || undefined };
         set({ doc: next, past: [...past, step].slice(-MAX_HISTORY), future: [] });
       }
+    },
+
+    amend(op) {
+      const [next, redo, undo] = produceWithPatches(get().doc, op);
+      if (!redo.length) return;
+      const past = get().past;
+      const prev = past[past.length - 1];
+      set(prev ? { doc: next, past: [...past.slice(0, -1), { ...prev, redo: [...prev.redo, ...redo], undo: [...undo, ...prev.undo] }] } : { doc: next });
     },
 
     beginGesture() {

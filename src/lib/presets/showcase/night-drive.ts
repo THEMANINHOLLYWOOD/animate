@@ -290,15 +290,16 @@ function car() {
 }
 // ---------- world ----------
 L.camera(ctx, { rot: bank, zoom: 1.06 + 0.04 * rise + 0.05 * L.seg(p, 0.62, 1, E.inOutSine), y: -H * 0.02 * rise }, () => {
-  sky();
-  ctx.save(); ctx.globalAlpha = kSky; sun(); ctx.restore();
+  // each thing in the world is a layer of its own in the editor
+  L.layer(ctx, 'Sky', sky);
+  L.layer(ctx, 'Sun', () => { ctx.globalAlpha = kSky; sun(); });
   const mA = L.seg(p, 0.03, 0.16, E.out);
-  mountains(t * 6 * U, hy, H * 0.1, W * 0.07, 1, '#1a0533', '#8a4dff', mA);
-  mountains(t * 14 * U + W * 0.2, hy, H * 0.065, W * 0.05, 7, '#120228', '#3ff7ff', mA);
-  ground();
-  haze();
-  palms();
-  car();
+  L.layer(ctx, 'Far mountains', () => mountains(t * 6 * U, hy, H * 0.1, W * 0.07, 1, '#1a0533', '#8a4dff', mA));
+  L.layer(ctx, 'Near mountains', () => mountains(t * 14 * U + W * 0.2, hy, H * 0.065, W * 0.05, 7, '#120228', '#3ff7ff', mA));
+  L.layer(ctx, 'Road and grid', ground);
+  L.layer(ctx, 'Horizon haze', haze);
+  L.layer(ctx, 'Palms', palms);
+  L.layer(ctx, 'Car', car);
 });
 // ---------- title ----------
 const titleOn = kLaser > 0;
@@ -415,7 +416,8 @@ if (titleOn) {
   }
 }
 // ---------- CRT: scanlines + vignette ----------
-ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.22)';
+L.layer(ctx, 'Scanlines and vignette', () => {
+ctx.fillStyle = 'rgba(0,0,0,0.22)';
 ctx.beginPath();
 const sl = Math.max(2, 3 * U);
 for (let y = 0; y < H; y += sl * 1.5) ctx.rect(0, y, W, sl * 0.5);
@@ -424,6 +426,7 @@ const vg = ctx.createRadialGradient(cx, H / 2, S * 0.35, cx, H / 2, Math.max(W, 
 vg.addColorStop(0, 'rgba(0,0,0,0)');
 vg.addColorStop(1, 'rgba(5,0,15,0.7)');
 ctx.fillStyle = vg;
-ctx.fillRect(0, 0, W, H); ctx.restore();
+ctx.fillRect(0, 0, W, H);
+});
 `,
 };

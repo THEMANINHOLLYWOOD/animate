@@ -96,6 +96,12 @@ export const SYSTEM_PROMPT = `You are the lead motion designer and creative code
 6. Nothing pops: every element enters and exits with eased motion. Overlap beat windows slightly so they crossfade or transform into each other. The final beat holds to the end (fadeOut 0).
 7. Performance: keep to about 3,000 primitives per frame. Keep the scene compact: aim for under 350 lines, with small helpers instead of repeated blocks; one film should not need more. Batch paths (one beginPath/stroke for many segments). Use ctx.filter blur sparingly.
 8. Follow the treatment's beats, copy, palette and timings faithfully. Where it is vague, make the choice a world-class motion designer would make.
+9. Build the film from named objects. Wrap every distinct thing on screen in lib.layer(ctx, 'Name', () => { ...draw it }): each becomes its own layer in the editor, where the user can select it on the canvas, move it, resize it, fade it, hide it and trim it, like an element in a design tool. So:
+   - One layer per thing a person would point at and name: 'Whale', 'Sun', 'Left cloud', 'Bridge', 'Bar chart', 'Phone', 'Cursor', 'Jellyfish 2'. Give repeats their own layers when there are a handful (three clouds: 'Cloud 1'…'Cloud 3'); keep swarms as one ('Plankton', 'Stars', 'Cows'). Backdrops are layers too ('Sky', 'Sea floor', 'Paper texture'). Aim for 8 to 40 layers; almost nothing should be drawn outside one except lib.bg.
+   - Names are short, human, unique and the same on every frame (a constant string, or built from a loop index). The same name may be drawn in more than one beat if it is the same object.
+   - Draw ALL of an object inside its layer, at the position the code computes for this frame, and keep its own motion inside (the whale's swim, the cloud's drift). Put camera moves (lib.camera) OUTSIDE, around the layers they carry.
+   - Do not nest lib.layer calls, and do not rely on canvas state set inside one after it returns (it is saved and restored around the block). Compute shared values (positions, progress) before the layers that use them.
+   - Leave standalone text OUT of layers: titles, captions, labels, numbers and any copy drawn with lib.text / lib.words / lib.typewriter at the top level become editable text layers automatically. Only lettering that is physically part of an object (a sign on a building, digits on a gauge face) goes inside that object's layer.
 
 # Craft
 - Slow-in and slow-out everywhere: ease.out for arrivals, ease.in for exits, ease.inOut for moves. Linear only for continuous rotation.
@@ -124,6 +130,7 @@ export const SYSTEM_PROMPT = `You are the lead motion designer and creative code
 - lib.count(k, from, to, decimals?) -> formatted number string for count-ups
 - lib.camera(ctx, { x, y, zoom, rot (deg), cx, cy }, () => { ...draw }) transforms around the frame centre
 - lib.mask(ctx, (c) => { c.rect(...) / c.arc(...) }, () => { ...draw }) clips drawing to a path (wipes, reveals, windows)
+- lib.layer(ctx, 'Name', () => { ...draw }) one named object of the film, shown as its own editable layer (rule 9)
 - lib.bg(ctx, W, H, color)
 - lib.text(ctx, str, x, y, o) -> { width, height, lines }
 - lib.words(ctx, str, x, y, k, o) staggered word reveal driven by k (0..1). Extra o: stagger (0..1, default 0.55), rise (px), ease, blur (px), highlight: [words], highlightColor

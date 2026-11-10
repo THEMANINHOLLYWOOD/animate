@@ -8,6 +8,7 @@ import { makeKit } from "@/lib/kit";
 import { Doc } from "../doc/schema";
 import { codeHash } from "../extract/codeHash";
 import { uncheckedSplit } from "../extract/legacy";
+import { withParts } from "../extract/parts";
 import { splitDocText } from "../extract/splitText";
 import { pickDoc, type SavedRec } from "./session";
 
@@ -186,7 +187,9 @@ export async function openFilm(id: string, cloud: boolean, onProgress: (k: numbe
   const fonts = await loadFonts();
   const { w, h } = picked.doc.meta.size;
   // Splits whatever code layers aren't split yet (none, when the film was edited here before).
-  const doc = await splitDocText(picked.doc, makeKit(w, h, fonts), media.assets, { onProgress, signal });
+  const kit = makeKit(w, h, fonts);
+  // …and gives each object its code draws (lib.layer) a layer of its own.
+  const doc = await withParts(await splitDocText(picked.doc, kit, media.assets, { onProgress, signal }), kit, media.assets, signal);
   if (!picked.restored && doc !== picked.doc) void writeSaved(id, { v: SPLIT_VERSION, doc, edited: false, source: o.version }).catch(() => {});
   return {
     film: o.film,
