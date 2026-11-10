@@ -2,7 +2,10 @@
 // The animation kit exposed to every scene as `lib`.
 // Scenes are pure functions of time, so everything here is stateless.
 
-export type Fonts = { serif: string; sans: string; mono: string };
+import { makeFx } from "./fx";
+
+// display: a tall condensed poster face; heavy: a wide black grotesque; marker: a hand-drawn brush.
+export type Fonts = { serif: string; sans: string; mono: string; display?: string; heavy?: string; marker?: string };
 
 export const PALETTE = {
   ivory: "#FAF9F5",
@@ -53,7 +56,13 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
   const u = Math.min(W, H) / 1080;
 
   const fam = (f?: string) =>
-    !f || f === "serif" ? fonts.serif : f === "sans" ? fonts.sans : f === "mono" ? fonts.mono : f;
+    !f || f === "serif" ? fonts.serif
+    : f === "sans" ? fonts.sans
+    : f === "mono" ? fonts.mono
+    : f === "display" ? (fonts.display ?? 'Impact, "Arial Narrow", sans-serif')
+    : f === "heavy" ? (fonts.heavy ?? '"Arial Black", Impact, sans-serif')
+    : f === "marker" ? (fonts.marker ?? '"Marker Felt", "Comic Sans MS", cursive')
+    : f;
 
   const font = (o: any = {}) =>
     `${o.italic ? "italic " : ""}${o.weight ?? 400} ${o.size ?? 48 * u}px ${fam(o.family)}`;
@@ -509,6 +518,7 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     lerp(from, to, clamp(k)).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 
   return {
+    ...makeFx({ W, H, u, noise, rand, ease, font, text }),
     noise,
     spring,
     springT,

@@ -37,6 +37,9 @@ export function loadFonts(): Promise<Fonts> {
       serif: f("--font-serif", "Georgia, serif"),
       sans: f("--font-sans", "system-ui, sans-serif"),
       mono: f("--font-mono", "ui-monospace, monospace"),
+      display: f("--font-display", 'Impact, "Arial Narrow", sans-serif'),
+      heavy: f("--font-heavy", '"Arial Black", Impact, sans-serif'),
+      marker: f("--font-marker", '"Marker Felt", cursive'),
     };
     const loads = [
       `400 40px ${fonts.serif}`,
@@ -46,6 +49,12 @@ export function loadFonts(): Promise<Fonts> {
       `500 40px ${fonts.sans}`,
       `600 40px ${fonts.sans}`,
       `400 40px ${fonts.mono}`,
+      `700 40px ${fonts.sans}`,
+      `800 40px ${fonts.sans}`,
+      `900 40px ${fonts.sans}`,
+      `400 40px ${fonts.display}`,
+      `400 40px ${fonts.heavy}`,
+      `400 40px ${fonts.marker}`,
     ];
     await Promise.all(loads.map((l) => document.fonts.load(l).catch(() => null)));
     await document.fonts.ready;

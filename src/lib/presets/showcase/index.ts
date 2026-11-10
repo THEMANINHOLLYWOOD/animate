@@ -1,5 +1,6 @@
 // The example films everyone starts with: ten deliberately opposite styles, to show the range.
 import { film as launch } from "./launch";
+import { film as noiseLab } from "./noise-lab";
 import { film as waterCycle } from "./water-cycle";
 import { film as thermopylae } from "./thermopylae";
 import { film as wordMosaic } from "./word-mosaic";
@@ -17,4 +18,4 @@ import { film as seasons } from "./seasons";
 
 export type ExampleFilm = { id: string; title: string; aspect: "16:9" | "9:16" | "1:1"; duration: number; prompt: string; code: string };
 
-export const SHOWCASE: ExampleFilm[] = [launch, inca, waterCycle, thermopylae, wordMosaic, loud, enso, nightDrive, heartbeat, helloShapes, paleDot, shipIt, flowField, lastReel, seasons];
+export const SHOWCASE: ExampleFilm[] = [launch, noiseLab, inca, waterCycle, thermopylae, wordMosaic, loud, enso, nightDrive, heartbeat, helloShapes, paleDot, shipIt, flowField, lastReel, seasons];

@@ -49,6 +49,8 @@ Score 1-10 on: hook in the first 2 s · readability at phone size · motion qual
 
 List the 3 biggest problems with timestamps. Hunt specifically for: text overlapping other text or shapes, text clipped at the frame edge or cut off, type too small to read at phone width, a centred-title-on-gradient shot, labels in the corners or frame borders, everything fading in, a dead beat where nothing happens, elements that jump between frames instead of easing, a blurry or empty frame, copy that differs from the treatment, the final frame not holding the payoff.
 
+When the treatment's Register is HYPE, judge it as an edit cut to music, not as an explainer. There, hard cuts between shots, type cropped by the frame edges, flashes, shake, colour split, glitches and grain are the intended language: never report them as problems, and never ask for crossfades, gentler motion or smaller type. Hunt instead for what kills energy: any frame that could be a slide in a deck (a heading over a line of text on a plain ground), two neighbouring shots with the same composition or colours, a shot that sits finished and static before its cut, fewer shots than about one per second, type that is small or timid, a cut with no reaction, a flat finish with no texture or light, the name not landing hard at the drop, and an end card that cannot be read. Score "motion quality" there as force and rhythm, and "variety" as how different each shot is from the last.
+
 Be concrete: say which element, where, at what time, and exactly what to change. If the film is genuinely strong, say so and give fewer problems. Never invent problems to fill the list.`;
 
 export async function POST(req: Request) {

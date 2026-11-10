@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
-import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
+import { Anton, Archivo_Black, Inter, JetBrains_Mono, Permanent_Marker, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 import { AccountProvider } from "@/components/Account";
 import { CLERK_ENABLED } from "@/lib/authMode";
@@ -12,6 +12,10 @@ const serif = Source_Serif_4({
 });
 const sans = Inter({ variable: "--font-sans", subsets: ["latin"] });
 const mono = JetBrains_Mono({ variable: "--font-mono", subsets: ["latin"] });
+// Faces films draw with (the kit's 'display', 'heavy' and 'marker' families).
+const display = Anton({ variable: "--font-display", subsets: ["latin"], weight: "400" });
+const heavy = Archivo_Black({ variable: "--font-heavy", subsets: ["latin"], weight: "400" });
+const marker = Permanent_Marker({ variable: "--font-marker", subsets: ["latin"], weight: "400" });
 
 export const metadata: Metadata = {
   title: "animate",
@@ -22,7 +26,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${serif.variable} ${sans.variable} ${mono.variable}`}
+      className={`${serif.variable} ${sans.variable} ${mono.variable} ${display.variable} ${heavy.variable} ${marker.variable}`}
     >
       <body>
         {CLERK_ENABLED ? (

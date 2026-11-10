@@ -5,6 +5,43 @@ export type Style = { id: string; name: string; example?: string; guidance: stri
 
 export const STYLES: Style[] = [
   {
+    id: "hype-edit",
+    name: "Hype edit",
+    example: "ex-noise-lab",
+    guidance:
+      "Register HYPE. A beat-cut kinetic type edit: near-black, bone white and one or two acid colours; a new full-bleed composition every 1–4 beats (giant cropped 'display' words, per-letter drops, hollow outline stacks, angled marquee bands, a tiled video wall, split screens, a countdown), hard cuts with flash, shake and colour split on every cut, a breath of black before a drop where the name slams in with a shockwave and sparks, then a held end card; grain, bloom and vignette over everything.",
+  },
+  {
+    id: "trailer",
+    name: "Cinematic trailer",
+    guidance:
+      "Register HYPE at a slow, heavy tempo (90–110 BPM, cuts on big hits). A film trailer: black frames between images, a 2.39:1 letterbox, wide-tracked serif or 'display' capitals fading up out of darkness then cut off by a hit, light leaks and film burn washing across, drifting embers or dust in a shaft of light, slow pushes that end in an impact frame and a cut to black, a rising rhythm of shorter and shorter shots into the title, which lands with a shockwave and holds; duotone grades (teal and amber, or ash and ember), heavy grain and vignette.",
+  },
+  {
+    id: "glitch",
+    name: "Glitch / cyber",
+    guidance:
+      "Register HYPE. Digital and hostile: pure black with one neon (acid green, cyan or magenta) and white; mono and 'heavy' type that decodes through scrambled glyphs, terminal carets, HUD brackets, coordinates and thin scan grids; glitch tears, colour split and pixelation on every cut, datamosh-style smears, scanlines throughout, inverted frames on hits, a tiled wall of the same frame, numbers ticking fast.",
+  },
+  {
+    id: "impact",
+    name: "Anime impact",
+    guidance:
+      "Register HYPE. Shonen opening energy: flat saturated colour fields with bold black outlines, speed lines converging on the subject, smear trails behind anything that moves, impact frames (one to three frames of stark inverted black and white) on every big hit, diagonal slash wipes, huge italic 'heavy' or 'marker' lettering slammed in at an angle, halftone dots in the shadows, shockwaves and spark bursts, a freeze on the hero pose with the title.",
+  },
+  {
+    id: "zine",
+    name: "Zine collage",
+    guidance:
+      "Register HYPE with a handmade feel. Cut-and-paste collage: off-white and kraft paper grounds, torn-edge and scissor-cut colour shapes, 'marker' scrawl next to 'display' capitals in ransom-note mixes, strips of tape, photocopy grain and halftone, stamped stars and arrows, everything animated on twos (step the time to 12 frames a second so it judders like stop motion) with layers that jitter a few pixels each step, hard cuts and paper-slide wipes.",
+  },
+  {
+    id: "vhs",
+    name: "VHS rave",
+    guidance:
+      "Register HYPE. A 90s rave flyer on worn tape: hot gradients (magenta to orange, cyan to violet) on black, chrome and outlined 'heavy' type with stacked echoes, smiley-era geometric marks and spirals, heavy scanlines, tracking glitches that tear the frame sideways, colour split that breathes with the beat, a pixelated mosaic on cuts, a tiled video wall, the date and place of an event in mono at the end.",
+  },
+  {
     id: "flat-explainer",
     name: "Flat explainer",
     example: "ex-inca",

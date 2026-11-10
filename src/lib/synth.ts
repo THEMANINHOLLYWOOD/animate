@@ -32,7 +32,7 @@ const PROGRESSIONS = {
 
 export function specFromPlan(prompt: string, energy: "low" | "medium" | "high", seed: number): BedSpec {
   const bpmMatch = prompt.match(/(\d{2,3})\s*bpm/i);
-  const bpm = bpmMatch ? Math.min(160, Math.max(56, +bpmMatch[1])) : energy === "high" ? 124 : energy === "medium" ? 100 : 72;
+  const bpm = bpmMatch ? Math.min(180, Math.max(56, +bpmMatch[1])) : energy === "high" ? 124 : energy === "medium" ? 100 : 72;
   const minor = /minor|melanchol|dark|moody|tense|noir|serious/i.test(prompt);
   return { bpm, energy, mode: minor ? "minor" : "major", seed };
 }

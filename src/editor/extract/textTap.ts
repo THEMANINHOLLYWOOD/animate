@@ -43,7 +43,7 @@ export type TapHooks = {
 
 const TEXT_FNS = new Set(["text", "words", "typewriter"]);
 // Kit helpers that call back into scene code; they draw no text of their own.
-const CALLBACK_FNS = new Set(["camera", "mask", "layer"]);
+const CALLBACK_FNS = new Set(["camera", "mask", "layer", "shake", "trail", "wipe"]);
 
 type M = TextDraw["m"];
 
