@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     const r = await anthropicClient().messages.create({
       model: MODEL,
       max_tokens: 4000,
-      output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
+      output_config: { effort: "medium", format: { type: "json_schema", schema: SCHEMA } },
       system: SYSTEM,
       messages: [{ role: "user", content }],
     });

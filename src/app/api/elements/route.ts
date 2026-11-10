@@ -37,7 +37,7 @@ export async function POST(req: Request) {
       {
         model: MODEL,
         max_tokens: 32000,
-        output_config: { effort: "high", format: { type: "json_schema", schema: ELEMENTS_SCHEMA } },
+        output_config: { effort: "medium", format: { type: "json_schema", schema: ELEMENTS_SCHEMA } },
         system: ELEMENTS_SYSTEM,
         messages: [{ role: "user", content }],
       },

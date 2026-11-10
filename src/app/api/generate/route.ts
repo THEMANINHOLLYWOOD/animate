@@ -135,7 +135,7 @@ function animatorEffort(duration: number): "low" | "medium" | "high" {
   const forced = process.env.ANIMATE_EFFORT as "low" | "medium" | "high" | undefined;
   if (forced) return forced;
   if (LIMIT_MS >= 600_000) return "high";
-  return duration > 12 ? "medium" : "high";
+  return duration > 12 ? "low" : "medium";
 }
 
 // Upstream failures worth retrying: server-side errors, overloads and dropped connections (an
@@ -150,14 +150,19 @@ function transient(e: unknown) {
 
 const EFFORTS = ["low", "medium", "high"] as const;
 
-// Director and recreation breakdowns plan at high effort; the animator writes at high effort, or
-// medium for long films on a short limit (cut-off text is continued, so length isn't the risk;
-// thinking past the limit is). Repairs and review fixes start from existing code and get at least
-// medium. effortCap lowers any of these for a retry after a run that was still thinking when the limit came.
+// The director plans at high effort. The animator's effort fits the limit: thinking that runs past
+// it is lost and the part starts over lighter (measured on the 5-minute limit: medium effort on a
+// 15 s film thinks past it), while cut-off text is simply continued. So on a short limit the
+// animator runs medium (low for films over 12 s) and a recreation breakdown medium; with a limit
+// of 10 minutes or more (ANIMATE_FUNCTION_SECONDS) everything runs high. Repairs and review fixes
+// start from existing code and get at least medium. effortCap lowers any of these for a retry
+// after a run that was still thinking when the limit came.
 function stageEffort(body: Body): "low" | "medium" | "high" {
   const base =
     body.stage === "direct"
-      ? "high"
+      ? body.recreate && LIMIT_MS < 600_000
+        ? "medium"
+        : "high"
       : body.error || body.critique
         ? animatorEffort(body.duration) === "low"
           ? "medium"

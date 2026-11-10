@@ -80,7 +80,7 @@ export async function POST(req: Request) {
               model: MODEL,
               max_tokens: 16000,
               thinking: { type: "adaptive", display: "summarized" },
-              output_config: { effort: "high" },
+              output_config: { effort: "medium" },
               system: [{ type: "text", text: AGENT_SYSTEM, cache_control: { type: "ephemeral" } }],
               tools: AGENT_TOOLS,
               messages,

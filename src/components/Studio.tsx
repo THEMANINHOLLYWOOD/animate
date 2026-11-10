@@ -472,6 +472,7 @@ export default function Studio() {
   const [modeState, setMode] = useState<"new" | "edit">("new");
   // A format picked for the next new film while the selected film's own can't change (its doc is laid out for it).
   const [newFormat, setNewFormat] = useState<{ film: string; aspect: Aspect } | null>(null);
+  const [newLength, setNewLength] = useState<{ film: string; duration: number } | null>(null);
   const [files, setFiles] = useState<Attached[]>([]);
   const [brands, setBrands] = useState<BrandKit[]>([]);
   const [reading, setReading] = useState<string[]>([]);
@@ -552,7 +553,11 @@ export default function Studio() {
   const recreate = mode === "new" && !briefText && videos.length > 0;
   // The format a new film gets: the selected film's, or the one picked for it while that film's is fixed.
   const fixedFormat = !!project.doc;
-  const newAspect = mode === "new" && fixedFormat && newFormat?.film === project.id ? newFormat.aspect : project.aspect;
+  // Composing a new film with one of your own open, the format and length picked are the new film's
+  // alone: the open film (which may still be building) keeps its own. An example just previews them.
+  const ownNew = mode === "new" && !project.builtin;
+  const newAspect = mode === "new" && (fixedFormat || ownNew) && newFormat?.film === project.id ? newFormat.aspect : project.aspect;
+  const newDuration = ownNew && newLength?.film === project.id ? newLength.duration : project.duration;
 
   // ── load fonts + library ──
   useEffect(() => {
@@ -1387,7 +1392,7 @@ export default function Studio() {
     const v = videos[0];
     return recreating && v
       ? { duration: Math.min(90, Math.max(3, Math.round(v.duration * 10) / 10)), aspect: aspectFor(v.w, v.h), recreate: true }
-      : { duration: project.duration, aspect: newAspect, recreate: false };
+      : { duration: newDuration, aspect: newAspect, recreate: false };
   };
   // The request's attachments, plus (recreating) the reference video's sound for this run alone.
   const collectFiles = async (R: RunApi, recreating: boolean): Promise<{ files: unknown[]; stems: Stems | null }> => {
@@ -1602,6 +1607,18 @@ export default function Studio() {
         const fixed = parseScene(await runStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, R.think, resumed));
         if (fixed.code) reply = { ...reply, code: fixed.code };
       }
+
+      // A first draft that runs is already a film: saved now (still marked as building), so stopping,
+      // leaving the page or a failure during the review below keeps it.
+      if (!editing && (!problem || !check(reply.code)))
+        patchFilm(
+          id,
+          (cur) =>
+            cur.building === R.id
+              ? { title: reply.title || cur.title, doc: docFor(reply.code), code: reply.code, prompt: brief, treatment, builtin: false, style: style || undefined }
+              : null,
+          toCloud,
+        );
 
       // Claude watches its own frames: score the stills, fix the worst problems, up to two rounds.
       if (!editing) {
@@ -2851,7 +2868,7 @@ export default function Studio() {
                     title={fixedFormat && mode !== "new" ? "This film's elements are laid out for its format, so it can't be changed here." : "Format"}
                     onChange={(e) => {
                       const a = e.target.value as Aspect;
-                      if (fixedFormat) setNewFormat({ film: project.id, aspect: a });
+                      if (fixedFormat || ownNew) setNewFormat({ film: project.id, aspect: a });
                       else updateProject({ aspect: a });
                     }}
                   >
@@ -2863,12 +2880,12 @@ export default function Studio() {
                   </select>
                   <select
                     className="pill-select"
-                    value={project.duration}
+                    value={newDuration}
                     aria-label="Length in seconds"
-                    title="Length (re-times the whole film, no regeneration needed)"
-                    onChange={(e) => setDuration(+e.target.value)}
+                    title={ownNew ? "Length of the new film" : "Length (re-times the whole film, no regeneration needed)"}
+                    onChange={(e) => (ownNew ? setNewLength({ film: project.id, duration: +e.target.value }) : setDuration(+e.target.value))}
                   >
-                    {[...new Set([5, 10, 15, 20, 30, 45, 60, 90, project.duration])]
+                    {[...new Set([5, 10, 15, 20, 30, 45, 60, 90, newDuration])]
                       .sort((a, b) => a - b)
                       .map((d) => (
                         <option key={d} value={d}>
