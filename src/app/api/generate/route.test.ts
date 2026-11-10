@@ -10,6 +10,7 @@ const model = vi.hoisted(() => ({ text: "", finish: false, stop: "end_turn" }));
 
 vi.mock("@/lib/store", () => ({ requireUser: async () => null }));
 vi.mock("@/lib/anthropic", () => ({
+  MODEL: "claude-fable-5-2",
   anthropicClient: () => ({
     beta: {
       messages: {

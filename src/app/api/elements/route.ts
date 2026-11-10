@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient } from "@/lib/anthropic";
+import { anthropicClient, MODEL } from "@/lib/anthropic";
 import { clip, errorResponse, limit } from "@/lib/limits";
 import { ELEMENTS_SCHEMA, ELEMENTS_SYSTEM, type ElementsPlan } from "@/lib/elements";
 
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   try {
     const stream = anthropicClient().messages.stream(
       {
-        model: "claude-opus-5-5",
+        model: MODEL,
         max_tokens: 32000,
         output_config: { effort: "high", format: { type: "json_schema", schema: ELEMENTS_SCHEMA } },
         system: ELEMENTS_SYSTEM,

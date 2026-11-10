@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient } from "@/lib/anthropic";
+import { anthropicClient, MODEL } from "@/lib/anthropic";
 import { clip, errorResponse, meterStage, over } from "@/lib/limits";
 import { styleById, styleNote } from "@/lib/styles";
 import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
@@ -134,8 +134,8 @@ const LIMIT_MS = (Number(process.env.ANIMATE_FUNCTION_SECONDS) || 285) * 1000;
 function animatorEffort(duration: number): "low" | "medium" | "high" {
   const forced = process.env.ANIMATE_EFFORT as "low" | "medium" | "high" | undefined;
   if (forced) return forced;
-  if (LIMIT_MS >= 600_000) return duration > 30 ? "medium" : "high";
-  return duration > 12 ? "low" : "medium";
+  if (LIMIT_MS >= 600_000) return "high";
+  return duration > 12 ? "medium" : "high";
 }
 
 // Upstream failures worth retrying: server-side errors, overloads and dropped connections (an
@@ -150,16 +150,14 @@ function transient(e: unknown) {
 
 const EFFORTS = ["low", "medium", "high"] as const;
 
-// Director plans at high effort (~1 min); the animator's effort fits the film length into the
-// limit. Repairs and review fixes start from existing code, so they can afford medium effort.
-// A recreation breakdown is forensic, not inventive: medium effort is enough. effortCap lowers
-// any of these for a retry after a run that was still thinking when the limit came.
+// Director and recreation breakdowns plan at high effort; the animator writes at high effort, or
+// medium for long films on a short limit (cut-off text is continued, so length isn't the risk;
+// thinking past the limit is). Repairs and review fixes start from existing code and get at least
+// medium. effortCap lowers any of these for a retry after a run that was still thinking when the limit came.
 function stageEffort(body: Body): "low" | "medium" | "high" {
   const base =
     body.stage === "direct"
-      ? body.recreate && LIMIT_MS < 600_000
-        ? "medium"
-        : "high"
+      ? "high"
       : body.error || body.critique
         ? animatorEffort(body.duration) === "low"
           ? "medium"
@@ -312,12 +310,10 @@ export async function POST(req: Request) {
         for (let turn = 0; ; turn++) {
           const s = client.beta.messages.stream(
             {
-              model: "claude-opus-5-5",
+              model: MODEL,
               max_tokens: 64000,
               thinking: { type: "adaptive", display: "summarized" },
-              // Director plans at high effort (~1 min); the animator writes code at medium
-              // so a full film fits inside the function time limit.
-              // Repairs and review fixes start from existing code, so they can afford medium effort.
+              // Effort per stage: see stageEffort.
               output_config: { effort: stageEffort(body) },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",

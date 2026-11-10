@@ -1,4 +1,4 @@
-import { anthropicClient } from "@/lib/anthropic";
+import { anthropicClient, MODEL } from "@/lib/anthropic";
 import { clip, limit } from "@/lib/limits";
 import { SOUND_PLAN_SCHEMA as SCHEMA, SOUND_PLAN_SYSTEM as SYSTEM } from "@/lib/soundPlan";
 
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   ].filter(Boolean);
   const ask = async (effort: "medium" | "high") => {
     const r = await anthropicClient().messages.create({
-      model: "claude-opus-5-5",
+      model: MODEL,
       max_tokens: 8000,
       output_config: { effort, format: { type: "json_schema", schema: SCHEMA } },
       system: SYSTEM,

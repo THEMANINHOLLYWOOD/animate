@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient } from "@/lib/anthropic";
+import { anthropicClient, MODEL } from "@/lib/anthropic";
 import { clip, errorResponse, limit } from "@/lib/limits";
 
 export const maxDuration = 120;
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
   });
   try {
     const r = await anthropicClient().messages.create({
-      model: "claude-opus-5-5",
+      model: MODEL,
       max_tokens: 4000,
       output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
       system: SYSTEM,

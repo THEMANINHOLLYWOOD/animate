@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient } from "@/lib/anthropic";
+import { anthropicClient, MODEL } from "@/lib/anthropic";
 import { errorResponse, limit } from "@/lib/limits";
 import { AGENT_SYSTEM, AGENT_TOOLS, MAX_AGENT_BODY, cleanHistory, runTool, summarizeDoc } from "@/editor/ai/tools";
 import { Doc } from "@/editor/doc/schema";
@@ -77,10 +77,10 @@ export async function POST(req: Request) {
         for (let turn = 0; turn < MAX_TURNS; turn++) {
           const s = client.messages.stream(
             {
-              model: "claude-opus-5-5",
+              model: MODEL,
               max_tokens: 16000,
               thinking: { type: "adaptive", display: "summarized" },
-              output_config: { effort: "medium" },
+              output_config: { effort: "high" },
               system: [{ type: "text", text: AGENT_SYSTEM, cache_control: { type: "ephemeral" } }],
               tools: AGENT_TOOLS,
               messages,
