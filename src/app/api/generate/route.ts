@@ -378,7 +378,9 @@ export async function POST(req: Request) {
         const message = deadline.signal.aborted
           ? `This one took longer than the ${Math.round(LIMIT_MS / 60000)}-minute limit this plan allows. Try a shorter film (under 15 s works reliably), a simpler brief, or a longer limit (Vercel Pro).`
           : e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))
-            ? "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
+            ? process.env.VERCEL
+              ? "The server's Anthropic API key was rejected. Replace ANTHROPIC_API_KEY in the Vercel project settings and redeploy."
+              : "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
             : e instanceof Anthropic.RateLimitError
               ? "Rate limited. Try again in a moment."
               : e instanceof Anthropic.APIError && /credit balance/i.test(e.message)

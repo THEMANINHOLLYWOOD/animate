@@ -504,6 +504,7 @@ export default function Studio() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const plusMenu = useRef<HTMLDetailsElement>(null);
   const tRef = useRef(0);
   const playingRef = useRef(true);
   // A cloud save waiting out its debounce: its timer, and the save itself (run early before leaving for the editor).
@@ -2359,7 +2360,6 @@ export default function Studio() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const durFill = `${((project.duration - 3) / (90 - 3)) * 100}%`;
   const canAsk = !!prompt.trim() || files.length > 0 || videos.length > 0;
 
   // Your films first (favorites on top), then the examples. With no favorites left the filter can't apply
@@ -2405,12 +2405,6 @@ export default function Studio() {
           ×
         </span>
       )}
-    </button>
-  );
-
-  const animateButton = (
-    <button className="primary" onClick={generate} disabled={!canAsk || !fonts || (mode === "edit" && isBuilding)}>
-      {recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
     </button>
   );
 
@@ -2701,142 +2695,201 @@ export default function Studio() {
                 </button>
               </div>
             )}
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate();
-              }}
-              style={enhanced ? { minHeight: 300 } : undefined}
-              placeholder={
-                mode === "new"
-                  ? "Paste a company link, drop a video to recreate, or describe your film: a launch film for our app, start on the logo, three features, end on the URL…"
-                  : "Make the intro slower, swap the accent to olive, add our logo at the end…"
-              }
-            />
-            {mode === "new" && (
-              <div className="explainer">
-                {explainer ? (
-                  <>
-                    <div className="explainer-head">
-                      <span>Explainer brief</span>
-                      <button className="linkish" onClick={() => setExplainer(null)}>
-                        remove
-                      </button>
-                    </div>
-                    <input value={explainer.audience} onChange={(e) => setExplainer({ ...explainer, audience: e.target.value })} placeholder="Who is it for? e.g. first-time founders" />
-                    <input value={explainer.believe} onChange={(e) => setExplainer({ ...explainer, believe: e.target.value })} placeholder="What do they believe today that's wrong or incomplete?" />
-                    <input value={explainer.outcome} onChange={(e) => setExplainer({ ...explainer, outcome: e.target.value })} placeholder="After watching they can… (one sentence)" />
-                  </>
-                ) : (
-                  <button className="linkish" onClick={() => setExplainer({ audience: "", believe: "", outcome: "" })}>
-                    Make it an explainer ▸
-                  </button>
-                )}
-                {!recreate && (
-                  <label className="style-pick">
-                    <span>Style</span>
-                    <select value={style} onChange={(e) => setStyle(e.target.value)} aria-label="Animation style">
-                      <option value="">Let Claude choose</option>
-                      {STYLES.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-            )}
-            {(brands.length > 0 || reading.length > 0 || videos.length > 0) && (
-              <div className="brands">
+            {(videos.length > 0 || reading.length > 0 || brands.length > 0 || files.length > 0) && (
+              <div className="attachments">
                 {videos.map((v) => (
-                  <div className="brand-card xref" key={v.id} title={v.text ?? v.name}>
-                    {v.poster && (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img src={v.poster} alt="" />
-                    )}
-                    <div className="brand-text">
+                  <div className="att" key={v.id} title={v.text ?? v.name}>
+                    <span className="att-thumb">
+                      {v.poster && (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img src={v.poster} alt="" />
+                      )}
+                      <i>{v.duration.toFixed(0)}s</i>
+                    </span>
+                    <span className="att-text">
                       <b>{v.name}</b>
                       <span>
-                        {v.duration.toFixed(1)}s · {v.w}×{v.h} · {recreate ? "will be recreated" : "style reference"} · {v.status}
+                        {recreate ? "Recreating" : "Style reference"} · {v.w}×{v.h}
+                        {v.status !== "Ready" ? ` · ${v.status}` : ""}
+                        {v.download && (
+                          <>
+                            {" · "}
+                            <a href={v.download} title="Download the original video">
+                              save
+                            </a>
+                          </>
+                        )}
                       </span>
-                    </div>
-                    {v.download && (
-                      <a className="linkish" href={v.download} title="Download the original video">
-                        Download
-                      </a>
-                    )}
+                    </span>
                     <button className="chip-x" aria-label="Remove video" onClick={() => removeVideo(v.id)}>
                       ×
                     </button>
                   </div>
                 ))}
                 {reading.map((h) => (
-                  <div className="brand-card loading" key={`r-${h}`}>
-                    <span className="dot" /> Reading {h}…
+                  <div className="att loading" key={`r-${h}`}>
+                    <span className="dot" />
+                    <span className="att-text">
+                      <b>{h}</b>
+                      <span>Reading the brand…</span>
+                    </span>
                   </div>
                 ))}
                 {brands.map((b) => (
-                  <div className="brand-card" key={b.host} title={b.description}>
-                    <div className="brand-swatches">
-                      {(b.themeColor ? [b.themeColor, ...b.colors] : b.colors).slice(0, 6).map((c, i) => (
+                  <div className="att" key={b.host} title={b.description}>
+                    <span className="att-thumb swatches">
+                      {(b.themeColor ? [b.themeColor, ...b.colors] : b.colors).slice(0, 4).map((c, i) => (
                         <span key={c + i} style={{ background: c }} />
                       ))}
-                    </div>
-                    <div className="brand-text">
+                    </span>
+                    <span className="att-text">
                       <b>{b.name}</b>
-                      <span>{b.host} · Claude will research this</span>
-                    </div>
+                      <span>{b.host}</span>
+                    </span>
                     <button className="chip-x" aria-label={`Remove ${b.name}`} onClick={() => setBrands((l) => l.filter((x) => x.host !== b.host))}>
                       ×
                     </button>
                   </div>
                 ))}
-              </div>
-            )}
-            {files.length > 0 && (
-              <div className="chips">
                 {files.map((f) => (
-                  <span className="chip" key={f.id}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    {f.url ? <img src={f.url} alt="" /> : <span className="ficon">{f.kind === "pdf" ? "PDF" : "TXT"}</span>}
-                    <span className="chip-name" title={f.name}>
-                      {f.name}
+                  <div className="att" key={f.id}>
+                    <span className="att-thumb">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {f.url ? <img src={f.url} alt="" /> : <i className="ficon">{f.kind === "pdf" ? "PDF" : "TXT"}</i>}
                     </span>
-                    {f.kind === "image" && (
-                      <button
-                        className={`chip-role${f.asset ? " asset" : ""}`}
-                        title="Toggle: draw this image in the video, or use it only as a style reference"
-                        onClick={() => setFiles((l) => l.map((x) => (x.id === f.id ? { ...x, asset: !x.asset } : x)))}
-                      >
-                        {f.asset ? "in video" : "reference"}
-                      </button>
-                    )}
+                    <span className="att-text">
+                      <b title={f.name}>{f.name}</b>
+                      {f.kind === "image" ? (
+                        <button
+                          className={`chip-role${f.asset ? " asset" : ""}`}
+                          title="Toggle: draw this image in the video, or use it only as a style reference"
+                          onClick={() => setFiles((l) => l.map((x) => (x.id === f.id ? { ...x, asset: !x.asset } : x)))}
+                        >
+                          {f.asset ? "In the film" : "Reference"}
+                        </button>
+                      ) : (
+                        <span>{f.kind === "pdf" ? "PDF" : "Text"}</span>
+                      )}
+                    </span>
                     <button className="chip-x" onClick={() => removeFile(f.id)} aria-label={`Remove ${f.name}`}>
                       ×
                     </button>
-                  </span>
+                  </div>
                 ))}
               </div>
             )}
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends, as in a chat; Shift+Enter is a new line (and a long treatment needs ⌘/Ctrl+Enter)
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
+                if (enhanced && !(e.metaKey || e.ctrlKey)) return;
+                e.preventDefault();
+                if (canAsk && fonts && !(mode === "edit" && isBuilding)) generate();
+              }}
+              style={enhanced ? { minHeight: 300 } : undefined}
+              placeholder={
+                mode === "new"
+                  ? "Describe a film, paste a link, or drop in a video to recreate…"
+                  : "Make the intro slower, swap the accent to olive, add our logo at the end…"
+              }
+            />
+            {mode === "new" && explainer && (
+              <div className="explainer">
+                <div className="explainer-head">
+                  <span>Explainer brief</span>
+                  <button className="linkish" onClick={() => setExplainer(null)}>
+                    remove
+                  </button>
+                </div>
+                <input value={explainer.audience} onChange={(e) => setExplainer({ ...explainer, audience: e.target.value })} placeholder="Who is it for? e.g. first-time founders" />
+                <input value={explainer.believe} onChange={(e) => setExplainer({ ...explainer, believe: e.target.value })} placeholder="What do they believe today that's wrong or incomplete?" />
+                <input value={explainer.outcome} onChange={(e) => setExplainer({ ...explainer, outcome: e.target.value })} placeholder="After watching they can… (one sentence)" />
+              </div>
+            )}
             <div className="composer-bar">
-              <button className="attach" onClick={() => fileInput.current?.click()}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-                Add, drop or paste files
-              </button>
-              {!enhanced && (
-                <button
-                  className="attach enhance"
-                  onClick={enhance}
-                  disabled={!canAsk}
-                  title="Expand your brief into a full creative treatment you can edit"
-                >
-                  ✦ Enhance
-                </button>
+              <details className="plus-menu" ref={plusMenu}>
+                <summary aria-label="More options" title="Files and more">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </summary>
+                <div className="plus-items" onClick={() => plusMenu.current?.removeAttribute("open")}>
+                  <button onClick={() => fileInput.current?.click()}>Add files, a video or a PDF</button>
+                  {mode === "new" && (
+                    <button onClick={() => setExplainer(explainer ? null : { audience: "", believe: "", outcome: "" })}>
+                      {explainer ? "Remove explainer brief" : "Make it an explainer"}
+                    </button>
+                  )}
+                  {!enhanced && (
+                    <button onClick={enhance} disabled={!canAsk} title="Expand your brief into a full creative treatment you can edit">
+                      ✦ Enhance my brief
+                    </button>
+                  )}
+                </div>
+              </details>
+              {mode === "new" && !recreate && (
+                <select className="pill-select shrink" value={style} onChange={(e) => setStyle(e.target.value)} aria-label="Animation style" title="Animation style">
+                  <option value="">Any style</option>
+                  {STYLES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
               )}
+              {/* Recreating, the video sets the format and length (the hint below says which). */}
+              {!(recreate || enhanced?.recreate) && (
+                <>
+                  {/* A doc film's elements are laid out at its doc's size: its format is set there (in the editor), not here.
+                      Composing a new film with one selected, the format picked is the new film's alone. */}
+                  <select
+                    className="pill-select"
+                    value={newAspect}
+                    aria-label="Format"
+                    title={fixedFormat && mode !== "new" ? "This film's elements are laid out for its format, so it can't be changed here." : "Format"}
+                    onChange={(e) => {
+                      const a = e.target.value as Aspect;
+                      if (fixedFormat) setNewFormat({ film: project.id, aspect: a });
+                      else updateProject({ aspect: a });
+                    }}
+                  >
+                    {(["16:9", "9:16", "1:1"] as Aspect[]).map((a) => (
+                      <option key={a} value={a} disabled={fixedFormat && mode !== "new" && project.aspect !== a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="pill-select"
+                    value={project.duration}
+                    aria-label="Length in seconds"
+                    title="Length (re-times the whole film, no regeneration needed)"
+                    onChange={(e) => setDuration(+e.target.value)}
+                  >
+                    {[...new Set([5, 10, 15, 20, 30, 45, 60, 90, project.duration])]
+                      .sort((a, b) => a - b)
+                      .map((d) => (
+                        <option key={d} value={d}>
+                          {d}s
+                        </option>
+                      ))}
+                  </select>
+                </>
+              )}
+              <button
+                className={`send${recreate || enhanced?.recreate ? " wide" : ""}`}
+                onClick={generate}
+                disabled={!canAsk || !fonts || (mode === "edit" && isBuilding)}
+                aria-label={recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
+                title={recreate || enhanced?.recreate ? "Recreate video" : mode === "new" ? "Animate" : "Send"}
+              >
+                {(recreate || enhanced?.recreate) && <span>Recreate</span>}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
               <input
                 ref={fileInput}
                 type="file"
@@ -2851,98 +2904,56 @@ export default function Studio() {
             </div>
           </div>
 
-          {animateButton}
           {(recreate || enhanced?.recreate) && videos[0] && (
             <p className="hint recreate-hint">
-              No brief, so animate will recreate this video as closely as it can: {filmFor(true).duration}s · {filmFor(true).aspect}. Type a brief
-              instead to use it only as a style reference. Live footage is approximated with shapes; make sure you have the rights to publish a copy.
+              Recreating this video as closely as possible ({filmFor(true).duration}s · {filmFor(true).aspect}). Add a brief to use it as a style
+              reference instead. Make sure you have the rights to publish a copy.
             </p>
           )}
 
-          <div className="divider" />
-
-          <div className="field">
-            <div className="label">
-              Length <b>{project.duration}s</b>
-            </div>
-            <input
-              type="range"
-              min={3}
-              max={90}
-              step={1}
-              value={project.duration}
-              style={{ ["--fill" as string]: durFill }}
-              onChange={(e) => setDuration(+e.target.value)}
-              aria-label="Length in seconds"
-            />
-            <span className="hint">Re-times the whole film, no regeneration needed.</span>
-          </div>
-
-          <div className="row">
-            <div className="field">
-              <div className="label">Format</div>
-              {/* A doc film's elements are laid out at its doc's size: its format is set there (in the editor), not here.
-                  Composing a new film with one selected, the format picked is the new film's alone. */}
-              <div className="seg" title={fixedFormat && mode !== "new" ? "This film's elements are laid out for its format, so it can't be changed here." : undefined}>
-                {(["16:9", "9:16", "1:1"] as Aspect[]).map((a) => (
-                  <button
-                    key={a}
-                    className={newAspect === a ? "on" : ""}
-                    disabled={fixedFormat && mode !== "new" && project.aspect !== a}
-                    onClick={() => (fixedFormat ? setNewFormat({ film: project.id, aspect: a }) : updateProject({ aspect: a }))}
-                  >
-                    {a}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="field">
-              <div className="label">Frame rate</div>
-              <div className="seg">
-                {[30, 60].map((f) => (
-                  <button key={f} className={fps === f ? "on" : ""} onClick={() => setFps(f)}>
-                    {f}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <button className="secondary" onClick={doExport} disabled={exporting !== null || !compiled.fn || isBuilding}>
-            {exporting && <span className="progress-fill" style={{ width: `${exporting.k * 100}%` }} />}
-            <span>
-              {exporting
-                ? `${exporting.label} ${Math.round(exporting.k * 100)}%`
-                : `Export MP4 · ${W}×${H}${cloud && !project.builtin ? " · saves to library" : ""}`}
-            </span>
-          </button>
-
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <button
-              className="linkish"
-              onClick={() => {
-                setDraftCode(sceneCodeOf(project));
-                setDraftBase(sceneCodeOf(project));
-                setShowCode((s) => !s);
-              }}
-            >
-              {showCode ? "Hide scene code" : "View scene code"}
+          <div className="film-actions">
+            <button className="export" onClick={doExport} disabled={exporting !== null || !compiled.fn || isBuilding}>
+              {exporting && <span className="progress-fill" style={{ width: `${exporting.k * 100}%` }} />}
+              <span>
+                {exporting
+                  ? `${exporting.label} ${Math.round(exporting.k * 100)}%`
+                  : `Export MP4${cloud && !project.builtin ? " · saves to library" : ""}`}
+              </span>
             </button>
-            {project.treatment && (
+            <select className="pill-select" value={fps} onChange={(e) => setFps(+e.target.value)} aria-label="Frame rate" title={`Exports at ${W}×${H}`}>
+              {[30, 60].map((f) => (
+                <option key={f} value={f}>
+                  {f} fps
+                </option>
+              ))}
+            </select>
+            <span className="film-links">
               <button
                 className="linkish"
                 onClick={() => {
-                  setPrompt(project.treatment!);
-                  setEnhanced({ brief: project.prompt ?? "" });
-                  setMode("new");
+                  setDraftCode(sceneCodeOf(project));
+                  setDraftBase(sceneCodeOf(project));
+                  setShowCode((s) => !s);
                 }}
               >
-                Reuse treatment
+                {showCode ? "Hide code" : "Code"}
               </button>
-            )}
-            <a className="linkish" href={`/editor/${project.id}`} onClick={(e) => openEditor(e, project.id)}>
-              Open in editor →
-            </a>
+              {project.treatment && (
+                <button
+                  className="linkish"
+                  onClick={() => {
+                    setPrompt(project.treatment!);
+                    setEnhanced({ brief: project.prompt ?? "" });
+                    setMode("new");
+                  }}
+                >
+                  Reuse treatment
+                </button>
+              )}
+              <a className="linkish" href={`/editor/${project.id}`} onClick={(e) => openEditor(e, project.id)}>
+                Editor →
+              </a>
+            </span>
           </div>
 
           {showCode && (

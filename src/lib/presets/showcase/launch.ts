@@ -1,11 +1,11 @@
 // Introducing animate. Hand-built example film in the scene format Claude generates.
-// Brief: A keynote-polished launch film for animate itself, in its own ivory, ink and clay look: a brief types itself into the prompt box, the box becomes a film frame that builds from wireframes and keyframes into a finished shot, then quick demos of reading a brand from a link, rebuilding a video shot for shot, Claude marking and fixing its own frames, and voice, music and effects lanes, ending on the animate wordmark, 'Describe it. Drop in your files. Get a film.' and the URL.
+// Brief: A keynote-polished launch film for animate itself, in its own ivory, ink and clay look: a brief types itself into the prompt box, the box becomes a film frame that builds from wireframes and keyframes into a finished shot, then quick demos of reading a brand from a link, rebuilding a video shot for shot, animate marking and fixing its own frames, and voice, music and effects lanes, ending on the animate wordmark, 'Describe it. Drop in your files. Get a film.' and the URL.
 export const film = {
   id: "ex-launch",
   title: "Introducing animate",
   aspect: "16:9" as const,
   duration: 30,
-  prompt: "A keynote-polished launch film for animate itself, in its own ivory, ink and clay look: a brief types itself into the prompt box, the box becomes a film frame that builds from wireframes and keyframes into a finished shot, then quick demos of reading a brand from a link, rebuilding a video shot for shot, Claude marking and fixing its own frames, and voice, music and effects lanes, ending on the animate wordmark, 'Describe it. Drop in your files. Get a film.' and the URL.",
+  prompt: "A keynote-polished launch film for animate itself, in its own ivory, ink and clay look: a brief types itself into the prompt box, the box becomes a film frame that builds from wireframes and keyframes into a finished shot, then quick demos of reading a brand from a link, rebuilding a video shot for shot, animate marking and fixing its own frames, and voice, music and effects lanes, ending on the animate wordmark, 'Describe it. Drop in your files. Get a film.' and the URL.",
   code: String.raw`
 const { ease, seg, u, clamp, lerp, mix } = lib;
 // animate house palette, plus the two palettes the film's own demos bring in
@@ -420,7 +420,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
   head('Edit every layer.', 9.35, 9.75, 10.95, 11.2);
   head('Paste a link.\nIt reads your brand.', 11.2, 11.7, 99, 99, dyA);
   head('Any video, rebuilt\nshot for shot.', 14.55, 15.05, 17.7, 17.95, dyB);
-  head('Claude checks\nits own work.', 17.95, 18.45, 20.95, 21.2);
+  head('We check\nour own work.', 17.95, 18.45, 20.95, 21.2);
   status('LOOKING AT ITS OWN FRAMES', 18.35, 18.65, 19.35, 19.5);
   status('FIXING THE 3 WORST PROBLEMS', 19.5, 19.8, 20.9, 21.1);
   head('Sound, made for\nevery film.', 21.2, 21.6, 23.65, 23.9);
