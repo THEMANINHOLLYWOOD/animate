@@ -16,6 +16,7 @@ import {
   SIZES,
 } from "@/lib/engine";
 import { SHOWCASE } from "@/lib/presets/showcase";
+import { STYLES } from "@/lib/styles";
 import Progress, { type Step } from "@/components/Progress";
 import AudioStrip from "@/components/AudioStrip";
 import Thumb from "@/components/Thumb";
@@ -91,6 +92,8 @@ type Project = {
   failed?: string;
   builtin?: boolean;
   favorite?: boolean;
+  // The animation style it was made in (src/lib/styles.ts); edits keep it.
+  style?: string;
   share?: { id: string; createdAt: number };
   createdAt: number;
   // When it was last saved to the cloud (set by the server).
@@ -487,6 +490,8 @@ export default function Studio() {
   const [burnCaptions, setBurnCaptions] = useState(true);
   // Explainer brief: who it's for, what they believe, what they should be able to do after.
   const [explainer, setExplainer] = useState<null | { audience: string; believe: string; outcome: string }>(null);
+  // The animation style for the next new film ("" = the default house style).
+  const [style, setStyle] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<null | { label: string; k: number }>(null);
   const [drag, setDrag] = useState(false);
@@ -1347,6 +1352,7 @@ export default function Studio() {
         files: payloadFiles,
         brands,
         previousCode: editing ? sceneCodeOf(project) || undefined : undefined,
+        style: editing ? project.style : style || undefined,
       },
       R.signal,
       (s) => {
@@ -1572,6 +1578,7 @@ export default function Studio() {
         previousCode: editing ? target.code : undefined,
         history: editing ? (target.thread ?? []).slice(-8).map((m) => ({ role: m.role, text: m.text })) : undefined,
         notes: elementsPlan ? elementsSummary(elementsPlan) : undefined,
+        style: editing ? target.style : style || undefined,
       };
       const resumed = (n: number, why: "continue" | "lighter" | "retry" | "busy") => R.note(resumeNote(n, why));
       let reply = parseScene(await runStage(base, R.signal, onText, R.think, resumed));
@@ -1690,6 +1697,7 @@ export default function Studio() {
         assets: assetRefs,
         builtin: false,
         building: undefined,
+        style: editing ? prev?.style : style || undefined,
         buildingAt: undefined,
         failed: undefined,
       };
@@ -2724,6 +2732,19 @@ export default function Studio() {
                   <button className="linkish" onClick={() => setExplainer({ audience: "", believe: "", outcome: "" })}>
                     Make it an explainer ▸
                   </button>
+                )}
+                {!recreate && (
+                  <label className="style-pick">
+                    <span>Style</span>
+                    <select value={style} onChange={(e) => setStyle(e.target.value)} aria-label="Animation style">
+                      <option value="">Let Claude choose</option>
+                      {STYLES.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 )}
               </div>
             )}

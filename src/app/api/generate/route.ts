@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient } from "@/lib/anthropic";
 import { clip, errorResponse, meterStage, over } from "@/lib/limits";
+import { styleById, styleNote } from "@/lib/styles";
 import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
 import type { BrandKit } from "@/lib/brand";
 
@@ -27,6 +28,7 @@ type Body = {
   recreate?: boolean;
   history?: { role: "user" | "assistant"; text: string }[];
   notes?: string; // extra instructions for the animator (e.g. elements drawn as separate layers)
+  style?: string; // an animation style id from src/lib/styles.ts
   critique?: string; // problems found by the review of rendered stills
   continuation?: string; // text produced so far by a run the time limit cut off
   // A retry after a run that was still thinking at the limit. "none" is low effort plus an
@@ -109,6 +111,7 @@ function readBody(raw: unknown): Body | string {
     recreate: !!b.recreate,
     history: history.length ? history : undefined,
     notes: clip(b.notes, CAP.notes) || undefined,
+    style: styleById(b.style)?.id,
     critique: clip(b.critique, CAP.critique) || undefined,
     continuation: clip(b.continuation, CAP.continuation) || undefined,
     effortCap: b.effortCap === "none" || b.effortCap === "low" || b.effortCap === "medium" || b.effortCap === "high" ? b.effortCap : undefined,
@@ -236,6 +239,7 @@ export async function POST(req: Request) {
     });
     if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
     if (body.recreate) content.push({ type: "text", text: RECREATE_DIRECTOR });
+    else if (styleById(body.style)) content.push({ type: "text", text: styleNote(styleById(body.style)!) });
   } else {
     system = SYSTEM_PROMPT;
     const treatment = body.treatment ? `\n\nTreatment:\n${body.treatment}` : "";
@@ -255,6 +259,7 @@ export async function POST(req: Request) {
     }
     if (body.brands?.length) content.push({ type: "text", text: brandNotes(body.brands) });
     if (body.recreate) content.push({ type: "text", text: RECREATE_ANIMATOR });
+    else if (styleById(body.style)) content.push({ type: "text", text: styleNote(styleById(body.style)!) });
     if (body.notes) content.push({ type: "text", text: body.notes });
   }
 

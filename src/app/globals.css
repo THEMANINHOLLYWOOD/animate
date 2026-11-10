@@ -1530,3 +1530,25 @@ input[type="range"]:active::-webkit-slider-thumb {
   width: 6px;
   height: 6px;
 }
+
+/* Animation style picker in the composer */
+.style-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  font-size: 13px;
+  color: var(--stone);
+}
+.style-pick select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--ivory);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.style-pick select:hover {
+  border-color: var(--line-strong);
+}
