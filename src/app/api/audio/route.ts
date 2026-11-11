@@ -20,10 +20,14 @@ const key = () => process.env.ELEVENLABS_API_KEY ?? "";
 
 const DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"; // George (premade, available on every plan)
 
+// The account can't pay for this (no credits left, or a plan that doesn't include it): trying again won't help.
+const cantPay = (status: number, body: string) => status === 402 || /paid_plan_required|limited_access|quota_exceeded|character_limit/i.test(body);
+
 function elError(status: number, body: string) {
   if (status === 402 || /paid_plan_required|limited_access/.test(body)) return "This needs a paid ElevenLabs plan.";
+  // (A used-up quota comes back as a 401 too, so it's read before the key is blamed.)
+  if (/quota|character_limit|exceeded/i.test(body)) return "The ElevenLabs credits for this month are used up.";
   if (status === 401) return "The ElevenLabs key was rejected.";
-  if (/quota|character_limit|exceeded/i.test(body)) return "The ElevenLabs quota for this month is used up.";
   try {
     const d = JSON.parse(body);
     return d?.detail?.message ?? d?.detail ?? `ElevenLabs returned ${status}.`;
@@ -36,7 +40,7 @@ async function passthrough(res: Response) {
   if (!res.ok) {
     const body = await res.text();
     console.error(`[elevenlabs] ${res.status} ${body.slice(0, 300)}`);
-    return Response.json({ error: elError(res.status, body) }, { status: res.status === 402 ? 402 : 502 });
+    return Response.json({ error: elError(res.status, body) }, { status: cantPay(res.status, body) ? 402 : 502 });
   }
   return new Response(res.body, { headers: { "Content-Type": res.headers.get("content-type") ?? "audio/mpeg" } });
 }
@@ -135,7 +139,10 @@ async function handle(req: Request, signal: AbortSignal) {
       headers: { ...H, "content-type": "application/json" },
       body: JSON.stringify({ text: String(body.text ?? "").slice(0, 2500), model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.2 } }),
     });
-    if (!r.ok) return Response.json({ error: elError(r.status, await r.text()) }, { status: r.status === 402 ? 402 : 502 });
+    if (!r.ok) {
+      const body = await r.text();
+      return Response.json({ error: elError(r.status, body) }, { status: cantPay(r.status, body) ? 402 : 502 });
+    }
     const j = await r.json();
     return Response.json({ audio: j.audio_base64, words: wordsFromAlignment(j.alignment ?? j.normalized_alignment ?? null) });
   }

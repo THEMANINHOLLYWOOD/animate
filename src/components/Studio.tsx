@@ -2412,15 +2412,22 @@ export default function Studio() {
       setAudioBusy(`Making ${cues.length} sound effects…`);
       const sfx: (AudioClip | null)[] = new Array(cues.length).fill(null);
       let cursor = 0;
+      // The account can't pay for effects (credits used up, or the plan): said once, and the rest aren't asked for.
+      let unpaid = false;
       const worker = async () => {
-        while (cursor < cues.length) {
+        while (cursor < cues.length && !unpaid) {
           const i = cursor++;
           const cue = cues[i];
           const ask = () => elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sfx", prompt: cue.prompt, seconds: Math.min(6, Math.max(0.5, cue.seconds)) }), signal });
           let sr = await ask();
-          for (let attempt = 0; !sr.ok && attempt < 2; attempt++) {
+          for (let attempt = 0; !sr.ok && sr.status !== 402 && attempt < 2 && !unpaid; attempt++) {
             await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
             sr = await ask();
+          }
+          if (sr.status === 402) {
+            if (!unpaid) R.note(`Sound effects: ${(await sr.json().catch(() => ({}))).error ?? "unavailable on this plan"}`);
+            unpaid = true;
+            continue;
           }
           if (!sr.ok) {
             R.note(`SFX ${i + 1} failed: ${(await sr.json().catch(() => ({}))).error ?? sr.status}`);
