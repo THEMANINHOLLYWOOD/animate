@@ -120,33 +120,39 @@ export function probeScene(scene: SceneFn, fonts: Fonts, W: number, H: number, a
   return null;
 }
 
-// Contact sheets for the critique loop: frames in order with time labels, as JPEG base64.
-export function contactSheet(scene: SceneFn, fonts: Fonts, W: number, H: number, assets: Assets, T: number, times: number[], tileW: number, cols: number) {
+// Stills of a scene at `times`, tiled into one JPEG per sheet asked for (base64). Each frame is drawn
+// once however many sheets it lands on: a sheet takes every `every`-th frame (1 = all of them).
+export function contactSheets(scene: SceneFn, fonts: Fonts, W: number, H: number, assets: Assets, T: number, times: number[], sheets: { tileW: number; cols: number; every?: number }[]) {
   const src = document.createElement("canvas");
   src.width = W;
   src.height = H;
   const r = new Renderer(src.getContext("2d")!, W, H, fonts);
-  const tileH = Math.round((tileW * H) / W);
-  const rows = Math.ceil(times.length / cols);
-  const sheet = document.createElement("canvas");
-  sheet.width = tileW * cols;
-  sheet.height = tileH * rows;
-  const g = sheet.getContext("2d")!;
-  g.fillStyle = "#888";
-  g.fillRect(0, 0, sheet.width, sheet.height);
+  const made = sheets.map(({ tileW, cols, every = 1 }) => {
+    const tileH = Math.round((tileW * H) / W);
+    const sheet = document.createElement("canvas");
+    sheet.width = tileW * cols;
+    sheet.height = tileH * Math.ceil(Math.ceil(times.length / every) / cols);
+    const g = sheet.getContext("2d")!;
+    g.fillStyle = "#888";
+    g.fillRect(0, 0, sheet.width, sheet.height);
+    return { sheet, g, tileW, tileH, cols, every };
+  });
   times.forEach((t, i) => {
     r.draw(scene, t, T, assets);
-    const x = (i % cols) * tileW, y = Math.floor(i / cols) * tileH;
-    g.drawImage(src, x + 1, y + 1, tileW - 2, tileH - 2);
-    g.fillStyle = "rgba(0,0,0,0.6)";
-    g.fillRect(x + 4, y + 4, 54, 18);
-    g.fillStyle = "#fff";
-    g.font = "12px monospace";
-    g.fillText(`${t.toFixed(1)}s`, x + 8, y + 17);
+    for (const { g, tileW, tileH, cols, every } of made) {
+      if (i % every) continue;
+      const n = i / every;
+      const x = (n % cols) * tileW, y = Math.floor(n / cols) * tileH;
+      g.drawImage(src, x + 1, y + 1, tileW - 2, tileH - 2);
+      g.fillStyle = "rgba(0,0,0,0.6)";
+      g.fillRect(x + 4, y + 4, 54, 18);
+      g.fillStyle = "#fff";
+      g.font = "12px monospace";
+      g.fillText(`${t.toFixed(1)}s`, x + 8, y + 17);
+    }
   });
-  return sheet.toDataURL("image/jpeg", 0.8).split(",")[1];
+  return made.map(({ sheet }) => sheet.toDataURL("image/jpeg", 0.8).split(",")[1]);
 }
-
 export async function exportVideo(opts: {
   scene: SceneFn;
   fonts: Fonts;

@@ -44,19 +44,22 @@ const W_ = B.map((b, i) => win(p, b.a, b.b, i ? 0.03 : 0.0001, i < 4 ? 0.03 : 0)
 const focus = (i) => W_[i].a;
 
 // ── Grid + folio ────────────────────────────────────────────────
-ctx.save();
-ctx.strokeStyle = INK; ctx.lineWidth = 1 * u;
-ctx.globalAlpha = 0.05 * seg(p, 0, 0.05);
-ctx.beginPath();
-for (let i = 0; i <= 12; i++) { const x = M + (W - 2 * M) * i / 12; ctx.moveTo(x, M); ctx.lineTo(x, H - M); }
-ctx.stroke();
-ctx.globalAlpha = 0.5 * seg(p, 0, 0.04);
-ctx.beginPath(); ctx.moveTo(M, M); ctx.lineTo(M + (W - 2 * M) * seg(p, 0, 0.08, ease.inOut), M); ctx.stroke();
-ctx.restore();
+lib.layer(ctx, 'Grid', () => {
+  ctx.strokeStyle = INK; ctx.lineWidth = 1 * u;
+  ctx.globalAlpha *= 0.05 * seg(p, 0, 0.05);
+  ctx.beginPath();
+  for (let i = 0; i <= 12; i++) { const x = M + (W - 2 * M) * i / 12; ctx.moveTo(x, M); ctx.lineTo(x, H - M); }
+  ctx.stroke();
+});
+lib.layer(ctx, 'Top rule', () => {
+  ctx.strokeStyle = INK; ctx.lineWidth = 1 * u;
+  ctx.globalAlpha *= 0.5 * seg(p, 0, 0.04);
+  ctx.beginPath(); ctx.moveTo(M, M); ctx.lineTo(M + (W - 2 * M) * seg(p, 0, 0.08, ease.inOut), M); ctx.stroke();
+});
 const fa = seg(p, 0.02, 0.07);
 const bi = B.reduce((n, b, i) => (p >= b.a + 0.01 ? i : n), 0);
-lib.text(ctx, 'HOW A HEART BEATS', M, M + 26 * u, { family: 'mono', size: 14 * u, tracking: 0.16, alpha: 0.7 * fa });
-lib.text(ctx, 'FIG. ' + (bi + 1) + ' / 5', W - M, M + 26 * u, { family: 'mono', size: 14 * u, tracking: 0.16, align: 'right', alpha: 0.7 * fa });
+lib.layer(ctx, 'Running title', () => lib.text(ctx, 'HOW A HEART BEATS', M, M + 26 * u, { family: 'mono', size: 14 * u, tracking: 0.16, alpha: 0.7 * fa }));
+lib.layer(ctx, 'Figure number', () => lib.text(ctx, 'FIG. ' + (bi + 1) + ' / 5', W - M, M + 26 * u, { family: 'mono', size: 14 * u, tracking: 0.16, align: 'right', alpha: 0.7 * fa }));
 
 // ── Diagram geometry ────────────────────────────────────────────
 const blob = (cx, cy, hw, hh, taper, sq, sh) => {
@@ -71,10 +74,10 @@ const blob = (cx, cy, hw, hh, taper, sq, sh) => {
   return pts;
 };
 const ch = [
-  { n: 'RIGHT ATRIUM', c: [-170, -135], hw: 90, hh: 95, tp: 0, sh: 0, k: AS, L: [-400, -150] },
-  { n: 'RIGHT VENTRICLE', c: [-135, 135], hw: 120, hh: 135, tp: 0.35, sh: 50, k: VS, L: [-400, 150] },
-  { n: 'LEFT ATRIUM', c: [170, -135], hw: 90, hh: 95, tp: 0, sh: 0, k: AS, L: [400, -150] },
-  { n: 'LEFT VENTRICLE', c: [135, 150], hw: 120, hh: 150, tp: 0.45, sh: -45, k: VS, L: [400, 160] },
+  { n: 'Right atrium', c: [-170, -135], hw: 90, hh: 95, tp: 0, sh: 0, k: AS, L: [-400, -150] },
+  { n: 'Right ventricle', c: [-135, 135], hw: 120, hh: 135, tp: 0.35, sh: 50, k: VS, L: [-400, 150] },
+  { n: 'Left atrium', c: [170, -135], hw: 90, hh: 95, tp: 0, sh: 0, k: AS, L: [400, -150] },
+  { n: 'Left ventricle', c: [135, 150], hw: 120, hh: 150, tp: 0.45, sh: -45, k: VS, L: [400, 160] },
 ];
 const circuit = [[360, 420], [-340, 420], [-340, -120], [-200, -120], [-150, -20], [-150, 150], [-70, 170], [-40, 60], [-40, -60], [-40, -330], [-200, -330], [-200, -420], [200, -420], [200, -150], [150, -20], [150, 150], [70, 175], [40, 60], [40, -60], [40, -300], [360, -300], [360, 420]];
 const cl = [0];
@@ -90,19 +93,19 @@ const kVes = seg(p, 0.2, 0.3, ease.inOut);
 const hl = 1.6 * u;
 
 lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
-  ctx.save();
-  ctx.globalAlpha = dimAll;
+  // the diagram dims (dimAll) while the ECG has the floor; labels below stay at full strength
   // outer contour of the ventricular mass
-  const sc = 1 - 0.035 * VS;
-  ctx.save();
-  ctx.translate(...P(0, 140)); ctx.scale(sc, sc); ctx.translate(-hx, -hy - 140 * s);
-  const bz = (a, b, c, d, k) => a * (1 - k) ** 3 + 3 * b * k * (1 - k) ** 2 + 3 * c * k * k * (1 - k) + d * k ** 3;
-  const contour = [];
-  [[[-286, -8], [-300, 210], [-110, 330], [55, 345]], [[55, 345], [190, 350], [305, 210], [286, -8]]].forEach((q) => {
-    for (let i = 0; i <= 24; i++) { const k = i / 24; contour.push(P(bz(q[0][0], q[1][0], q[2][0], q[3][0], k), bz(q[0][1], q[1][1], q[2][1], q[3][1], k))); }
+  lib.layer(ctx, 'Heart outline', () => {
+    ctx.globalAlpha *= dimAll;
+    const sc = 1 - 0.035 * VS;
+    ctx.translate(...P(0, 140)); ctx.scale(sc, sc); ctx.translate(-hx, -hy - 140 * s);
+    const bz = (a, b, c, d, k) => a * (1 - k) ** 3 + 3 * b * k * (1 - k) ** 2 + 3 * c * k * k * (1 - k) + d * k ** 3;
+    const contour = [];
+    [[[-286, -8], [-300, 210], [-110, 330], [55, 345]], [[55, 345], [190, 350], [305, 210], [286, -8]]].forEach((q) => {
+      for (let i = 0; i <= 24; i++) { const k = i / 24; contour.push(P(bz(q[0][0], q[1][0], q[2][0], q[3][0], k), bz(q[0][1], q[1][1], q[2][1], q[3][1], k))); }
+    });
+    lib.line(ctx, contour, kHeart, { color: INK, width: hl, alpha: 0.45 });
   });
-  lib.line(ctx, contour, kHeart, { color: INK, width: hl, alpha: 0.45 });
-  ctx.restore();
 
   // vessels (drawn on in beat 2), colour = oxygen state
   const ves = [
@@ -111,26 +114,32 @@ lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
     [RED, [[200, -400], [200, -232]]],
     [RED, [[40, 0], [40, -300], [360, -300], [360, 400]]],
   ];
-  ves.forEach(([c, pts], i) => {
-    const kk = seg(kVes, i * 0.12, 0.64 + i * 0.12);
-    if (i === 3 && kk > 0) lib.line(ctx, mp([[178, -300], [222, -300]]), clamp(kk * 3 - 0.6), { color: PAPER, width: 12 * s });
-    lib.line(ctx, mp(pts), kk, { color: c, width: 2.4 * u, alpha: 0.75 });
+  lib.layer(ctx, 'Vessels', () => {
+    ctx.globalAlpha *= dimAll;
+    ves.forEach(([c, pts], i) => {
+      const kk = seg(kVes, i * 0.12, 0.64 + i * 0.12);
+      if (i === 3 && kk > 0) lib.line(ctx, mp([[178, -300], [222, -300]]), clamp(kk * 3 - 0.6), { color: PAPER, width: 12 * s });
+      lib.line(ctx, mp(pts), kk, { color: c, width: 2.4 * u, alpha: 0.75 });
+    });
   });
   // capillary beds
   [['LUNGS', -200, -420, 400, BLUE, RED], ['BODY', -340, 420, 700, RED, BLUE]].forEach(([nm, x0, y0, len, c0, c1], j) => {
     const kb = seg(kVes, 0.2 + j * 0.2, 0.75 + j * 0.2);
     if (kb <= 0) return;
-    ctx.save(); ctx.lineWidth = 1.2 * u;
-    const n = Math.round(len / 14);
-    for (let i = 0; i <= n * kb; i++) {
-      const f = j ? 1 - i / n : i / n;
-      const [x, y] = P(x0 + (len * i) / n, y0);
-      ctx.strokeStyle = mix(c0, c1, f); ctx.globalAlpha = 0.55;
-      ctx.beginPath(); ctx.moveTo(x, y - 16 * s); ctx.lineTo(x, y + 16 * s); ctx.stroke();
-    }
-    ctx.restore();
-    const [lx, ly] = P(x0 + len / 2, y0 + (j ? 62 : -40));
-    lib.text(ctx, nm, lx, ly, { family: 'mono', size: 14 * u, tracking: 0.3, align: 'center', alpha: 0.8 * kb });
+    lib.layer(ctx, j ? 'Body capillaries' : 'Lung capillaries', () => {
+      ctx.save(); ctx.lineWidth = 1.2 * u; ctx.globalAlpha *= 0.55;
+      const n = Math.round(len / 14);
+      for (let i = 0; i <= n * kb; i++) {
+        const f = j ? 1 - i / n : i / n;
+        const [x, y] = P(x0 + (len * i) / n, y0);
+        ctx.strokeStyle = mix(c0, c1, f);
+        ctx.beginPath(); ctx.moveTo(x, y - 16 * s); ctx.lineTo(x, y + 16 * s); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha *= dimAll;
+      const [lx, ly] = P(x0 + len / 2, y0 + (j ? 62 : -40));
+      lib.text(ctx, nm, lx, ly, { family: 'mono', size: 14 * u, tracking: 0.3, align: 'center', alpha: 0.8 * kb });
+    });
   });
 
   // chambers
@@ -139,21 +148,24 @@ lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
     if (kk <= 0) return;
     const pts = blob(c.c[0], c.c[1], c.hw, c.hh, c.tp, 0.09 * c.k, c.sh * (i % 2 ? 1 : 0));
     const fire = focus(3) * (i % 2 ? g(ph, 0.25, 0.04) : g(ph, 0.11, 0.04)) * A;
-    if (kk >= 1) {
-      ctx.save(); ctx.beginPath(); pts.forEach((q, j) => (j ? ctx.lineTo(...q) : ctx.moveTo(...q)));
-      ctx.fillStyle = i < 2 ? BLUE : RED; ctx.globalAlpha = 0.05 + 0.12 * c.k + 0.35 * fire; ctx.fill(); ctx.restore();
-    }
-    lib.line(ctx, pts, kk, { color: INK, width: (i === 3 ? 3.2 : 2) * u });
+    lib.layer(ctx, c.n, () => {
+      if (kk >= 1) {
+        ctx.save(); ctx.beginPath(); pts.forEach((q, j) => (j ? ctx.lineTo(...q) : ctx.moveTo(...q)));
+        ctx.fillStyle = i < 2 ? BLUE : RED; ctx.globalAlpha *= 0.05 + 0.12 * c.k + 0.35 * fire; ctx.fill(); ctx.restore();
+      }
+      ctx.globalAlpha *= dimAll;
+      lib.line(ctx, pts, kk, { color: INK, width: (i === 3 ? 3.2 : 2) * u });
+    });
   });
 
   // valves: two leaflets each; AV valves open downward, semilunar upward
-  const valves = [['TRICUSPID', -150, -20, 1, avOpen, [-400, -20]], ['MITRAL', 150, -20, 1, avOpen, [400, -20]], ['PULMONARY', -40, -60, -1, slOpen, [-70, -262]], ['AORTIC', 40, -60, -1, slOpen, [70, -262]]];
+  const valves = [['Tricuspid', -150, -20, 1, avOpen, [-400, -20]], ['Mitral', 150, -20, 1, avOpen, [400, -20]], ['Pulmonary', -40, -60, -1, slOpen, [-70, -262]], ['Aortic', 40, -60, -1, slOpen, [70, -262]]];
   const kv = seg(p, 0.08, 0.16);
   const vf = focus(2);
-  valves.forEach(([nm, x, y, dir, o]) => {
+  valves.forEach(([nm, x, y, dir, o]) => lib.layer(ctx, nm + ' valve', () => {
     const hw = Math.abs(x) > 100 ? 34 : 22;
-    ctx.save(); ctx.strokeStyle = vf > 0.01 ? mix(INK, RED, vf) : INK; ctx.lineWidth = (2.2 + 1.2 * vf) * u; ctx.lineCap = 'round';
-    ctx.globalAlpha = kv;
+    ctx.strokeStyle = vf > 0.01 ? mix(INK, RED, vf) : INK; ctx.lineWidth = (2.2 + 1.2 * vf) * u; ctx.lineCap = 'round';
+    ctx.globalAlpha *= kv;
     ctx.beginPath();
     [-1, 1].forEach((sd) => {
       const ang = o * 1.25, hxp = x + sd * hw;
@@ -161,12 +173,13 @@ lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
       ctx.moveTo(a0, a1);
       ctx.lineTo(...P(hxp - sd * Math.cos(ang) * len, y + dir * Math.sin(ang) * len));
     });
-    ctx.stroke(); ctx.restore();
-  });
+    ctx.stroke();
+  }));
 
   // blood: dots riding the circuit, pulsatile (surges with each ventricular beat)
   const da = seg(p, 0.25, 0.31);
-  if (da > 0) {
+  if (da > 0) lib.layer(ctx, 'Blood', () => {
+    ctx.globalAlpha *= dimAll;
     const nb = Math.floor(t / per), gp = nb + ease.inOut(clamp((ph - 0.26) / 0.3));
     const flow = (0.045 * t + 0.07 * gp) * LT;
     const N = 120;
@@ -176,8 +189,7 @@ lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
       lib.circle(ctx, x, y, 4.6 * u * (0.85 + 0.3 * lib.rand(i)), { fill: mix(BLUE, RED, oxy(d)), alpha: da });
       if (i === 7) { const tr = focus(1) * seg(p, 0.29, 0.33); if (tr > 0) { lib.circle(ctx, x, y, 15 * u, { stroke: mix(BLUE, RED, oxy(d)), lineWidth: 1.6 * u, alpha: tr }); lib.circle(ctx, x, y, 7 * u, { fill: mix(BLUE, RED, oxy(d)), alpha: tr }); } }
     }
-  }
-  ctx.restore();
+  });
 
   // labels with leader lines (chambers in beats 1, 5; valves in beat 3)
   const lab = (str, ax, ay, lx, ly, a) => {
@@ -188,9 +200,9 @@ lib.camera(ctx, { zoom: 1 + 0.025 * p, cx: hx, cy: hy }, () => {
     lib.text(ctx, str, x1, y1, { family: 'mono', size: 13.5 * u, tracking: 0.12, align: right ? 'left' : 'right', baseline: 'middle', alpha: a });
   };
   const chA = Math.max(seg(p, 0.06, 0.12) * (1 - seg(p, 0.2, 0.24)), 0.0, seg(p, 0.86, 0.92));
-  ch.forEach((c, i) => lab(c.n, c.c[0] + (c.c[0] < 0 ? -c.hw * 0.55 : c.hw * 0.55), c.c[1] + (i % 2 ? 10 : 0), c.L[0], c.L[1], chA));
+  lib.layer(ctx, 'Chamber labels', () => ch.forEach((c, i) => lab(c.n.toUpperCase(), c.c[0] + (c.c[0] < 0 ? -c.hw * 0.55 : c.hw * 0.55), c.c[1] + (i % 2 ? 10 : 0), c.L[0], c.L[1], chA)));
   const vA = focus(2) * seg(p, 0.43, 0.46);
-  valves.forEach(([nm, x, y, d, o, L]) => lab(nm, x + (x < 0 ? -10 : 10), y, L[0], L[1], vA));
+  lib.layer(ctx, 'Valve labels', () => valves.forEach(([nm, x, y, d, o, L]) => lab(nm.toUpperCase(), x + (x < 0 ? -10 : 10), y, L[0], L[1], vA)));
 });
 
 // ── Left column: kicker, headline, body ────────────────────────
@@ -200,70 +212,80 @@ B.forEach((b, i) => {
   if (w.a <= 0) return;
   const kin = seg(p, b.a + (i ? 0.012 : 0.02), b.a + 0.09);
   const out = w.out;
-  ctx.save(); ctx.globalAlpha = out;
   const ox = (1 - out) * -20 * u;
-  lib.line(ctx, [[TX + ox, TY], [TX + ox + 36 * u, TY]], kin, { color: RED, width: 3 * u, cap: 'butt' });
-  lib.text(ctx, b.kick.toUpperCase(), TX + ox + 52 * u, TY + 5 * u, { family: 'mono', size: 14 * u, tracking: 0.18, alpha: kin });
-  const hr = lib.words(ctx, b.head, TX + ox, TY + HS * 1.25, kin, { size: HS, family: 'serif', maxWidth: TW, lineHeight: 1.08, stagger: 0.5 });
-  if (i === 4) headBot = TY + HS * 1.25 + hr.height;
-  if (b.body) lib.words(ctx, b.body, TX + ox, TY + HS * 1.25 + hr.height + 22 * u, seg(p, b.a + 0.03, b.a + 0.11), { size: (wide ? 23 : tall ? 27 : 22) * u, family: 'sans', maxWidth: TW * (wide ? 0.95 : 1), lineHeight: 1.4, color: '#3A3A40', stagger: 0.4 });
-  ctx.restore();
+  // the headline is measured first (drawn at progress 0 it paints nothing), so the body can sit under it
+  const ho = { size: HS, family: 'serif', maxWidth: TW, lineHeight: 1.08, stagger: 0.5 };
+  const hb = TY + HS * 1.25 + lib.words(ctx, b.head, 0, 0, 0, ho).height;
+  if (i === 4) headBot = hb;
+  lib.layer(ctx, 'Kicker', () => {
+    ctx.globalAlpha *= out;
+    lib.line(ctx, [[TX + ox, TY], [TX + ox + 36 * u, TY]], kin, { color: RED, width: 3 * u, cap: 'butt' });
+    lib.text(ctx, b.kick.toUpperCase(), TX + ox + 52 * u, TY + 5 * u, { family: 'mono', size: 14 * u, tracking: 0.18, alpha: kin });
+  });
+  lib.layer(ctx, 'Headline', () => { ctx.globalAlpha *= out; lib.words(ctx, b.head, TX + ox, TY + HS * 1.25, kin, ho); });
+  if (b.body) lib.layer(ctx, 'Body copy', () => { ctx.globalAlpha *= out; lib.words(ctx, b.body, TX + ox, hb + 22 * u, seg(p, b.a + 0.03, b.a + 0.11), { size: (wide ? 23 : tall ? 27 : 22) * u, family: 'sans', maxWidth: TW * (wide ? 0.95 : 1), lineHeight: 1.4, color: '#3A3A40', stagger: 0.4 }); });
 });
 
 // beat 2: legend
 const lg = focus(1) * seg(p, 0.27, 0.32);
-if (lg > 0) [['OXYGEN-POOR', BLUE], ['OXYGEN-RICH', RED]].forEach(([nm, c], i) => {
+if (lg > 0) lib.layer(ctx, 'Legend', () => [['OXYGEN-POOR', BLUE], ['OXYGEN-RICH', RED]].forEach(([nm, c], i) => {
   const x = TX + i * 190 * u, y = EY + 20 * u;
   lib.circle(ctx, x + 6 * u, y, 6 * u, { fill: c, alpha: lg });
   lib.text(ctx, nm, x + 22 * u, y, { family: 'mono', size: 13.5 * u, tracking: 0.12, baseline: 'middle', alpha: lg });
-});
+}));
 
 // beat 3: contraction meters
 const mt = focus(2) * seg(p, 0.44, 0.48);
-if (mt > 0) [['ATRIA', AS], ['VENTRICLES', VS]].forEach(([nm, v], i) => {
+if (mt > 0) lib.layer(ctx, 'Contraction meters', () => [['ATRIA', AS], ['VENTRICLES', VS]].forEach(([nm, v], i) => {
   const y = EY + 20 * u + i * 44 * u, x0 = TX + 150 * u, mw = Math.min(EW - 150 * u, 380 * u);
   lib.text(ctx, nm, TX, y, { family: 'mono', size: 13.5 * u, tracking: 0.12, baseline: 'middle', alpha: mt });
   lib.rrect(ctx, x0, y - 7 * u, mw, 14 * u, 0, { stroke: INK, lineWidth: 1 * u, alpha: mt * 0.5 });
   lib.rrect(ctx, x0, y - 7 * u, mw * v, 14 * u, 0, { fill: i ? RED : BLUE, alpha: mt });
   lib.text(ctx, v > 0.3 ? 'CONTRACT' : 'RELAX', x0 + mw + 14 * u, y, { family: 'mono', size: 12 * u, tracking: 0.12, baseline: 'middle', alpha: mt * (v > 0.3 ? 1 : 0.45), color: v > 0.3 ? (i ? RED : BLUE) : INK });
-});
+}));
 
 // beats 4-5: ECG strip, a pen writing from the right, paper scrolling left
 const ea = Math.max(focus(3), focus(4)) * seg(p, 0.62, 0.66);
 if (ea > 0) {
   const Ts = 3.2, t0 = 0.6 * T, ex = TX, ey = wide ? EY : EY - 6 * u, base = ey + EH * 0.72;
   const yOf = (tt) => base - ecg(phase(tt)) * EH * 0.62 * A;
-  ctx.save(); ctx.globalAlpha = ea * 0.12; ctx.strokeStyle = INK; ctx.lineWidth = 1 * u; ctx.beginPath();
-  for (let i = 0; i <= 16; i++) { const x = ex + EW * i / 16; ctx.moveTo(x, ey); ctx.lineTo(x, ey + EH); }
-  for (let j = 0; j <= 4; j++) { const y = ey + EH * j / 4; ctx.moveTo(ex, y); ctx.lineTo(ex + EW, y); }
-  ctx.stroke(); ctx.restore();
   const xOf = (tt) => ex + EW - ((t - tt) / Ts) * EW;
-  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth = 2.2 * u; ctx.lineJoin = 'round'; ctx.globalAlpha = ea;
-  ctx.beginPath();
-  let started = false;
-  for (let i = 0; i <= 360; i++) {
-    const tt = t - Ts + (Ts * i) / 360;
-    if (tt < t0) continue;
-    const x = xOf(tt), y = yOf(tt);
-    started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;
-  }
-  ctx.stroke(); ctx.restore();
-  lib.circle(ctx, xOf(t), yOf(t), 5 * u, { fill: RED, alpha: ea });
-  // fade left edge
-  const gr = ctx.createLinearGradient(ex, 0, ex + 60 * u, 0);
-  gr.addColorStop(0, PAPER); gr.addColorStop(1, 'rgba(243,240,232,0)');
-  ctx.fillStyle = gr; ctx.fillRect(ex - 4 * u, ey - 40 * u, 64 * u, EH + 50 * u);
+  lib.layer(ctx, 'ECG grid', () => {
+    ctx.globalAlpha *= ea * 0.12; ctx.strokeStyle = INK; ctx.lineWidth = 1 * u; ctx.beginPath();
+    for (let i = 0; i <= 16; i++) { const x = ex + EW * i / 16; ctx.moveTo(x, ey); ctx.lineTo(x, ey + EH); }
+    for (let j = 0; j <= 4; j++) { const y = ey + EH * j / 4; ctx.moveTo(ex, y); ctx.lineTo(ex + EW, y); }
+    ctx.stroke();
+  });
+  lib.layer(ctx, 'ECG trace', () => {
+    ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth = 2.2 * u; ctx.lineJoin = 'round'; ctx.globalAlpha *= ea;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i <= 360; i++) {
+      const tt = t - Ts + (Ts * i) / 360;
+      if (tt < t0) continue;
+      const x = xOf(tt), y = yOf(tt);
+      started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;
+    }
+    ctx.stroke(); ctx.restore();
+    lib.circle(ctx, xOf(t), yOf(t), 5 * u, { fill: RED, alpha: ea });
+    // fade left edge
+    const gr = ctx.createLinearGradient(ex, 0, ex + 60 * u, 0);
+    gr.addColorStop(0, PAPER); gr.addColorStop(1, 'rgba(243,240,232,0)');
+    ctx.fillStyle = gr; ctx.fillRect(ex - 4 * u, ey - 40 * u, 64 * u, EH + 50 * u);
+  });
   // P / QRS / T labels ride with each complex
   const la = focus(3) * seg(p, 0.64, 0.68) + focus(4) * 0.5;
-  for (let n = Math.floor((t - Ts) / per); n <= Math.floor(t / per); n++) {
-    [['P', 0.1, 0.16], ['QRS', 0.24, 1], ['T', 0.47, 0.3]].forEach(([nm, f, hgt]) => {
-      const tt = n * per + f * per;
-      if (tt > t || tt < t0) return;
-      const x = xOf(tt), edge = clamp((x - ex - 40 * u) / (60 * u));
-      const y = base - hgt * EH * 0.62 * A - 18 * u;
-      lib.text(ctx, nm, x, y, { family: 'mono', size: 13 * u, tracking: 0.1, align: 'center', alpha: la * edge * clamp((t - tt) / 0.15), color: nm === 'QRS' ? RED : INK });
-    });
-  }
+  lib.layer(ctx, 'ECG labels', () => {
+    for (let n = Math.floor((t - Ts) / per); n <= Math.floor(t / per); n++) {
+      [['P', 0.1, 0.16], ['QRS', 0.24, 1], ['T', 0.47, 0.3]].forEach(([nm, f, hgt]) => {
+        const tt = n * per + f * per;
+        if (tt > t || tt < t0) return;
+        const x = xOf(tt), edge = clamp((x - ex - 40 * u) / (60 * u));
+        const y = base - hgt * EH * 0.62 * A - 18 * u;
+        lib.text(ctx, nm, x, y, { family: 'mono', size: 13 * u, tracking: 0.1, align: 'center', alpha: la * edge * clamp((t - tt) / 0.15), color: nm === 'QRS' ? RED : INK });
+      });
+    }
+  });
 }
 
 // beat 5: facts counting up
@@ -276,14 +298,16 @@ if (fk > 0) {
     if (k <= 0) return;
     const x = TX + i * cw;
     const str = i === 0 ? lib.count(k, 0, 60) + '–' + lib.count(k, 0, 100) : '~' + lib.count(k, 0, n);
-    lib.line(ctx, [[x, fy], [x + cw - 18 * u, fy]], k, { color: INK, width: 1 * u, alpha: fk * 0.6 });
-    lib.text(ctx, str, x, fy + (wide ? 50 : 44) * u, { size: (wide ? 40 : 36) * u, family: 'serif', alpha: fk * clamp(k * 3), color: i === 0 ? RED : INK });
-    lib.text(ctx, l, x, fy + (wide ? 76 : 68) * u, { family: 'mono', size: 11.5 * u, tracking: 0.08, maxWidth: cw - 22 * u, lineHeight: 1.35, alpha: fk * clamp(k * 3 - 0.5) * 0.85 });
+    lib.layer(ctx, 'Fact ' + (i + 1), () => {
+      lib.line(ctx, [[x, fy], [x + cw - 18 * u, fy]], k, { color: INK, width: 1 * u, alpha: fk * 0.6 });
+      lib.text(ctx, str, x, fy + (wide ? 50 : 44) * u, { size: (wide ? 40 : 36) * u, family: 'serif', alpha: fk * clamp(k * 3), color: i === 0 ? RED : INK });
+      lib.text(ctx, l, x, fy + (wide ? 76 : 68) * u, { family: 'mono', size: 11.5 * u, tracking: 0.08, maxWidth: cw - 22 * u, lineHeight: 1.35, alpha: fk * clamp(k * 3 - 0.5) * 0.85 });
+    });
   });
 }
 
 // figure caption
 const capA = seg(p, 0.1, 0.16);
-if (wide) lib.text(ctx, 'SCHEMATIC, FRONT VIEW: THE HEART\u2019S RIGHT SIDE IS ON THE VIEWER\u2019S LEFT.', TX, H - M - 4 * u, { family: 'mono', size: 11.5 * u, tracking: 0.06, maxWidth: TW, lineHeight: 1.45, alpha: 0.55 * capA });
+if (wide) lib.layer(ctx, 'Figure caption', () => lib.text(ctx, 'SCHEMATIC, FRONT VIEW: THE HEART\u2019S RIGHT SIDE IS ON THE VIEWER\u2019S LEFT.', TX, H - M - 4 * u, { family: 'mono', size: 11.5 * u, tracking: 0.06, maxWidth: TW, lineHeight: 1.45, alpha: 0.55 * capA }));
 `,
 };

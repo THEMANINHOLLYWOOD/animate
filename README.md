@@ -22,8 +22,13 @@ A dropped video with no brief is recreated shot for shot (`/api/elements`, `/api
 Every stage can be continued where it stopped (`src/lib/resume.ts`).
 
 In the editor (`/editor/[id]`, `src/editor/`), each object the film's code draws with `lib.layer`
-is a layer you can move, resize, fade, hide and trim; text is split into text layers; and the
-controls the film declares with `lib.controls` become its own panel.
+is a layer you can move, resize, fade, hide and trim (a deleted one can be brought back from its
+code layer); text is split into text layers; the controls the film declares with `lib.controls`
+become its own panel; and the timeline shows the beat of the film's music and snaps to it.
+
+Signed-in films live in a private Blob store under `users/<id>/` (`src/lib/store.ts`): the film
+records, and each film's images, sound, fonts and exported videos. The library is read through an
+index, so only films that changed are fetched (`cloudLibrary` in `src/lib/library.ts`).
 
 ## Where things are
 
@@ -34,7 +39,7 @@ controls the film declares with `lib.controls` become its own panel.
 | `src/lib/kit.ts`, `fx.ts`, `controls.ts` | What a film's code can draw with |
 | `src/lib/presets/showcase/` | The example films (also the animator's reference scenes) |
 | `src/lib/intake.ts` | Reading any dropped file (see `docs/file-intake.md`) |
-| `src/lib/limits.ts` | Rate limits for every route that spends money |
+| `src/lib/limits.ts` | Rate limits for every route that spends money or storage |
 | `src/editor/` | The timeline editor: document, renderer, text split, element layers, agent tools |
 | `src/app/api/` | Server routes |
 | `public/previews/` | Looping clips for the example tiles (re-render one when its example changes) |

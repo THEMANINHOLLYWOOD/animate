@@ -54,6 +54,7 @@ function sky(dy) {
 
 function stars(k) {
   // painted cut-out stars dangling from the fly loft on threads
+  lib.layer(ctx, 'Hanging stars', () => {
   const n = wide ? 7 : 5;
   for (let i = 0; i < n; i++) {
     const x = W * (0.06 + (i + 0.5) / n * 0.88) + (R(i * 7) - 0.5) * W * 0.05;
@@ -67,6 +68,8 @@ function stars(k) {
     for (let j = 0; j < 10; j++) { const a = -PI / 2 + j * PI / 5 + sw, rr = j % 2 ? r * 0.42 : r; ctx.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr); }
     ctx.fill(); ctx.globalAlpha = 1;
   }
+  });
+  lib.layer(ctx, 'Stars', () => {
   ctx.fillStyle = C.paper; ctx.beginPath();
   for (let i = 0; i < 46; i++) {
     if (R(fi * 50 + i) < 0.15) continue; // twinkle
@@ -74,6 +77,7 @@ function stars(k) {
     ctx.rect(x, y, r, r);
   }
   ctx.fill();
+  });
 }
 
 function drawMoon(open, wink, smile) {
@@ -111,6 +115,7 @@ function drawMoon(open, wink, smile) {
 
 function town() {
   // far skyline (painted flat, lighter)
+  lib.layer(ctx, 'Skyline', () => {
   ctx.fillStyle = C.mid; ctx.beginPath();
   let x = -W * 0.02, i = 0;
   while (x < W) { const w = W * (0.04 + R(i * 3) * 0.06), h = H * (0.2 + R(i * 3 + 1) * 0.16) * roofScale; ctx.rect(x, H - h, w, h); if (R(i * 9) > 0.6) ctx.rect(x + w * 0.4, H - h - H * 0.05, w * 0.2, H * 0.05); x += w * 0.92; i++; }
@@ -120,7 +125,9 @@ function town() {
     for (let r = 0; r < 6; r++) for (let c = 0; c < 3; c++) if (R(i * 100 + r * 7 + c) > 0.72) ctx.rect(x + w * (0.18 + c * 0.25), H - h + H * 0.03 + r * H * 0.04, w * 0.1, H * 0.018);
     x += w * 0.92; i++; }
   ctx.fill();
+  });
   // near rooftops (black cut-outs)
+  lib.layer(ctx, 'Rooftops', () => {
   ctx.fillStyle = C.black; ctx.beginPath();
   roofs.forEach((b, j) => {
     const x0 = b[0] * W, x1 = b[1] * W, y = roofY(j);
@@ -130,13 +137,18 @@ function town() {
     if (j !== 2) { ctx.rect(cxm, y - S * 0.07, S * 0.03, S * 0.07); ctx.rect(cxm - 3 * u, y - S * 0.075, S * 0.03 + 6 * u, 8 * u); }
   });
   ctx.fill();
+  });
   // water tower on the third roof
+  lib.layer(ctx, 'Water tower', () => {
+  ctx.fillStyle = C.black;
   const wx = lerp(roofs[2][0] * W, roofs[2][1] * W, 0.82), wy = roofY(2), ts = S * 0.06;
   ctx.beginPath(); ctx.rect(wx - ts * 0.5, wy - ts * 1.9, ts, ts * 1.1); ctx.moveTo(wx - ts * 0.6, wy - ts * 1.9); ctx.lineTo(wx, wy - ts * 2.4); ctx.lineTo(wx + ts * 0.6, wy - ts * 1.9); ctx.fill();
   ctx.strokeStyle = C.black; ctx.lineWidth = 3 * u; ctx.beginPath();
   ctx.moveTo(wx - ts * 0.4, wy); ctx.lineTo(wx - ts * 0.4, wy - ts * 0.8); ctx.moveTo(wx + ts * 0.4, wy); ctx.lineTo(wx + ts * 0.4, wy - ts * 0.8);
   ctx.moveTo(wx - ts * 0.4, wy); ctx.lineTo(wx + ts * 0.4, wy - ts * 0.8); ctx.stroke();
+  });
   // lit windows on the near rooftops, a few switch on over time
+  lib.layer(ctx, 'Lit windows', () => {
   ctx.fillStyle = C.paper; ctx.beginPath();
   roofs.forEach((b, j) => {
     for (let k = 0; k < 7; k++) {
@@ -146,6 +158,7 @@ function town() {
     }
   });
   ctx.globalAlpha = 0.8; ctx.fill(); ctx.globalAlpha = 1;
+  });
 }
 
 function gent(x, y, s, ph, walk, hop, hat, look) {
@@ -188,44 +201,51 @@ function figAt(kq) {
 }
 
 function stage(k, zoom, body) {
-  lib.camera(ctx, { zoom, cx: W / 2, cy: H * 0.6 }, () => { ctx.fillStyle = sky(); ctx.fillRect(-W, -H, W * 3, H * 3); stars(k); body(); });
+  lib.camera(ctx, { zoom, cx: W / 2, cy: H * 0.6 }, () => { lib.layer(ctx, 'Sky', () => { ctx.fillStyle = sky(); ctx.fillRect(-W, -H, W * 3, H * 3); }); stars(k); body(); });
 }
 
 // ── Shots ─────────────────────────────────────────────────────────
 function scene1(k) {
   const kq = seg(fq, SH[2].a, SH[2].b), f = figAt(kq);
   const open = seg(k, 0.84, 0.9, E.out), look = seg(kq, 0.8, 0.88, E.out);
-  stage(k, 1 + 0.03 * k, () => { drawMoon(open, 0, 0.2); town(); gent(f.x, f.y, figS, f.ph, f.walking, f.hop, 0, look); });
+  stage(k, 1 + 0.03 * k, () => { lib.layer(ctx, 'Moon', () => drawMoon(open, 0, 0.2)); town(); lib.layer(ctx, 'Gentleman', () => gent(f.x, f.y, figS, f.ph, f.walking, f.hop, 0, look)); });
 }
 
 function scene2(k) {
   const kq = seg(fq, SH[4].a, SH[4].b), f = figAt(1);
   const hat = Math.min(seg(kq, 0.12, 0.3, E.out), 1 - seg(kq, 0.62, 0.78, E.inOut));
   const wink = Math.min(seg(k, 0.4, 0.48), 1 - seg(k, 0.6, 0.68));
-  stage(k, 1.03 + 0.03 * k, () => { drawMoon(1, wink, seg(k, 0.25, 0.5, E.out) + 0.2); town(); gent(f.x, f.y, figS, 0, false, false, hat, 1 - hat * 0.4); });
+  stage(k, 1.03 + 0.03 * k, () => { lib.layer(ctx, 'Moon', () => drawMoon(1, wink, seg(k, 0.25, 0.5, E.out) + 0.2)); town(); lib.layer(ctx, 'Gentleman', () => gent(f.x, f.y, figS, 0, false, false, hat, 1 - hat * 0.4)); });
 }
 
 function leader(k) {
   const n = Math.min(2, Math.floor(k * 3)), kk = k * 3 - n, big = Math.hypot(W, H);
+  lib.layer(ctx, 'Leader backdrop', () => {
   ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = C.stone; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, big, -PI / 2, -PI / 2 + kk * PI * 2); ctx.closePath(); ctx.fill();
   ctx.strokeStyle = C.ink; ctx.lineWidth = 3 * u; ctx.beginPath();
   ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.moveTo(cx, 0); ctx.lineTo(cx, H);
   const a = -PI / 2 + kk * PI * 2; ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * big, cy + Math.sin(a) * big); ctx.stroke();
+  });
+  lib.layer(ctx, 'Leader rings', () => {
   [[0.4, 7], [0.33, 3]].forEach((c) => { ctx.lineWidth = c[1] * u; ctx.strokeStyle = c[1] > 5 ? C.white : C.ink; ctx.beginPath(); ctx.arc(cx, cy, S * c[0], 0, PI * 2); ctx.stroke(); });
   ctx.strokeStyle = C.ink; ctx.lineWidth = 3 * u; ctx.beginPath(); ctx.arc(cx, cy, S * 0.4 + 6 * u, 0, PI * 2); ctx.stroke();
   ctx.fillStyle = C.paper; ctx.beginPath(); ctx.arc(cx, cy, S * 0.25, 0, PI * 2); ctx.fill();
-  lib.text(ctx, String(3 - n), cx, cy + S * 0.02, { size: S * 0.4, weight: 700, family: 'serif', color: C.ink, align: 'center', baseline: 'middle' });
-  [-1, 1].forEach((g) => lib.text(ctx, 'PICTURE • ' + (3 - n), wide ? cx + g * S * 0.71 : cx + g * W * 0.27, wide ? cy - S * 0.42 : H - S * 0.1, { size: (wide ? 22 : 18) * u, family: 'mono', color: C.ink, align: 'center', tracking: 0.25, alpha: 0.7 }));
+  });
+  lib.layer(ctx, 'Countdown number', () => lib.text(ctx, String(3 - n), cx, cy + S * 0.02, { size: S * 0.4, weight: 700, family: 'serif', color: C.ink, align: 'center', baseline: 'middle' }));
+  [-1, 1].forEach((g) => lib.layer(ctx, g < 0 ? 'Left leader label' : 'Right leader label', () => lib.text(ctx, 'PICTURE • ' + (3 - n), wide ? cx + g * S * 0.71 : cx + g * W * 0.27, wide ? cy - S * 0.42 : H - S * 0.1, { size: (wide ? 22 : 18) * u, family: 'mono', color: C.ink, align: 'center', tracking: 0.25, alpha: 0.7 })));
 }
 
 function frame(k) {
   // art-deco double-line intertitle border with stepped fan corners
+  lib.layer(ctx, 'Card backdrop', () => {
   ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H);
   const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.9);
   glow.addColorStop(0, 'rgba(118,101,75,0.35)'); glow.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+  });
   const m = S * 0.085, x0 = m, y0 = m, x1 = W - m, y1 = H - m, dk = seg(k, 0, 0.35, E.inOut);
   const box = (i) => [[x0 + i, y0 + i], [x1 - i, y0 + i], [x1 - i, y1 - i], [x0 + i, y1 - i], [x0 + i, y0 + i]];
+  lib.layer(ctx, 'Deco border', () => {
   lib.line(ctx, box(0), dk, { color: C.light, width: 4 * u });
   lib.line(ctx, box(14 * u), dk, { color: C.light, width: 1.5 * u });
   ctx.save(); ctx.globalAlpha = seg(k, 0.15, 0.4); ctx.strokeStyle = C.light; ctx.fillStyle = C.light; ctx.lineWidth = 1.8 * u;
@@ -240,6 +260,7 @@ function frame(k) {
   });
   [y0 + 14 * u, y1 - 14 * u].forEach((y) => { ctx.beginPath(); ctx.moveTo(cx, y - 10 * u); ctx.lineTo(cx + 12 * u, y); ctx.lineTo(cx, y + 10 * u); ctx.lineTo(cx - 12 * u, y); ctx.fill(); });
   ctx.restore();
+  });
 }
 
 function rule(y, w, a) {
@@ -254,31 +275,36 @@ function titleCard(k) {
   const mw = W - S * 0.36, a1 = seg(k, 0.02, 0.14, E.out), a2 = seg(k, 0.08, 0.2, E.out), a3 = seg(k, 0.12, 0.28, E.out);
   const big = wide ? 150 * u : 112 * u, y = tall ? cy - 250 * u : cy - 150 * u;
   const T1 = { family: 'serif', color: C.light, align: 'center', baseline: 'middle' };
-  lib.text(ctx, 'AN EVENING', cx, y, Object.assign({}, T1, { size: 46 * u, tracking: 0.42, alpha: a1, maxWidth: mw }));
-  rule(y + 58 * u, Math.min(mw * 0.5, 300 * u), a1);
-  lib.text(ctx, 'at the', cx, y + 112 * u, Object.assign({}, T1, { size: 40 * u, italic: true, alpha: a2 }));
+  lib.layer(ctx, 'An evening', () => lib.text(ctx, 'AN EVENING', cx, y, Object.assign({}, T1, { size: 46 * u, tracking: 0.42, alpha: a1, maxWidth: mw })));
+  lib.layer(ctx, 'Title rule', () => rule(y + 58 * u, Math.min(mw * 0.5, 300 * u), a1));
+  lib.layer(ctx, 'At the', () => lib.text(ctx, 'at the', cx, y + 112 * u, Object.assign({}, T1, { size: 40 * u, italic: true, alpha: a2 })));
   const ph = wide ? 'PICTURE HOUSE' : 'PICTURE\nHOUSE';
+  lib.layer(ctx, 'Picture House', () => {
   ctx.save(); ctx.translate(cx, y + (wide ? 240 : tall ? 320 : 300) * u); ctx.scale(0.86, 1.18);
   lib.text(ctx, ph, 0, 0, Object.assign({}, T1, { size: big, weight: 700, tracking: 0.06, alpha: a3, maxWidth: mw / 0.86, lineHeight: 0.95 }));
   ctx.restore();
+  });
 }
 
 function dialogue(k) {
   frame(k);
   const a = seg(k, 0.03, 0.16, E.out), sz = wide ? 92 * u : 74 * u;
-  lib.text(ctx, '“Good evening,\nMister Moon!”', cx, cy - 20 * u, { family: 'serif', italic: true, size: sz, color: C.light, align: 'center', baseline: 'middle', lineHeight: 1.25, alpha: a, maxWidth: W - S * 0.36 });
-  rule(cy + sz * 1.6, Math.min(W * 0.2, 220 * u), seg(k, 0.1, 0.3));
+  lib.layer(ctx, 'Dialogue line', () => lib.text(ctx, '“Good evening,\nMister Moon!”', cx, cy - 20 * u, { family: 'serif', italic: true, size: sz, color: C.light, align: 'center', baseline: 'middle', lineHeight: 1.25, alpha: a, maxWidth: W - S * 0.36 }));
+  lib.layer(ctx, 'Dialogue rule', () => rule(cy + sz * 1.6, Math.min(W * 0.2, 220 * u), seg(k, 0.1, 0.3)));
 }
 
 function theEnd(k) {
   frame(k);
   // deco sunburst rising behind the type
   const fan = seg(k, 0.05, 0.45, E.out), by = cy + S * 0.32;
+  lib.layer(ctx, 'Sunburst', () => {
   ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = C.umber; ctx.beginPath();
   for (let i = 0; i < 13; i++) { const a0 = PI + (i / 13) * PI, a1 = a0 + PI / 26, rr = S * 0.62 * fan; ctx.moveTo(cx, by); ctx.lineTo(cx + Math.cos(a0) * rr, by + Math.sin(a0) * rr); ctx.lineTo(cx + Math.cos(a1) * rr, by + Math.sin(a1) * rr); }
   ctx.fill(); ctx.restore();
   ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(cx, by, S * 0.12 * fan, PI, 0); ctx.fill();
+  });
   const a = seg(k, 0.12, 0.35, E.out), sz = (wide ? 190 : 150) * u;
+  lib.layer(ctx, 'The End', () => {
   ctx.save(); ctx.translate(cx, cy - 10 * u); ctx.scale(0.82, 1.3);
   const o = { family: 'serif', weight: 700, size: sz, align: 'center', baseline: 'middle', tracking: 0.18, maxWidth: (W - S * 0.4) / 0.82 };
   ctx.globalAlpha = a;
@@ -286,8 +312,9 @@ function theEnd(k) {
   lib.text(ctx, te, 8 * u, 6 * u, Object.assign({}, o, { color: C.black }));
   lib.text(ctx, te, 0, 0, Object.assign({}, o, { color: C.light }));
   ctx.restore();
-  rule(cy - sz * (wide ? 0.95 : 1.75), Math.min(W * 0.3, 360 * u), seg(k, 0.25, 0.45));
-  rule(cy + sz * (wide ? 0.8 : 1.6), Math.min(W * 0.3, 360 * u), seg(k, 0.3, 0.5));
+  });
+  lib.layer(ctx, 'Top rule', () => rule(cy - sz * (wide ? 0.95 : 1.75), Math.min(W * 0.3, 360 * u), seg(k, 0.25, 0.45)));
+  lib.layer(ctx, 'Bottom rule', () => rule(cy + sz * (wide ? 0.8 : 1.6), Math.min(W * 0.3, 360 * u), seg(k, 0.3, 0.5)));
 }
 
 // ── Projector: gate weave, iris, current shot ─────────────────────
@@ -312,15 +339,20 @@ ctx.restore();
 
 // ── Film artefacts ───────────────────────────────────────────────
 // brightness flicker
+lib.layer(ctx, 'Flicker', () => {
 ctx.fillStyle = C.black; ctx.globalAlpha = 0.03 + R(fi * 3 + 7) * 0.16; ctx.fillRect(0, 0, W, H);
 ctx.fillStyle = C.light; ctx.globalAlpha = R(fi * 5 + 1) * 0.05; ctx.fillRect(0, 0, W, H);
+});
 // grain
+lib.layer(ctx, 'Grain', () => {
 [[C.black, 0], [C.white, 1]].forEach((g) => {
   ctx.fillStyle = g[0]; ctx.globalAlpha = g[1] ? 0.28 : 0.36; ctx.beginPath();
   for (let i = 0; i < 600; i++) { const sd = fi * 4096 + i * 2 + g[1] * 2048, s = (0.8 + R(sd + 9) * 2.4) * u; ctx.rect(R(sd) * W, R(sd + 1) * H, s, s); }
   ctx.fill();
 });
+});
 // scratches: persist a few frames, jitter sideways
+lib.layer(ctx, 'Scratches', () => {
 ctx.lineWidth = 1.6 * u;
 for (let j = 0; j < 3; j++) {
   const id = Math.floor((fi + j * 5) / 9) * 7 + j * 131;
@@ -329,7 +361,9 @@ for (let j = 0; j < 3; j++) {
   ctx.strokeStyle = j === 2 ? C.black : C.white; ctx.globalAlpha = 0.25 + R(fi * 19 + j) * 0.35;
   ctx.beginPath(); for (let y = y0; y <= y1; y += H / 12) ctx.lineTo(x + lib.noise(y * 0.004, id) * 5 * u, y); ctx.stroke();
 }
+});
 // dust and hairs: a different handful every frame
+lib.layer(ctx, 'Dust and hairs', () => {
 ctx.fillStyle = ctx.strokeStyle = C.black; ctx.lineWidth = 1.8 * u;
 for (let j = 0; j < 6; j++) {
   const sd = fi * 97 + j * 13;
@@ -339,19 +373,22 @@ for (let j = 0; j < 6; j++) {
   if (R(sd + 5) > 0.75) { ctx.beginPath(); ctx.moveTo(x, y); ctx.bezierCurveTo(x + s * 4, y - s * 3, x - s * 2, y + s * 5, x + s * 3, y + s * 6); ctx.stroke(); }
   else { ctx.beginPath(); ctx.ellipse(x, y, s, s * (0.5 + R(sd + 6) * 0.5), R(sd + 7) * PI, 0, PI * 2); ctx.fill(); }
 }
+});
 ctx.globalAlpha = 1;
 // splice flash on cuts, plus the odd stray flash
 const near = splices.some((sp) => Math.floor(sp * T * 24) === fi && sp > 0) ? 1 : splices.some((sp) => Math.floor(sp * T * 24) + 1 === fi && sp > 0) ? 0.35 : 0;
 const stray = R(fi * 91 + 4) > 0.985 ? 0.3 : 0;
-if (near + stray > 0) {
+if (near + stray > 0) lib.layer(ctx, 'Splice flash', () => {
   ctx.fillStyle = C.white; ctx.globalAlpha = Math.min(0.85, (near + stray) * 0.8); ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = C.black; ctx.globalAlpha = 0.6; ctx.fillRect(0, R(fi) * H, W, 5 * u); ctx.globalAlpha = 1;
-}
+});
 // heavy vignette + rounded projector gate
+lib.layer(ctx, 'Vignette and gate', () => {
 ctx.save(); ctx.translate(cx, cy); ctx.scale(W / S, H / S);
 const vg = ctx.createRadialGradient(0, 0, S * 0.22, 0, 0, S * 0.75);
 vg.addColorStop(0, 'rgba(12,9,6,0)'); vg.addColorStop(0.6, 'rgba(12,9,6,0.45)'); vg.addColorStop(1, 'rgba(12,9,6,0.95)');
 ctx.fillStyle = vg; ctx.fillRect(-S, -S, S * 2, S * 2); ctx.restore();
 ctx.fillStyle = C.black; ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.roundRect(6 * u, 6 * u, W - 12 * u, H - 12 * u, 48 * u); ctx.fill('evenodd');
+});
 `,
 };

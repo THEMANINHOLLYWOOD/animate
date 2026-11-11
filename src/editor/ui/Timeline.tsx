@@ -27,7 +27,7 @@ const prettyPath = (p: string) =>
 
 const TYPE_GLYPH: Record<string, string> = { text: "T", shape: "◻", globe: "◍", waveform: "≋", image: "▣", video: "▶", code: "</>", part: "◆", group: "▤" };
 
-const STOOD_DOWN = "Stood down: its code changed after its text was split, so the code draws this text. Select it to split the text again.";
+const STOOD_DOWN = "Stood down: its code, or a control that shapes its text, changed after the text was split, so the code draws this text. Select it to split the text again.";
 
 type Props = {
   store: Store;
@@ -39,6 +39,8 @@ type Props = {
   onEdit: () => void;
   // Layers whose drawing threw, with why.
   errors: Record<string, string>;
+  // The beat of the film's music (film seconds): shown on the ruler, and clips and keys snap to it.
+  beats?: { bpm: number; beats: number[]; downbeats: number[] } | null;
 };
 
 // Everything one layer row needs; rows re-render only when theirs changes (not on every frame).
@@ -60,7 +62,7 @@ type RowProps = {
   onFlag: (l: Layer, flag: "hidden" | "locked") => void;
 };
 
-export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, errors }: Props) {
+export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, errors, beats }: Props) {
   const doc = useStore(store, (s) => s.doc);
   const selection = useStore(store, (s) => s.selection);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -77,9 +79,13 @@ export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, e
   const rows = useMemo(() => [...doc.layers].reverse(), [doc.layers]); // top of stack first, like AE / Premiere
 
   // What handlers read when they run, so they stay the same functions (and rows stay memoized).
-  const live = useRef({ pps, keySel });
+  const live = useRef({ pps, keySel, grid: [] as number[] });
+  // Beats are shown (and snapped to) while there's room between them; closer than that, only the downbeats.
+  const beatGap = beats && beats.bpm > 0 ? (60 / beats.bpm) * pps : 0;
+  const grid = useMemo(() => (!beats ? [] : beatGap >= 7 ? beats.beats : beatGap * 4 >= 7 ? beats.downbeats : []), [beats, beatGap]);
+  const downs = useMemo(() => new Set(beats?.downbeats ?? []), [beats]);
   useLayoutEffect(() => {
-    live.current = { pps, keySel };
+    live.current = { pps, keySel, grid };
   });
 
   useEffect(() => {
@@ -135,7 +141,7 @@ export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, e
   const snap = useCallback(
     (t: number, ignore?: string) => {
       const { doc: d, time } = store.getState();
-      const targets = [time, 0, d.meta.duration, ...d.markers.map((m) => m.t)];
+      const targets = [time, 0, d.meta.duration, ...d.markers.map((m) => m.t), ...live.current.grid];
       for (const l of d.layers) if (l.id !== ignore) targets.push(l.start, l.end);
       let best = t;
       let bestD = SNAP_PX / live.current.pps;
@@ -296,6 +302,11 @@ export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, e
     <div className="tl">
       <div className="tl-toolbar">
         <span>Timeline</span>
+        {beats && grid.length > 0 && (
+          <span className="tl-bpm" title="The beat of this film's music. Clips and keyframes snap to it.">
+            ♪ {Math.round(beats.bpm)} BPM
+          </span>
+        )}
         <div className="tl-zoom">
           <button onClick={() => setZoom((z) => Math.max(1, z / 1.5))} aria-label="Zoom out">
             −
@@ -316,6 +327,9 @@ export default function Timeline({ store, keySel, setKeySel, onSelect, onEdit, e
             <div className="tl-label tl-corner">{doc.layers.length} layers</div>
             <div className="tl-ruler" style={{ width: trackW }} onPointerDown={scrub}>
               <div className="tl-marker-lane">
+                {grid.map((b) => (
+                  <div key={b} className={`tl-beat${downs.has(b) ? " down" : ""}`} style={{ left: X(b) }} />
+                ))}
                 {doc.markers.map((m, i) => {
                   const next = doc.markers[i + 1];
                   const room = (next ? X(next.t) : trackW) - X(m.t) - 8;

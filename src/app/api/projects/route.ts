@@ -19,17 +19,43 @@ export async function HEAD() {
   return new Response(null, { status: userId ? 204 : 401 });
 }
 
-// Every film in the library, or one (?id=).
+// The library. It is read in two steps, so it never has to fit one response (4.5 MB on Vercel) and a
+// film that hasn't changed isn't sent again:
+//   ?index=1     what's stored: each film's id, size and a stamp that changes when it's saved
+//   ?ids=a,b,c   those films in full (the page asks in batches that fit a response)
+//   ?id=a        one film
+// With none of these, every film in full (pages loaded before the index existed still ask this way).
 export async function GET(req: Request) {
   const userId = await requireUser();
   if (!userId) return unauthorized();
-  const id = new URL(req.url).searchParams.get("id");
+  const q = new URL(req.url).searchParams;
+  const id = q.get("id");
   if (id !== null) {
     if (!ID.test(id)) return Response.json({ error: "Invalid id." }, { status: 400 });
     const project = await readJson(projectPath(userId, id));
     return project ? Response.json({ project }) : Response.json({ error: "This film isn't in your library." }, { status: 404 });
   }
-  const { blobs } = await list({ prefix: `${userRoot(userId)}projects/` });
+  const ids = q.get("ids");
+  if (ids !== null) {
+    const want = [...new Set(ids.split(","))];
+    if (!want.length || want.length > 50 || !want.every((x) => ID.test(x))) return Response.json({ error: "Invalid ids." }, { status: 400 });
+    const projects = (await Promise.all(want.map((x) => readJson(projectPath(userId, x)).catch(() => null)))).filter(Boolean);
+    return Response.json({ projects });
+  }
+  const prefix = `${userRoot(userId)}projects/`;
+  const blobs = [];
+  let cursor: string | undefined;
+  do {
+    const page = await list({ prefix, cursor });
+    blobs.push(...page.blobs);
+    cursor = page.hasMore ? page.cursor : undefined;
+  } while (cursor);
+  if (q.get("index")) {
+    const index = blobs
+      .map((b) => ({ id: b.pathname.slice(prefix.length).replace(/\.json$/, ""), v: b.etag || String(+b.uploadedAt), size: b.size }))
+      .filter((f) => ID.test(f.id));
+    return Response.json({ index });
+  }
   const projects = (await Promise.all(blobs.map((b) => readJson(b.pathname).catch(() => null)))).filter(Boolean);
   projects.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
   return Response.json({ projects });
@@ -93,7 +119,7 @@ export async function DELETE(req: Request) {
   if (!ID.test(id)) return Response.json({ error: "Invalid id." }, { status: 400 });
   const root = userRoot(userId);
   const related = await Promise.all(
-    [`${root}assets/${id}/`, `${root}videos/${id}/`, `${root}audio/${id}/`].map((prefix) => list({ prefix }).then((r) => r.blobs.map((b) => b.pathname))),
+    [`${root}assets/${id}/`, `${root}videos/${id}/`, `${root}audio/${id}/`, `${root}fonts/${id}/`].map((prefix) => list({ prefix }).then((r) => r.blobs.map((b) => b.pathname))),
   );
   await del([projectPath(userId, id), ...related.flat()]);
   return Response.json({ ok: true });

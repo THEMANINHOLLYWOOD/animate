@@ -236,6 +236,7 @@ if (p > 0.125) {
     if (txt0 !== null) rows.push((txt0 - off) * CW, ry + RH / 2, strs);
   }
   const ov = 0.8 / z;
+  lib.layer(ctx, 'Word tiles', () => {
   for (let c = 1; c < PAL.length; c++) {
     const a = runs[c];
     if (!a.length) continue;
@@ -249,6 +250,8 @@ if (p > 0.125) {
     const s = rows[k + 2];
     for (let n = 0; n < 3; n++) if (s[n]) { ctx.fillStyle = INKS[n]; ctx.fillText(s[n], rows[k], rows[k + 1], 1e6); }
   }
+  });
+  lib.layer(ctx, 'Loose pixels', () => {
   for (const key in pix) {
     const a = pix[key], c = Math.floor(key / 5);
     ctx.globalAlpha = (key % 5 + 0.5) / 5;
@@ -257,11 +260,12 @@ if (p > 0.125) {
     for (let k = 0; k < a.length; k += 3) ctx.rect(a[k], a[k + 1], a[k + 2], a[k + 2]);
     ctx.fill();
   }
+  });
   ctx.restore();
 }
 
 // ── glitch bursts on transitions ────────────────────────────────────────────
-if (G > 0) blocks(W / 2, H / 2, W * 1.1, H * 1.1, G * 1.6, 900);
+if (G > 0) lib.layer(ctx, 'Glitch bursts', () => blocks(W / 2, H / 2, W * 1.1, H * 1.1, G * 1.6, 900));
 
 // ── the terminal prompt ─────────────────────────────────────────────────────
 if (p < 0.16) {
@@ -272,8 +276,8 @@ if (p < 0.16) {
   const shat = seg(p, 0.118, 0.152);
   const vis = shat <= 0 || R(Math.floor(t * 20) * 7 + 3) > shat;
   const pad = tsz * 0.45, bh = tsz * 1.5, cw = tsz * 0.55;
-  blocks(W / 2, ty, PR.length * adv * 1.6, bh * 4, 0.25 + 0.3 * lib.pulse(t, 0.7) + shat * 2, 40);
-  if (ap > 0 && vis) {
+  lib.layer(ctx, 'Prompt glitch', () => blocks(W / 2, ty, PR.length * adv * 1.6, bh * 4, 0.25 + 0.3 * lib.pulse(t, 0.7) + shat * 2, 40));
+  if (ap > 0 && vis) lib.layer(ctx, 'Terminal prompt', () => {
     const bw = (n * adv + cw + tsz * 0.2 + pad * 2) * ap;
     const jx = shat > 0 ? Math.round((R(Math.floor(t * 20)) - 0.5) * 40 * shat) * u : 0;
     ctx.fillStyle = WHT;
@@ -283,24 +287,24 @@ if (p < 0.16) {
       lib.typewriter(ctx, PR, tx + jx, ty + tsz * 0.35, n / PR.length + 1e-6, { size: tsz, family: 'mono', weight: 400, color: BLK, tracking: ttr, caret: false });
       if (kT > 0 && kT < 1 || lib.pulse(t, 0.9) < 0.55) { ctx.fillStyle = BLK; ctx.fillRect(tx + jx + n * adv + tsz * 0.06, ty - tsz * 0.45, cw, tsz * 0.9); }
     }
-  }
+  });
 }
 
 // ── labels cut in over the mosaic ───────────────────────────────────────────
 const LS = (wide ? 58 : 44) * u;
-label('EVERY WORD A PIXEL', MG, H * (wide ? 0.2 : 0.16), LS, WHT, BLK, seg(p, 0.285, 0.315), seg(p, 0.375, 0.392), 11);
-label('TYPE IN, FILM OUT', MG, H * 0.8, LS, RED, WHT, seg(p, 0.47, 0.50), seg(p, 0.572, 0.59), 23);
+lib.layer(ctx, 'Every word a pixel', () => { label('EVERY WORD A PIXEL', MG, H * (wide ? 0.2 : 0.16), LS, WHT, BLK, seg(p, 0.285, 0.315), seg(p, 0.375, 0.392), 11); });
+lib.layer(ctx, 'Type in, film out', () => { label('TYPE IN, FILM OUT', MG, H * 0.8, LS, RED, WHT, seg(p, 0.47, 0.50), seg(p, 0.572, 0.59), 23); });
 const l3y = H * (wide ? 0.76 : 0.74), kin3 = seg(p, 0.71, 0.74), kout3 = seg(p, 0.805, 0.825);
-label('POWERED BY', MG, l3y - LS * 0.95, LS * 0.62, WHT, BLK, kin3, kout3, 31);
-label('ANIMATE', MG, l3y + LS * 0.45, LS * 1.3, RED, WHT, seg(p, 0.725, 0.755), kout3, 37);
+lib.layer(ctx, 'Powered by', () => { label('POWERED BY', MG, l3y - LS * 0.95, LS * 0.62, WHT, BLK, kin3, kout3, 31); });
+lib.layer(ctx, 'Animate label', () => { label('ANIMATE', MG, l3y + LS * 0.45, LS * 1.3, RED, WHT, seg(p, 0.725, 0.755), kout3, 37); });
 
 // ── the end: two lines on black ─────────────────────────────────────────────
 if (p > 0.85) {
   const fs = (wide ? 64 : 46) * u, tr = 0.18;
   const w1 = 'DESCRIBE IT'.length * fs * (ADV + tr) - fs * tr + fs;
   const x = W / 2 - w1 / 2, y = H / 2;
-  label('DESCRIBE IT', x, y - fs * 0.82, fs, WHT, BLK, seg(p, 0.865, 0.9), 0, 51);
-  label('GET A FILM', x, y + fs * 0.82, fs, RED, WHT, seg(p, 0.885, 0.92), 0, 57, tr, true);
+  lib.layer(ctx, 'Describe it', () => { label('DESCRIBE IT', x, y - fs * 0.82, fs, WHT, BLK, seg(p, 0.865, 0.9), 0, 51); });
+  lib.layer(ctx, 'Get a film', () => { label('GET A FILM', x, y + fs * 0.82, fs, RED, WHT, seg(p, 0.885, 0.92), 0, 57, tr, true); });
 }
 `,
 };

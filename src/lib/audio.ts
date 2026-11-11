@@ -14,7 +14,7 @@ export type AudioClip = {
   text?: string; // voice lines
   prompt?: string; // sfx / music prompt
   words?: { w: string; s: number; e: number }[]; // voice word timings (film seconds)
-  beats?: { bpm: number; beats: number[]; downbeats: number[]; hits: number[] }; // music grid (film seconds)
+  beats?: { bpm: number; beats: number[]; downbeats: number[]; hits: number[] }; // music grid (seconds from the clip's start)
   separated?: boolean; // an original stem split out by SAM Audio: scoring rebuilds it and mutes this one
 };
 

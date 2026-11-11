@@ -172,39 +172,45 @@ function cloud(x, y, w, a) {
 function poly(pts, fill) { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)))); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); }
 function panorama() {
   const ysAt = (f, y) => FY + (y - camY * f) * zl(f), skyB = Math.min(H, ysAt(0.2, -40));
-  const g = ctx.createLinearGradient(0, 0, 0, skyB);
-  g.addColorStop(0, rgb(skyT)); g.addColorStop(0.55, rgb(skyM)); g.addColorStop(1, rgb(skyH));
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, skyB);
+  lib.layer(ctx, 'Sky', () => {
+    const g = ctx.createLinearGradient(0, 0, 0, skyB);
+    g.addColorStop(0, rgb(skyT)); g.addColorStop(0.55, rgb(skyM)); g.addColorStop(1, rgb(skyH));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, skyB);
+  });
   const starA = lib.keys(p, [[0, 0.9], [0.07, 0.3], [0.13, 0], [0.74, 0], [0.81, 1], [0.88, 1], [0.95, 0.1]]);
-  if (starA > 0.02) {
+  if (starA > 0.02) lib.layer(ctx, 'Stars', () => {
     ctx.save(); ctx.fillStyle = '#FFF4DA'; ctx.beginPath();
     for (let i = 0; i < 110; i++) {
       const x = ((rand(i) * W * 1.4 - camX * 0.02 * u) % W + W) % W, y = rand(i + 400) * FY * 0.75, r = (0.8 + rand(i + 800) * 1.8) * u * (0.6 + 0.4 * Math.sin(t * 2.2 + i));
       ctx.moveTo(x + r, y); ctx.arc(x, y, Math.max(0.2, r), 0, TAU);
     }
     ctx.globalAlpha *= starA; ctx.fill(); ctx.restore();
-  }
+  });
   const [sx, sy, sr] = lib.keys(p, [[0, [0.6, 0.78, 80]], [0.065, [0.6, 0.34, 84]], [0.14, [0.72, 0.24, 72]], [0.2, [0.76, 0.2, 66]], [0.36, [0.78, 0.2, 64]],
     [0.5, [0.8, 0.2, 62]], [0.6, [0.84, 0.3, 62]], [0.79, [0.72, 0.98, 62]], [0.86, [0.66, 0.95, 84]], [0.97, [0.66, 0.27, 92]]], ease.inOut);
   const SX = W * (tall ? lerp(sx, 0.5, 0.35) : sx), SY = H * sy * (tall ? 0.85 : 1);
-  sun(SX, SY, sr * u, 1 - 0.5 * starA, true);
-  for (let i = 0; i < 5; i++) {
+  lib.layer(ctx, 'Sun', () => sun(SX, SY, sr * u, 1 - 0.5 * starA, true));
+  lib.layer(ctx, 'Clouds', () => { for (let i = 0; i < 5; i++) {
     const cx3 = ((rand(i + 40) * 3 * W + t * 6 * u * (1 + i % 2) - camX * 0.3 * zl(0.3)) % (3 * W) + 3 * W) % (3 * W) - W * 0.6;
     cloud(cx3, ysAt(0.3, -420 - 150 * rand(i + 41)), (160 + 120 * rand(i + 42)) * zl(0.3), 0.5 * (1 - starA));
-  }
-  range(0.2, 420, 230, 280, 11, far, farL, 400, ysAt(0.45, -42) + 6);
-  mist(ysAt(0.2, -260), ysAt(0.45, -42) + 6, 0.35);
-  range(0.45, 300, 140, 170, 37, mid, midL, 0, ysAt(0.75, -15) + 6);
-  mist(ysAt(0.45, -150), ysAt(0.75, -15) + 6, 0.3);
-  for (let i = 0; i < 2; i++) { // condors gliding
+  } });
+  lib.layer(ctx, 'Far mountains', () => {
+    range(0.2, 420, 230, 280, 11, far, farL, 400, ysAt(0.45, -42) + 6);
+    mist(ysAt(0.2, -260), ysAt(0.45, -42) + 6, 0.35);
+  });
+  lib.layer(ctx, 'Mid mountains', () => {
+    range(0.45, 300, 140, 170, 37, mid, midL, 0, ysAt(0.75, -15) + 6);
+    mist(ysAt(0.45, -150), ysAt(0.75, -15) + 6, 0.3);
+  });
+  lib.layer(ctx, 'Condors', () => { for (let i = 0; i < 2; i++) { // condors gliding
     const k = lib.pulse(t + i * 23, 46), bx = lerp(-0.1, 1.1, k) * W, by = H * (0.2 + 0.12 * i) + Math.sin(t * 0.6 + i) * 20 * u, fl = Math.sin(t * 2.2 + i) * 0.5, s = (16 - i * 4) * u;
     ctx.beginPath(); ctx.moveTo(bx - s * 2.2, by - s * fl); ctx.quadraticCurveTo(bx - s, by - s * 0.5, bx, by); ctx.quadraticCurveTo(bx + s, by - s * 0.5, bx + s * 2.2, by - s * fl);
     ctx.strokeStyle = rgb(mixA(skyT, hx('#000000'), 0.3), 0.8 * (1 - starA)); ctx.lineWidth = 3.5 * u; ctx.lineCap = 'round'; ctx.stroke();
-  }
-  range(0.75, 260, 50, 100, 71, near, nearL, 0, H, true);
+  } });
+  lib.layer(ctx, 'Near hills', () => { range(0.75, 260, 50, 100, 71, near, nearL, 0, H, true); });
   // Machu Picchu: a saddle of ruins under the sugarloaf peak; the storehouse hill
   const mpG = rgb(mixA(hx('#2C7A5C'), near, 0.35)), mpL = rgb(mixA(hx('#5BB27C'), nearL, 0.3));
-  if (onS(5700, 800)) {
+  if (onS(5700, 800)) lib.layer(ctx, 'Machu Picchu', () => {
     const MH = (x) => -Math.max(300 * ss((x - 5200) / 160) * ss((5830 - x) / 120), 740 * bump(x, 5850, 105), 470 * bump(x, 5270, 150), 200 * bump(x, 6050, 220));
     const mp = (c) => { c.moveTo(X(5000), Y(60)); for (let x = 5000; x <= 6400; x += 14) c.lineTo(X(x), Y(MH(x))); c.lineTo(X(6400), Y(60)); c.closePath(); };
     ctx.beginPath(); mp(ctx); ctx.fillStyle = mpG; ctx.fill();
@@ -215,29 +221,31 @@ function panorama() {
     });
     for (let i = 0; i < 9; i++) house(X(5430 + i * 34), Y(-300 + (i % 3) * 3), 24, 15, Z * (0.85 + 0.12 * (i % 2)), '#D3CBE2', '#6B4A3A');
     for (let i = 0; i < 4; i++) cloud(X(5300 + i * 260 + Math.sin(t * 0.3 + i) * 40), Y(-170 - 60 * (i % 2)), (220 + 60 * (i % 3)) * Z, 0.75);
-  }
-  if (onS(7250, 800)) {
+  });
+  if (onS(7250, 800)) lib.layer(ctx, 'Storehouses', () => {
     const hy = (x) => -230 * bump(x, 7150, 420) - 10;
     ctx.beginPath(); ctx.moveTo(X(6500), Y(60)); for (let x = 6500; x <= 7900; x += 25) ctx.lineTo(X(x), Y(hy(x))); ctx.lineTo(X(7900), Y(60));
     ctx.fillStyle = rgb(mixA(near, nearL, 0.5)); ctx.fill();
     ctx.beginPath(); for (let r = 0; r < 3; r++) for (let x = 6700; x <= 7650; x += 20) (x === 6700 ? ctx.moveTo : ctx.lineTo).call(ctx, X(x), Y(hy(x) + 22 + r * 40));
-    ctx.strokeStyle = rgb(nearL, 0.9); ctx.lineWidth = 4 * Z; ctx.stroke();
+    ctx.strokeStyle = rgb(nearL, 0.9); ctx.lineWidth = 4 * Z; ctx.lineCap = 'round'; ctx.stroke();
     for (let r = 0; r < 3; r++) for (let c = 0; c < 10; c++) {
       const x = 6800 + c * 56 + r * 28, y = hy(x) + 22 + r * 40, s = Z * 0.62;
       ctx.fillStyle = '#D9B48A'; ctx.beginPath(); ctx.roundRect(X(x) - 15 * s, Y(y) - 28 * s, 30 * s, 28 * s, 6 * s); ctx.fill();
       ctx.fillStyle = 'rgba(30,10,40,0.2)'; ctx.fillRect(X(x) + 4 * s, Y(y) - 26 * s, 10 * s, 26 * s);
       ctx.fillStyle = '#B9722A'; ctx.beginPath(); ctx.moveTo(X(x) - 19 * s, Y(y) - 26 * s); ctx.quadraticCurveTo(X(x), Y(y) - 62 * s, X(x) + 19 * s, Y(y) - 26 * s); ctx.fill();
     }
-  }
+  });
   // the lake, then the foreground ground and the road
   const step = 8 * u, xs = (sx2) => camX + (sx2 - W / 2) / Z;
-  ctx.beginPath(); ctx.moveTo(0, H);
-  for (let s2 = 0; s2 <= W + step; s2 += step) ctx.lineTo(s2, Y(G(xs(s2))));
-  ctx.lineTo(W + step, H); const gg = ctx.createLinearGradient(0, Y(-60), 0, Y(260)); gg.addColorStop(0, rgb(mixA(gnd, gndL, 0.55))); gg.addColorStop(1, rgb(mixA(gnd, skyT, 0.35)));
-  ctx.fillStyle = gg; ctx.fill();
-  ctx.beginPath(); for (let s2 = 0; s2 <= W + step; s2 += step) ctx.lineTo(s2, Y(G(xs(s2))) + 3 * Z);
-  ctx.strokeStyle = rgb(gndL); ctx.lineWidth = 7 * Z; ctx.stroke();
-  if (X(478) > 0) {
+  lib.layer(ctx, 'Ground', () => {
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let s2 = 0; s2 <= W + step; s2 += step) ctx.lineTo(s2, Y(G(xs(s2))));
+    ctx.lineTo(W + step, H); const gg = ctx.createLinearGradient(0, Y(-60), 0, Y(260)); gg.addColorStop(0, rgb(mixA(gnd, gndL, 0.55))); gg.addColorStop(1, rgb(mixA(gnd, skyT, 0.35)));
+    ctx.fillStyle = gg; ctx.fill();
+    ctx.beginPath(); for (let s2 = 0; s2 <= W + step; s2 += step) ctx.lineTo(s2, Y(G(xs(s2))) + 3 * Z);
+    ctx.strokeStyle = rgb(gndL); ctx.lineWidth = 7 * Z; ctx.lineCap = 'round'; ctx.stroke();
+  });
+  if (X(478) > 0) lib.layer(ctx, 'Lake Titicaca', () => {
     const wg = ctx.createLinearGradient(0, Y(0), 0, H); wg.addColorStop(0, rgb(wat)); wg.addColorStop(1, rgb(mixA(wat, skyT, 0.75)));
     ctx.fillStyle = wg; ctx.fillRect(0, Y(0), X(478), H - Y(0));
     ctx.save(); ctx.strokeStyle = '#FFE08A'; ctx.lineCap = 'round'; ctx.beginPath();
@@ -246,49 +254,59 @@ function panorama() {
     ctx.strokeStyle = '#FFFFFF'; ctx.globalAlpha *= 0.4; ctx.beginPath();
     for (let i = 0; i < 16; i++) { const x = -800 + rand(i + 50) * 1200 + Math.sin(t + i) * 10, y = 14 + rand(i + 70) * 120; ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x + 30), Y(y)); }
     ctx.lineWidth = 2.5 * Z; ctx.stroke(); ctx.restore();
-  }
-  if (onS(420, 200)) { // totora reeds at the shore
+  });
+  if (onS(420, 200)) lib.layer(ctx, 'Reeds', () => { // totora reeds at the shore
     ctx.beginPath();
     for (let i = 0; i < 26; i++) { const x = 330 + i * 7 + rand(i + 500) * 6, h = 50 + rand(i + 501) * 50, sw = Math.sin(t * 1.2 + i * 0.4) * 6; ctx.moveTo(X(x), Y(Math.min(G(x), 0) + 6)); ctx.quadraticCurveTo(X(x + sw * 0.3), Y(-h * 0.5), X(x + sw), Y(-h)); }
     ctx.strokeStyle = rgb(mixA(hx('#C9A35A'), gnd, 0.45)); ctx.lineWidth = 3 * Z; ctx.lineCap = 'round'; ctx.stroke();
-  }
-  ctx.save(); ctx.setLineDash([16 * Z, 9 * Z]); ctx.beginPath();
+  });
+  lib.layer(ctx, 'Road', () => {
+  ctx.save(); ctx.setLineDash([16 * Z, 9 * Z]); ctx.lineCap = 'round'; ctx.beginPath();
   for (let s2 = 0; s2 <= W + step; s2 += step) { const x = xs(s2); if (x > 1500 && Math.abs(x - 3830) > 150) ctx.lineTo(s2, Y(G(x)) + 12 * Z); else ctx.moveTo(s2, Y(G(x)) + 12 * Z); }
   ctx.strokeStyle = '#E8C690'; ctx.globalAlpha *= 0.55; ctx.lineWidth = 6 * Z; ctx.stroke(); ctx.restore();
+  });
   // Cusco: a small kingdom
   if (onS(2000, 500)) {
+    lib.layer(ctx, 'Cusco', () => {
     const hs = [[1760, 0.8], [1840, 0.75], [2120, 0.8], [2210, 0.78], [1800, 1], [1890, 1.05], [2060, 1], [2160, 1.05], [2260, 0.95]];
     hs.forEach(([x, s], i) => house(X(x), Y(G(x) + (s < 0.9 ? -24 : 4)), 38, 26, Z * s, i % 3 ? '#D6B48E' : '#C9A7D6', '#E09A3C'));
     const cx2 = X(1975), cy2 = Y(G(1975) + 4);
     ctx.fillStyle = '#C8B6DE'; ctx.fillRect(cx2 - 60 * Z, cy2 - 42 * Z, 120 * Z, 42 * Z);
     ctx.fillStyle = GOLD; ctx.fillRect(cx2 - 60 * Z, cy2 - 36 * Z, 120 * Z, 8 * Z);
     ctx.fillStyle = '#2A1838'; [-34, 0, 34].forEach((d) => { ctx.beginPath(); ctx.moveTo(cx2 + (d - 7) * Z, cy2); ctx.lineTo(cx2 + (d - 5) * Z, cy2 - 20 * Z); ctx.lineTo(cx2 + (d + 5) * Z, cy2 - 20 * Z); ctx.lineTo(cx2 + (d + 7) * Z, cy2); ctx.fill(); });
+    });
+    lib.layer(ctx, 'Cusco townsfolk', () => {
     [[2300, 0.4, -1], [1700, 0.7, 1]].forEach(([x, sp2, d], i) => { const xx = x + d * ((t * 14 * sp2) % 120); llama(X(xx), Y(G(xx) + 6), Z * 0.9, { walk: 1, dir: d, seed: i + 4, blanket: i ? TEAL : MAG }); });
     [[2020, 1, 0.5], [2100, -1, 0.35], [1930, 1, 0]].forEach(([x, d, wv], i) => { const xx = x + d * wv * ((t * 18) % 80); person(X(xx), Y(G(xx) + 8), Z, { tunic: ['#E8467C', '#2EC4B6', '#FF8A3D'][i], c1: INK, c2: '#F5EBDD', walk: wv, dir: d, seed: i + 1 }); });
+    });
   }
   // Manco Capac, the legendary founder, walks from the lake to Cusco
-  if (p < 0.21) {
+  if (p < 0.21) lib.layer(ctx, 'Manco Cápac', () => {
     const mx = lerp(600, 1690, seg(p, 0.078, 0.15, ease.inOut)), walking = seg(p, 0.078, 0.082) * (1 - seg(p, 0.147, 0.152));
     person(X(mx), Y(G(mx) + 8), Z * 1.15, { tunic: GOLD, c1: '#D62A3A', c2: INK, royal: 1, staff: 1, walk: walking, seed: 9, sink: 26 * seg(p, 0.16, 0.19, ease.inOut) });
-  }
+  });
   // the road, the gorge, the rope bridge
   if (onS(3830, 700)) {
     const ax = 3672, bx = 3988, ay = G(ax) - 6, by = G(bx) - 6, sag = 58;
     const qb = (k, y0) => [lerp(ax, bx, k), lerp(ay, by, k) + y0 + 4 * sag * k * (1 - k) + Math.sin(t * 1.6) * 3 * Math.sin(Math.PI * k)];
+    lib.layer(ctx, 'Rope bridge', () => {
     ctx.save(); ctx.strokeStyle = '#C79A5C'; ctx.lineCap = 'round';
     ctx.beginPath(); for (let i = 0; i <= 24; i++) { const [x, y] = qb(i / 24, -40), [x2, y2] = qb(i / 24, 0); ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x2), Y(y2)); }
     ctx.lineWidth = 1.6 * Z; ctx.stroke();
     [[-40, 3], [0, 7]].forEach(([o, w]) => { ctx.beginPath(); for (let i = 0; i <= 24; i++) { const [x, y] = qb(i / 24, o); ctx.lineTo(X(x), Y(y)); } ctx.lineWidth = w * Z; ctx.strokeStyle = o ? '#E3B878' : '#A6773E'; ctx.stroke(); });
     ctx.restore();
     [ax, bx].forEach((x) => { ctx.fillStyle = '#8D86B0'; ctx.fillRect(X(x) - 10 * Z, Y(G(x)) - 46 * Z, 20 * Z, 48 * Z); });
+    });
+    lib.layer(ctx, 'Travellers', () => {
     const lk = ((t * 0.07) % 1.2) - 0.1;
     if (lk > 0 && lk < 1) { const [lx, ly] = qb(lk, 0); llama(X(lx), Y(ly), Z * 0.85, { walk: 1, seed: 7, blanket: TEAL }); }
     const rx = 3300 + ((t * 40) % 340);
     person(X(rx), Y(G(rx) + 8), Z, { tunic: ORNG, c1: INK, c2: '#F5EBDD', walk: 1, seed: 5 });
     llama(X(4250), Y(G(4250) + 8), Z, { seed: 3, dir: -1 });
+    });
   }
   // the quipu keeper in front of the storehouses
-  if (onS(7360, 500)) {
+  if (onS(7360, 500)) lib.layer(ctx, 'Quipu keeper', () => {
     const kx = X(7360), ky = Y(G(7360) + 10), s = Z * 1.25;
     person(kx, ky, s, { tunic: TEAL, c1: INK, c2: GOLD, seed: 3 });
     const cy3 = ky - 34 * s, x0 = kx - 70 * s, x1 = kx + 52 * s, cols = [MAG, GOLD, '#F5EBDD', ORNG, TEAL, '#F5EBDD', MAG, GOLD, ORNG, TEAL];
@@ -301,34 +319,36 @@ function panorama() {
       const nk = Math.floor(clamp(knotK * 1.6 - i * 0.06) * (2 + Math.floor(rand(i + 60) * 4)));
       for (let k = 0; k < nk; k++) { const f = 0.3 + k * 0.17; lib.circle(ctx, x + sw * f * f, cy3 + L * f, 3.4 * s, { fill: c }); }
     });
-  }
+  });
   // Vilcabamba: jungle hills, a fire, the last free Inca
   if (onS(9100, 900)) {
     const fx = X(9060), fy = Y(G(9060) + 4), fl = 1 + 0.12 * Math.sin(t * 13) + 0.08 * Math.sin(t * 7.3), nightA = 1 - seg(p, 0.89, 0.95);
+    lib.layer(ctx, 'Campfire', () => {
     ctx.save(); ctx.globalAlpha *= nightA;
     for (let i = 5; i >= 0; i--) lib.circle(ctx, fx, fy - 14 * Z, (18 + i * 19) * Z * fl, { fill: 'rgba(255,140,60,0.07)' });
     ctx.fillStyle = ORNG; ctx.beginPath(); ctx.moveTo(fx - 13 * Z, fy); ctx.quadraticCurveTo(fx - 12 * Z, fy - 24 * Z, fx, fy - 42 * Z * fl); ctx.quadraticCurveTo(fx + 12 * Z, fy - 24 * Z, fx + 13 * Z, fy); ctx.fill();
     ctx.fillStyle = '#FFD35C'; ctx.beginPath(); ctx.moveTo(fx - 6 * Z, fy); ctx.quadraticCurveTo(fx - 6 * Z, fy - 12 * Z, fx, fy - 24 * Z * fl); ctx.quadraticCurveTo(fx + 6 * Z, fy - 12 * Z, fx + 6 * Z, fy); ctx.fill();
     ctx.restore();
-    person(X(8990), Y(G(8990) + 8), Z * 1.1, { tunic: '#B23A5A', c1: GOLD, c2: INK, royal: 1, seed: 6 });
-    person(X(9135), Y(G(9135) + 8), Z, { tunic: '#2E8C86', c1: INK, c2: '#F5EBDD', seed: 2, dir: -1 });
+    });
+    lib.layer(ctx, 'Last Inca', () => person(X(8990), Y(G(8990) + 8), Z * 1.1, { tunic: '#B23A5A', c1: GOLD, c2: INK, royal: 1, seed: 6 }));
+    lib.layer(ctx, 'Companion', () => person(X(9135), Y(G(9135) + 8), Z, { tunic: '#2E8C86', c1: INK, c2: '#F5EBDD', seed: 2, dir: -1 }));
     const tg = rgb(mixA(near, hx('#0C3A34'), 0.5)), tl = rgb(mixA(nearL, hx('#1F6B55'), 0.4));
-    [[8700, 1], [8820, 1.2], [9300, 1.1], [9420, 0.9], [8600, 0.8]].forEach(([x, s], i) => {
+    lib.layer(ctx, 'Jungle', () => [[8700, 1], [8820, 1.2], [9300, 1.1], [9420, 0.9], [8600, 0.8]].forEach(([x, s], i) => {
       const bx = X(x), by = Y(G(x) + 10), k = Z * s, sw = Math.sin(t * 0.9 + i) * 2 * k;
       ctx.fillStyle = '#3B2440'; ctx.fillRect(bx - 4 * k, by - 70 * k, 8 * k, 70 * k);
       ctx.beginPath(); [[0, -96, 40], [-34, -74, 28], [34, -76, 30]].forEach(([dx, dy, r]) => { ctx.moveTo(bx + dx * k + sw + r * k, by + dy * k); ctx.arc(bx + dx * k + sw, by + dy * k, r * k, 0, TAU); });
       ctx.fillStyle = tg; ctx.fill();
       ctx.beginPath(); ctx.arc(bx - 10 * k + sw, by - 104 * k, 22 * k, 0, TAU); ctx.fillStyle = tl; ctx.fill();
-    });
+    }));
     const ff = seg(p, 0.81, 0.84) * (1 - seg(p, 0.88, 0.92));
-    if (ff > 0) { ctx.save(); ctx.fillStyle = '#D8FF8A'; ctx.beginPath(); for (let i = 0; i < 26; i++) { const x = X(8700 + rand(i + 900) * 700 + Math.sin(t * 0.7 + i) * 30), y = Y(G(9000) - 40 - rand(i + 950) * 200 + Math.sin(t * 1.1 + i * 2) * 20), r = 2.6 * Z * (0.4 + 0.6 * Math.abs(Math.sin(t * 1.7 + i))); ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); } ctx.globalAlpha *= ff * 0.9; ctx.fill(); ctx.restore(); }
+    if (ff > 0) lib.layer(ctx, 'Fireflies', () => { ctx.save(); ctx.fillStyle = '#D8FF8A'; ctx.beginPath(); for (let i = 0; i < 26; i++) { const x = X(8700 + rand(i + 900) * 700 + Math.sin(t * 0.7 + i) * 30), y = Y(G(9000) - 40 - rand(i + 950) * 200 + Math.sin(t * 1.1 + i * 2) * 20), r = 2.6 * Z * (0.4 + 0.6 * Math.abs(Math.sin(t * 1.7 + i))); ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); } ctx.globalAlpha *= ff * 0.9; ctx.fill(); ctx.restore(); });
   }
   // the final wide shot: a herder and a llama on the ridge at sunrise
-  if (p > 0.86) {
+  if (p > 0.86) lib.layer(ctx, 'Herder and llama', () => {
     const fx = X(10300), fy = Y(G(10300) + 8);
     llama(fx + 30 * Z, fy, Z * 1.1, { seed: 11, dir: -1, blanket: MAG });
     person(fx - 28 * Z, fy, Z * 1.05, { tunic: ORNG, c1: INK, c2: '#F5EBDD', seed: 4 });
-  }
+  });
 }
 
 // ── Map of Tawantinsuyu ([lat, lon]) ──
@@ -345,29 +365,35 @@ function mapEnv() {
   const P = (la, lo) => [W / 2 + (lo - clon) * K, H / 2 - (la - clat) * K];
   const path = (pts) => { ctx.beginPath(); pts.forEach(([la, lo], i) => { const [x, y] = P(la, lo); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); };
   const dim = seg(p, 0.6, 0.66) * 0.5;
+  lib.layer(ctx, 'Ocean', () => {
   const og = ctx.createLinearGradient(0, 0, 0, H); og.addColorStop(0, rgb(mixA(hx('#1D1858'), hx('#0E0B2E'), dim))); og.addColorStop(1, rgb(mixA(hx('#2C1F70'), hx('#160F3C'), dim)));
   ctx.fillStyle = og; ctx.fillRect(0, 0, W, H);
   ctx.save(); ctx.strokeStyle = '#6A5FD0'; ctx.lineWidth = 3 * u; ctx.lineCap = 'round'; ctx.globalAlpha *= 0.6; ctx.beginPath();
   for (let i = 0; i < 60; i++) { const [x, y] = P(14 - rand(i + 3) * 60, -100 + rand(i + 9) * 70 + Math.sin(t * 0.5 + i) * 0.3), w = 12 * u; ctx.moveTo(x - w, y); ctx.quadraticCurveTo(x, y - 6 * u, x + w, y); }
   ctx.stroke(); ctx.restore();
-  path(SAM); ctx.fillStyle = rgb(mixA(hx('#3E3088'), hx('#261D58'), dim)); ctx.fill();
-  ctx.strokeStyle = '#6C5AC0'; ctx.lineWidth = 3 * u; ctx.stroke();
+  });
+  lib.layer(ctx, 'South America', () => {
+    path(SAM); ctx.fillStyle = rgb(mixA(hx('#3E3088'), hx('#261D58'), dim)); ctx.fill();
+    ctx.strokeStyle = '#6C5AC0'; ctx.lineWidth = 3 * u; ctx.stroke();
+  });
   const grow = seg(p, 0.212, 0.278, ease.inOut), [cx, cy] = P(CUS[0], CUS[1]);
-  if (grow > 0) {
+  if (grow > 0) lib.layer(ctx, 'Empire', () => {
     const R = grow * 24 * K;
     [[Math.PI, Math.PI * 1.68, MAG], [Math.PI * 1.68, Math.PI * 2.1, TEAL], [Math.PI * 0.1, Math.PI * 0.62, ORNG], [Math.PI * 0.62, Math.PI, GOLD]].forEach(([a0, a1, c]) => {
       ctx.save(); ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, a0, a1); ctx.closePath(); ctx.clip();
       path(EMP); ctx.fillStyle = c; ctx.globalAlpha *= 0.85 - dim * 0.6; ctx.fill(); ctx.restore();
     });
     ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.clip(); path(EMP); ctx.strokeStyle = '#FFE9B8'; ctx.lineWidth = 3 * u; ctx.stroke(); ctx.restore();
-  }
+  });
   // the Andes spine
+  lib.layer(ctx, 'Andes', () => {
   const sz = Math.min(K * 0.75, 34 * u), tri = [[], [], []];
   for (let i = 0; i < ANDES.length - 1; i++) for (let k = 0; k < 4; k++) {
     const f = k / 4, la = lerp(ANDES[i][0], ANDES[i + 1][0], f), lo = lerp(ANDES[i][1], ANDES[i + 1][1], f), [x, y] = P(la, lo), h = sz * (0.8 + 0.5 * rand(i * 4 + k));
     tri[0].push([x - sz * 0.6, y, x, y - h, x + sz * 0.6, y]); tri[1].push([x, y - h, x + sz * 0.6, y, x + sz * 0.1, y]); tri[2].push([x, y - h, x - sz * 0.17, y - h * 0.7, x + sz * 0.17, y - h * 0.7]);
   }
   ['#7C66CC', '#A08AE6', '#F2EEFF'].forEach((c, j) => { ctx.beginPath(); tri[j].forEach((q) => { ctx.moveTo(q[0], q[1]); ctx.lineTo(q[2], q[3]); ctx.lineTo(q[4], q[5]); }); ctx.fillStyle = c; ctx.fill(); });
+  });
   // ten million people; smallpox sweeps south ahead of the Spanish
   const pop = seg(p, 0.3, 0.345), front = lerp(10, -38, seg(p, 0.6, 0.655, ease.inOut));
   if (pop > 0) {
@@ -379,20 +405,20 @@ function mapEnv() {
       if (past > 0 && rand(i + 4000) < 0.5 * past) continue;
       (la > front ? sick : ok).push([x, y + Math.sin(t * 1.5 + i) * 1.2 * u]);
     }
-    if (front < 9.9) {
+    if (front < 9.9) lib.layer(ctx, 'Smallpox front', () => {
       const fy = P(front, 0)[1];
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, fy); ctx.clip(); path(EMP); ctx.fillStyle = 'rgba(16,10,34,0.5)'; ctx.fill(); ctx.restore();
       ctx.save(); ctx.beginPath(); ctx.rect(0, fy - 40 * u, W, 40 * u); ctx.clip(); path(EMP);
       const gl = ctx.createLinearGradient(0, fy - 40 * u, 0, fy); gl.addColorStop(0, 'rgba(170,220,120,0)'); gl.addColorStop(1, 'rgba(170,220,120,' + 0.6 * (1 - seg(p, 0.66, 0.68)) + ')');
       ctx.fillStyle = gl; ctx.fill(); ctx.restore();
-    }
+    });
     const dots = (L, c, a) => { ctx.save(); ctx.beginPath(); L.forEach(([x, y]) => { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }); ctx.fillStyle = c; ctx.globalAlpha *= a; ctx.fill(); ctx.restore(); };
-    dots(ok, '#FFF1D6', 0.95); dots(sick, '#B8DC8E', 0.8);
+    lib.layer(ctx, 'Population', () => { dots(ok, '#FFF1D6', 0.95); dots(sick, '#B8DC8E', 0.8); });
   }
-  sun(cx, cy, Math.min(14 * u * Math.sqrt(mz), 70 * u), 1 - dim * 1.4, mz > 3);
+  lib.layer(ctx, 'Cusco sun', () => sun(cx, cy, Math.min(14 * u * Math.sqrt(mz), 70 * u), 1 - dim * 1.4, mz > 3));
   // civil war: north against south
   const war = seg(p, 0.65, 0.668) * (1 - seg(p, 0.7, 0.712));
-  if (war > 0) {
+  if (war > 0) lib.layer(ctx, 'Civil war', () => {
     ctx.save(); ctx.globalAlpha *= war; ctx.beginPath();
     for (let i = 0; i <= 10; i++) { const [x, y] = P(-8.6 + (i % 2 ? 0.6 : -0.6), -81 + i * 0.8); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
     ctx.strokeStyle = '#FF4D5E'; ctx.lineWidth = 4 * u; ctx.lineJoin = 'round'; ctx.stroke();
@@ -400,26 +426,28 @@ function mapEnv() {
     lib.circle(ctx, qx, qy, 7 * u, { fill: MAG }); lib.circle(ctx, cx, cy, 7 * u, { fill: ORNG });
     lib.text(ctx, 'Atahualpa', qx + (tall ? 22 : -22) * u, qy, lbl); lib.text(ctx, 'Huáscar', cx + (tall ? 30 : -30) * u, cy + 44 * u, lbl);
     ctx.restore();
-  }
+  });
   // Pizarro's men: 170 dots
   const pk = seg(p, 0.69, 0.725, ease.inOut);
   if (pk > 0 && p < 0.75) {
     const L = [0]; for (let i = 1; i < PIZ.length; i++) L.push(L[i - 1] + Math.hypot(PIZ[i][0] - PIZ[i - 1][0], PIZ[i][1] - PIZ[i - 1][1]));
     let d = pk * L[L.length - 1], j = 1; while (j < L.length - 1 && L[j] < d) j++;
     const f = (d - L[j - 1]) / (L[j] - L[j - 1]), at = P(lerp(PIZ[j - 1][0], PIZ[j][0], f), lerp(PIZ[j - 1][1], PIZ[j][1], f));
+    lib.layer(ctx, 'Pizarro march', () => {
     ctx.save(); ctx.setLineDash([6 * u, 8 * u]); ctx.beginPath(); PIZ.slice(0, j).forEach(([la, lo], i) => { const [x, y] = P(la, lo); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.lineTo(at[0], at[1]);
     ctx.strokeStyle = '#D8DCE8'; ctx.lineWidth = 2.4 * u; ctx.globalAlpha *= 0.7; ctx.stroke(); ctx.restore();
     ctx.beginPath(); const rr = Math.max(1.2, 1.3 * u * Math.sqrt(mz));
     for (let i = 0; i < 170; i++) { const a = i * 2.39996, rd = rr * 2.4 * Math.sqrt(i); ctx.moveTo(at[0] + Math.cos(a) * rd + rr, at[1] + Math.sin(a) * rd); ctx.arc(at[0] + Math.cos(a) * rd, at[1] + Math.sin(a) * rd, rr, 0, TAU); }
     ctx.fillStyle = '#E6E9F2'; ctx.save(); ctx.globalAlpha *= 1 - seg(p, 0.722, 0.736); ctx.fill(); ctx.restore();
-    lib.text(ctx, '~170 men', at[0] - 64 * u * Math.sqrt(mz), at[1], { size: 28 * u, family: 'mono', weight: 700, color: '#E6E9F2', align: 'right', baseline: 'middle', alpha: seg(p, 0.692, 0.7) * (1 - seg(p, 0.724, 0.732)) });
+    });
+    lib.layer(ctx, '170 men label', () => lib.text(ctx, '~170 men', at[0] - 64 * u * Math.sqrt(mz), at[1], { size: 28 * u, family: 'mono', weight: 700, color: '#E6E9F2', align: 'right', baseline: 'middle', alpha: seg(p, 0.692, 0.7) * (1 - seg(p, 0.724, 0.732)) }));
   }
   const nk = seg(p, 0.315, 0.35, ease.out) * (1 - seg(p, 0.352, 0.36));
-  if (nk > 0) {
+  if (nk > 0) lib.layer(ctx, 'Population count', () => {
     const nx = wide ? M : tall ? W / 2 : W * 0.76, ny = tall ? H * 0.18 : H * (wide ? 0.4 : 0.3), na = wide ? 'left' : 'center';
     lib.text(ctx, lib.count(nk, 0, 10) + ' million+', nx, ny, { size: 92 * u, family: 'sans', weight: 800, color: GOLD, align: na, alpha: clamp(nk * 3) });
     lib.text(ctx, 'PEOPLE', nx + (wide ? 4 * u : 0), ny + 50 * u, { size: 26 * u, family: 'mono', weight: 700, color: WHITE, align: na, tracking: 0.14, alpha: clamp(nk * 3) });
-  }
+  });
 }
 function pip(la, lo) {
   let c = false;
@@ -431,12 +459,14 @@ function pip(la, lo) {
 function room() {
   const z = lib.keys(p, [[0.725, 1.25], [0.75, 1.02], [0.835, 1.09]], ease.inOut), fl = H * (tall ? 0.68 : 0.8), dark = seg(p, 0.784, 0.806, ease.inOut);
   lib.camera(ctx, { zoom: z }, () => {
+    lib.layer(ctx, 'Room wall', () => {
     ctx.fillStyle = '#4E3880'; ctx.fillRect(-W, -H, W * 3, H * 3);
     ctx.beginPath();
     for (let r = -1; r < 13; r++) { let x = -W * 0.2 + (r % 2) * 40 * u; const y = r * 64 * u; while (x < W * 1.2) { const w = (90 + 70 * rand(r * 31 + Math.floor(x))) * u; ctx.roundRect(x + 3 * u, y + 3 * u, w - 6 * u, 58 * u, 14 * u); x += w; } }
     ctx.fillStyle = '#5D4593'; ctx.fill();
+    });
     const nx = [0.2, 0.38, 0.62], nw = 70 * u, top = fl - 520 * u;
-    nx.forEach((f, i) => {
+    nx.forEach((f, i) => lib.layer(ctx, i === 1 ? 'Window' : 'Room wall', () => {
       const x = W * f, win = i === 1, w0 = win ? nw * 1.5 : nw;
       ctx.beginPath(); ctx.moveTo(x - w0, top + 250 * u); ctx.lineTo(x - w0 * 0.72, top); ctx.lineTo(x + w0 * 0.72, top); ctx.lineTo(x + w0, top + 250 * u); ctx.closePath();
       if (!win) { ctx.fillStyle = '#2E1F55'; ctx.fill(); return; }
@@ -445,17 +475,19 @@ function room() {
         ctx.fillStyle = g; ctx.fillRect(x - w0, top, w0 * 2, 250 * u);
         sun(x, top + lerp(95, 300, dark) * u, 40 * u, 1 - dark * 0.6, false);
       });
-    });
-    ctx.fillStyle = '#33255E'; ctx.fillRect(-W, fl, W * 3, H);
+    }));
+    lib.layer(ctx, 'Floor', () => { ctx.fillStyle = '#33255E'; ctx.fillRect(-W, fl, W * 3, H); });
     const wx = W * nx[1], gA = 1 - dark * 0.8;
+    lib.layer(ctx, 'Window light', () => {
     for (let i = 0; i < 4; i++) lib.circle(ctx, wx, top + 125 * u, (150 + i * 90) * u, { fill: 'rgba(255,190,110,' + 0.05 * gA + ')' });
     ctx.beginPath(); ctx.moveTo(wx - nw * 1.4, top + 250 * u); ctx.lineTo(wx + nw * 1.4, top + 250 * u); ctx.lineTo(wx + nw * 3.4, fl + 140 * u); ctx.lineTo(wx - nw * 0.6, fl + 140 * u);
     ctx.fillStyle = 'rgba(255,214,140,' + 0.1 * gA + ')'; ctx.fill();
+    });
     const reach = fl - 330 * u;
-    ctx.save(); ctx.setLineDash([18 * u, 12 * u]); ctx.strokeStyle = '#FF5A6A'; ctx.lineWidth = 4 * u; ctx.beginPath(); ctx.moveTo(W * 0.08, reach); ctx.lineTo(W * (tall ? 0.9 : 0.74), reach); ctx.stroke(); ctx.restore();
+    lib.layer(ctx, 'Ransom line', () => { ctx.save(); ctx.setLineDash([18 * u, 12 * u]); ctx.strokeStyle = '#FF5A6A'; ctx.lineWidth = 4 * u; ctx.beginPath(); ctx.moveTo(W * 0.08, reach); ctx.lineTo(W * (tall ? 0.9 : 0.74), reach); ctx.stroke(); ctx.restore(); });
     const hk = seg(p, 0.748, 0.778, ease.out), x0 = W * 0.1, x1 = W * (tall ? 0.88 : 0.72);
     const top2 = (x) => fl - hk * 320 * u * (0.86 + 0.14 * Math.sin((x - x0) / (90 * u))) * ss(Math.min((x - x0) / (120 * u), (x1 - x) / (120 * u)) + 0.15);
-    if (hk > 0) {
+    if (hk > 0) lib.layer(ctx, 'Gold and silver', () => {
       const g = ctx.createLinearGradient(0, reach, 0, fl); g.addColorStop(0, '#FFD35C'); g.addColorStop(1, '#D9801E');
       ctx.beginPath(); ctx.moveTo(x0, fl); for (let x = x0; x <= x1; x += 12 * u) ctx.lineTo(x, top2(x)); ctx.lineTo(x1, fl); ctx.fillStyle = g; ctx.fill();
       for (let i = 0; i < 46; i++) {
@@ -465,10 +497,10 @@ function room() {
       ctx.fillStyle = '#FFF6D6'; ctx.beginPath();
       for (let i = 0; i < 9; i++) { const x = lerp(x0, x1, rand(i + 300)), y = top2(x) + 10 * u, s = 14 * u * Math.max(0, Math.sin(t * 3 + i * 2)); ctx.moveTo(x, y - s); ctx.lineTo(x + s * 0.25, y); ctx.lineTo(x, y + s); ctx.lineTo(x - s * 0.25, y); ctx.moveTo(x - s, y); ctx.lineTo(x, y - s * 0.25); ctx.lineTo(x + s, y); ctx.lineTo(x, y + s * 0.25); }
       ctx.fill();
-    }
+    });
     const aA = 1 - seg(p, 0.786, 0.8);
-    if (aA > 0 && !tall) { ctx.save(); ctx.globalAlpha *= aA; person(W * 0.85, fl + 8 * u, (wide ? 3.6 : 2.8) * u, { tunic: '#B23A5A', c1: GOLD, c2: INK, royal: 1, seed: 8, dir: -1 }); ctx.restore(); }
-    ctx.fillStyle = 'rgba(10,6,30,' + dark * 0.5 + ')'; ctx.fillRect(-W, -H, W * 3, H * 3);
+    if (aA > 0 && !tall) lib.layer(ctx, 'Atahualpa', () => { ctx.save(); ctx.globalAlpha *= aA; person(W * 0.85, fl + 8 * u, (wide ? 3.6 : 2.8) * u, { tunic: '#B23A5A', c1: GOLD, c2: INK, royal: 1, seed: 8, dir: -1 }); ctx.restore(); });
+    if (dark > 0) lib.layer(ctx, 'Dusk', () => { ctx.fillStyle = 'rgba(10,6,30,' + dark * 0.5 + ')'; ctx.fillRect(-W, -H, W * 3, H * 3); });
   });
 }
 
@@ -482,9 +514,11 @@ for (const [a, b, A, B] of XF) {
   else break;
 }
 if (!mixed) cur();
-const vg = ctx.createLinearGradient(0, tall ? 0 : H * 0.55, 0, tall ? H * 0.42 : H);
-vg.addColorStop(tall ? 1 : 0, 'rgba(10,6,36,0)'); vg.addColorStop(tall ? 0 : 1, 'rgba(10,6,36,0.6)');
-ctx.fillStyle = vg; ctx.fillRect(0, tall ? 0 : H * 0.55, W, H * (tall ? 0.42 : 0.45));
+lib.layer(ctx, 'Vignette', () => {
+  const vg = ctx.createLinearGradient(0, tall ? 0 : H * 0.55, 0, tall ? H * 0.42 : H);
+  vg.addColorStop(tall ? 1 : 0, 'rgba(10,6,36,0)'); vg.addColorStop(tall ? 0 : 1, 'rgba(10,6,36,0.6)');
+  ctx.fillStyle = vg; ctx.fillRect(0, tall ? 0 : H * 0.55, W, H * (tall ? 0.42 : 0.45));
+});
 
 // ── Copy ──
 function cap(a, b, chip, str, o) {
@@ -504,26 +538,26 @@ function cap(a, b, chip, str, o) {
 }
 { // title
   const ki = seg(p, 0.006, 0.026), ko = seg(p, 0.064, 0.074, ease.in), ty = tall ? M + 150 * u : H * 0.3;
-  if (ki > 0 && ko < 1) {
+  if (ki > 0 && ko < 1) lib.layer(ctx, 'Title', () => {
     lib.words(ctx, 'The Inca,', M, ty - 26 * u * ko, ki, { size: (tall ? 130 : 150) * u, family: 'sans', weight: 800, color: WHITE, alpha: 1 - ko, stagger: 0.3 });
     lib.words(ctx, 'in one minute', M + 4 * u, ty + 82 * u - 26 * u * ko, seg(p, 0.016, 0.036), { size: 62 * u, family: 'sans', weight: 600, color: '#FFD35C', alpha: 1 - ko });
-  }
+  });
 }
-cap(0.078, 0.142, 'LEGEND', 'Manco Cápac, the first Inca, rose from Lake Titicaca');
-cap(0.148, 0.2, 'c. 1200s', 'A small kingdom in the Cusco valley');
-cap(0.214, 0.263, '1438', 'Pachacuti turns it into an empire');
-cap(0.267, 0.31, 0, 'Tawantinsuyu: “the four parts together”');
-cap(0.314, 0.36, 'c. 1500', 'The largest empire in the Americas');
-cap(0.38, 0.44, 0, 'The Qhapaq Ñan: ~40,000 km of roads and rope bridges');
-cap(0.448, 0.5, 'c. 1450', 'Machu Picchu, a royal estate in the clouds');
-cap(0.512, 0.548, 0, 'No writing: records were knotted into quipu cords');
-cap(0.552, 0.59, 0, 'Mit’a labour filled the qullqa storehouses');
-cap(0.604, 0.646, '1520s', 'Smallpox arrives before the Spanish do');
-cap(0.65, 0.69, 0, 'Emperor Huayna Cápac dies. His sons go to war');
-cap(0.694, 0.74, '1532', 'Pizarro and ~170 men seize Atahualpa');
-cap(0.75, 0.784, 'CAJAMARCA', 'A room filled with gold and silver for his ransom');
-cap(0.788, 0.83, '1533', 'Atahualpa is executed anyway');
-cap(0.842, 0.895, '1537–1572', 'Resistance holds out in Vilcabamba', { sub: 'until Túpac Amaru, the last Inca ruler, is captured' });
-cap(0.9, 1.01, 0, 'Quechua is still spoken by millions today.', { size: 64 });
+lib.layer(ctx, 'Caption: Manco Cápac', () => cap(0.078, 0.142, 'LEGEND', 'Manco Cápac, the first Inca, rose from Lake Titicaca'));
+lib.layer(ctx, 'Caption: Cusco valley', () => cap(0.148, 0.2, 'c. 1200s', 'A small kingdom in the Cusco valley'));
+lib.layer(ctx, 'Caption: Pachacuti', () => cap(0.214, 0.263, '1438', 'Pachacuti turns it into an empire'));
+lib.layer(ctx, 'Caption: Tawantinsuyu', () => cap(0.267, 0.31, 0, 'Tawantinsuyu: “the four parts together”'));
+lib.layer(ctx, 'Caption: Largest empire', () => cap(0.314, 0.36, 'c. 1500', 'The largest empire in the Americas'));
+lib.layer(ctx, 'Caption: Qhapaq Ñan', () => cap(0.38, 0.44, 0, 'The Qhapaq Ñan: ~40,000 km of roads and rope bridges'));
+lib.layer(ctx, 'Caption: Machu Picchu', () => cap(0.448, 0.5, 'c. 1450', 'Machu Picchu, a royal estate in the clouds'));
+lib.layer(ctx, 'Caption: Quipu', () => cap(0.512, 0.548, 0, 'No writing: records were knotted into quipu cords'));
+lib.layer(ctx, 'Caption: Storehouses', () => cap(0.552, 0.59, 0, 'Mit’a labour filled the qullqa storehouses'));
+lib.layer(ctx, 'Caption: Smallpox', () => cap(0.604, 0.646, '1520s', 'Smallpox arrives before the Spanish do'));
+lib.layer(ctx, 'Caption: Civil war', () => cap(0.65, 0.69, 0, 'Emperor Huayna Cápac dies. His sons go to war'));
+lib.layer(ctx, 'Caption: Pizarro', () => cap(0.694, 0.74, '1532', 'Pizarro and ~170 men seize Atahualpa'));
+lib.layer(ctx, 'Caption: Ransom', () => cap(0.75, 0.784, 'CAJAMARCA', 'A room filled with gold and silver for his ransom'));
+lib.layer(ctx, 'Caption: Execution', () => cap(0.788, 0.83, '1533', 'Atahualpa is executed anyway'));
+lib.layer(ctx, 'Caption: Vilcabamba', () => cap(0.842, 0.895, '1537–1572', 'Resistance holds out in Vilcabamba', { sub: 'until Túpac Amaru, the last Inca ruler, is captured' }));
+lib.layer(ctx, 'Caption: Quechua today', () => cap(0.9, 1.01, 0, 'Quechua is still spoken by millions today.', { size: 64 }));
 `,
 };

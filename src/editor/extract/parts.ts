@@ -65,6 +65,34 @@ export type PartsOptions = {
   pivots?: Map<string, [number, number]>;
 };
 
+// A layer's fade, held through whatever its code does to alpha: an alpha the code sets outright
+// (ctx.globalAlpha = k, where `*=` would have kept the fade) is still multiplied by the layer's, and
+// the code reads back the alpha it set. Returns what lets go of it (before the state is restored).
+// On a canvas whose alpha can't be watched (or already is), the fade is applied once, on entry.
+function holdAlpha(ctx: CanvasRenderingContext2D, k: number): () => void {
+  let acc: PropertyDescriptor | undefined;
+  for (let p = Object.getPrototypeOf(ctx); p && !acc?.set; p = Object.getPrototypeOf(p)) acc = Object.getOwnPropertyDescriptor(p, "globalAlpha");
+  if (!acc?.get || !acc.set || Object.getOwnPropertyDescriptor(ctx, "globalAlpha")) {
+    ctx.globalAlpha *= k;
+    return () => {};
+  }
+  const get = () => acc!.get!.call(ctx) as number, set = (v: number) => acc!.set!.call(ctx, v);
+  let inner = get();
+  set(inner * k);
+  Object.defineProperty(ctx, "globalAlpha", {
+    configurable: true,
+    enumerable: true,
+    // (Read from the canvas, so an alpha the code's own save/restore brought back is the one it sees.)
+    get: () => (k > 0 ? Math.min(1, get() / k) : inner),
+    set: (v: unknown) => {
+      if (typeof v !== "number" || !(v >= 0 && v <= 1)) return;
+      inner = v;
+      set(v * k);
+    },
+  });
+  return () => void delete (ctx as { globalAlpha?: number }).globalAlpha;
+}
+
 // The kit with lib.layer acting on parts. Install where the scene starts; call `restored` after any
 // ctx.restore() the scene makes when tracking (renderDoc's balanced() does), then `restore` at the end.
 export function tapParts(ctx: CanvasRenderingContext2D, kit: Kit, opts: PartsOptions = {}) {
@@ -177,6 +205,7 @@ export function tapParts(ctx: CanvasRenderingContext2D, kit: Kit, opts: PartsOpt
       order.push(key);
     }
     ctx.save();
+    let release: (() => void) | null = null;
     try {
       if (st) {
         if (!identity(st)) {
@@ -194,7 +223,7 @@ export function tapParts(ctx: CanvasRenderingContext2D, kit: Kit, opts: PartsOpt
           }
           M = null;
         }
-        if (st.opacity !== 1) ctx.globalAlpha *= Math.min(1, Math.max(0, st.opacity));
+        if (st.opacity !== 1) release = holdAlpha(ctx, Math.min(1, Math.max(0, st.opacity)));
         if (st.blend && st.blend !== "normal") ctx.globalCompositeOperation = (st.blend === "add" ? "lighter" : st.blend) as GlobalCompositeOperation;
       }
       const outerPath = path;
@@ -207,6 +236,7 @@ export function tapParts(ctx: CanvasRenderingContext2D, kit: Kit, opts: PartsOpt
         path = outerPath;
       }
     } finally {
+      release?.();
       ctx.restore();
       M = null;
     }

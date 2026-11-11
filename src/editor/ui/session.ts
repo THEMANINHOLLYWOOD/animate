@@ -142,32 +142,27 @@ export type Picked = {
   // Edits from this browser that never reached the film: made on the film as it is now ("same"), or on
   // a version of it the Studio (or another tab) has changed since ("conflict").
   restored: null | "same" | "conflict";
-  // From the earlier editor's copy (localStorage), not this one's.
-  fromLegacy: boolean;
   // A kept split of this very version: no need to split again.
   cached: boolean;
   // What's kept is no use any more.
   dropSaved: boolean;
-  dropLegacy: boolean;
 };
 
 // Which doc opens. Edits that never reached the film open (they'd be lost otherwise), flagged when the
 // film changed since they were made; edits identical to the film are no edits. Else the film's own doc,
 // or its kept split while that was made from this version. `sources` are the versions the film as stored
-// is known by (its version now, and the fingerprint earlier editors kept); `legacy` is a doc the earlier
-// editor kept that isn't set aside.
-export function pickDoc(o: { film: Doc; sources: string[]; saved?: SavedRec; legacy?: Doc | null; splitVersion: number; parse: (u: unknown) => Doc | null }): Picked {
+// is known by (its version now, and the fingerprint earlier editors kept).
+export function pickDoc(o: { film: Doc; sources: string[]; saved?: SavedRec; splitVersion: number; parse: (u: unknown) => Doc | null }): Picked {
   const json = JSON.stringify(o.film);
   const same = (d: Doc) => JSON.stringify(d) === json;
   const known = (src: string) => o.sources.includes(src);
   const kept = o.saved ? o.parse(o.saved.doc) : null;
-  const base = { restored: null, fromLegacy: false, cached: false, dropSaved: false, dropLegacy: false } as const;
+  const base = { restored: null, cached: false, dropSaved: false } as const;
   if (o.saved?.edited && kept) {
-    if (!same(kept)) return { ...base, doc: kept, restored: known(o.saved.source) ? "same" : "conflict", dropLegacy: !!o.legacy };
-    return { ...base, doc: o.film, dropSaved: true, dropLegacy: !!o.legacy };
+    if (!same(kept)) return { ...base, doc: kept, restored: known(o.saved.source) ? "same" : "conflict" };
+    return { ...base, doc: o.film, dropSaved: true };
   }
   const dropSaved = !!o.saved && (!kept || o.saved.edited || o.saved.v !== o.splitVersion || !known(o.saved.source));
-  if (o.legacy && !same(o.legacy)) return { ...base, doc: o.legacy, restored: "conflict", fromLegacy: true, dropSaved };
-  if (kept && !dropSaved) return { ...base, doc: kept, cached: true, dropLegacy: !!o.legacy };
-  return { ...base, doc: o.film, dropSaved, dropLegacy: !!o.legacy };
+  if (kept && !dropSaved) return { ...base, doc: kept, cached: true };
+  return { ...base, doc: o.film, dropSaved };
 }

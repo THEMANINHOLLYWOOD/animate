@@ -10,6 +10,7 @@ import {
   removeKeyframes,
   removeLayers,
   renameLayer,
+  restorePart,
   retime,
   setProp,
   setText,
@@ -241,5 +242,36 @@ describe("reading split text", () => {
   it("resolves a recorded track like any other", () => {
     const d = film([text("a", {}, { start: 1, anim: { "transform.x": [key(0, 0), key(1, 10)] } })]);
     expect(propAt(get(d, "a"), "transform.x", 1.5)).toBe(5);
+  });
+});
+
+describe("a deleted object", () => {
+  const withPart = () =>
+    Doc.parse({
+      meta: { id: "f", title: "F", size: { w: 1920, h: 1080 }, fps: 30, duration: 10 },
+      layers: [
+        { id: "code", name: "Scene", type: "code", start: 1, end: 9, props: { code: "x", partsKey: "k" } },
+        { id: "sun", name: "Sun", type: "part", start: 2, end: 6, props: { partOf: "code", part: "Sun", found: [2, 6] } },
+      ],
+    });
+
+  it("is remembered by its code layer, and comes back when restored", () => {
+    const s = createEditorStore(withPart());
+    s.getState().apply(removeLayers(["sun"]), "Delete");
+    expect(s.getState().doc.layers.map((l) => l.id)).toEqual(["code"]);
+    expect(s.getState().doc.layers[0].props.dropParts).toEqual(["Sun"]);
+    s.getState().apply(restorePart("code", "Sun"), "Restore");
+    const [code, sun] = s.getState().doc.layers;
+    expect(code.props.dropParts).toBeUndefined();
+    // Looked at again, the code says when the object shows.
+    expect(code.props.partsKey).toBeUndefined();
+    expect(sun).toMatchObject({ type: "part", name: "Sun", start: 1, end: 9, props: { partOf: "code", part: "Sun" } });
+  });
+
+  it("is left alone when it was never deleted", () => {
+    const d = withPart();
+    const s = createEditorStore(d);
+    s.getState().apply(restorePart("code", "Moon"), "Restore");
+    expect(s.getState().doc).toBe(d);
   });
 });

@@ -6,6 +6,7 @@ import { CLERK_ENABLED, LOCAL_USER } from "./authMode";
 //   assets/<projectId>/<name>   images drawn in a film
 //   videos/<projectId>/<ts>.mp4 exported renders
 //   audio/<projectId>/<clip>    a film's sound clips
+//   fonts/<projectId>/<file>    typefaces dropped with a film's brief
 
 export const userRoot = (userId: string) => `users/${userId}/`;
 

@@ -122,7 +122,7 @@ describe("pickDoc: what opens", () => {
     return r.success ? r.data : null;
   };
   const rec = (doc: Doc, edited: boolean, source: string, v = 2): SavedRec => ({ v, doc, edited, source });
-  const pick = (saved?: SavedRec, legacy?: Doc | null) => pickDoc({ film: filmDoc, sources: ["v1", "legacy"], saved, legacy, splitVersion: 2, parse });
+  const pick = (saved?: SavedRec) => pickDoc({ film: filmDoc, sources: ["v1", "legacy"], saved, splitVersion: 2, parse });
 
   it("opens the film when nothing is kept", () => {
     expect(pick()).toMatchObject({ doc: filmDoc, restored: null, cached: false, dropSaved: false });
@@ -142,11 +142,6 @@ describe("pickDoc: what opens", () => {
     expect(pick(rec(edited, false, "v1"))).toMatchObject({ doc: edited, cached: true, dropSaved: false });
     expect(pick(rec(edited, false, "v0"))).toMatchObject({ doc: filmDoc, cached: false, dropSaved: true });
     expect(pick(rec(edited, false, "v1", 1))).toMatchObject({ doc: filmDoc, cached: false, dropSaved: true });
-  });
-
-  it("offers the earlier editor's edits without saving them over the film unasked", () => {
-    expect(pick(undefined, edited)).toMatchObject({ doc: edited, restored: "conflict", fromLegacy: true });
-    expect(pick(undefined, filmDoc)).toMatchObject({ doc: filmDoc, restored: null, dropLegacy: true });
   });
 
   it("ignores a kept record it can't read", () => {

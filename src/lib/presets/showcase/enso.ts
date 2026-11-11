@@ -26,7 +26,7 @@ const { cx, cy, R } = L;
 const W0 = R * 0.2; // brush body width
 
 // ── Paper: fibres + speckle (static, deterministic) ────────────
-ctx.save();
+lib.layer(ctx, 'Paper', () => {
 const vg = ctx.createRadialGradient(W / 2, H / 2, sm * 0.45, W / 2, H / 2, Math.max(W, H) * 0.85);
 vg.addColorStop(0, 'rgba(255,250,238,0)');
 vg.addColorStop(1, 'rgba(150,120,80,0.13)');
@@ -50,7 +50,7 @@ for (let pass = 0; pass < 2; pass++) {
   }
   ctx.stroke();
 }
-ctx.restore();
+});
 
 // ── Camera: an almost imperceptible breath ─────────────────────
 const zoom = 1 + 0.03 * S(p) + 0.004 * Math.sin(t * 0.5);
@@ -68,8 +68,7 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
   }
   const hi = Math.floor(head * N);
 
-  if (hi > 1) {
-    ctx.save();
+  if (hi > 1) lib.layer(ctx, 'Ensō', () => {
     ctx.lineCap = 'round'; ctx.lineJoin = 'miter';
     // wet grey wash halo (only the wet first part of the stroke)
     ctx.strokeStyle = WASH;
@@ -108,14 +107,12 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
       }
       ctx.stroke();
     }
-    ctx.restore();
-  }
+  });
 
   // ink bleed / feathering where the brush first touched
   const kb = S(seg(p, 0.075, 0.3));
-  if (kb > 0) {
+  if (kb > 0) lib.layer(ctx, 'Ensō', () => {
     const b = pts[3];
-    ctx.save();
     const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, W0 * 1.25 * kb + 1);
     g.addColorStop(0, 'rgba(40,36,30,0.35)'); g.addColorStop(0.6, 'rgba(70,66,58,0.16)'); g.addColorStop(1, 'rgba(90,86,78,0)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.x, b.y, W0 * 1.25 * kb + 1, 0, 6.29); ctx.fill();
@@ -151,25 +148,24 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
       ctx.arc(b.x + Math.cos(a) * d, b.y + Math.sin(a) * d, (0.8 + 2.2 * rand(i + 720)) * u * kb, 0, 6.29);
     }
     ctx.fill();
-    ctx.restore();
-  }
+  });
 
   // ── A single drop of ink, then rings ──────────────────────────
   const fall = seg(p, 0.425, 0.465);
-  if (fall > 0 && fall < 1) {
+  if (fall > 0 && fall < 1) lib.layer(ctx, 'Ink drop', () => {
     const dy = lerp(-H * 0.12 - cy, 0, ease.in(fall));
-    ctx.save(); ctx.fillStyle = INK; ctx.globalAlpha = 0.92;
+    ctx.fillStyle = INK; ctx.globalAlpha = 0.92;
     ctx.beginPath(); ctx.ellipse(cx, cy + dy, 5 * u, (7 + 9 * fall) * u, 0, 0, 6.29); ctx.fill();
-    ctx.restore();
-  }
+  });
   const imp = seg(p, 0.465, 0.62);
-  if (imp > 0) {
-    ctx.save();
+  if (imp > 0) lib.layer(ctx, 'Ink drop', () => {
     const dr = 8.5 * u * oSine(imp * 2.5);
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, dr * 2.4);
     g.addColorStop(0, 'rgba(21,19,15,0.95)'); g.addColorStop(0.38, 'rgba(21,19,15,0.9)');
     g.addColorStop(0.45, 'rgba(70,66,58,0.3)'); g.addColorStop(1, 'rgba(90,86,78,0)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, dr * 2.4, 0, 6.29); ctx.fill();
+  });
+  if (imp > 0) lib.layer(ctx, 'Ripples', () => {
     ctx.strokeStyle = '#3b3730'; ctx.lineCap = 'round';
     for (let i = 0; i < 5; i++) {
       const k = seg(p, 0.465 + i * 0.03, 0.465 + i * 0.03 + 0.2);
@@ -178,12 +174,11 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
       ctx.lineWidth = (2.2 - k * 1.4) * u;
       ctx.beginPath(); ctx.arc(cx, cy, R * (0.08 + 0.62 * oSine(k)), 0, 6.29); ctx.stroke();
     }
-    ctx.restore();
-  }
+  });
 
   // ── Mist, drifting low and slow ───────────────────────────────
   const mA = 0.35 + 0.65 * S(seg(p, 0.3, 0.55)) - 0.35 * S(seg(p, 0.85, 1));
-  ctx.save();
+  lib.layer(ctx, 'Mist', () => {
   for (let i = 0; i < 4; i++) {
     const span = W * 1.6;
     const x = ((rand(i + 900) * span + t * (10 + 7 * i) * u) % span) - W * 0.3;
@@ -195,7 +190,7 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, rx, 0, 6.29); ctx.fill();
     ctx.restore();
   }
-  ctx.restore();
+  });
 
   // ── The seal: pressed in, beside the circle ───────────────────
   const sk = seg(p, 0.86, 0.905);
@@ -206,7 +201,7 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
     const press = seg(sk, 0.5, 1);
     const sq = Math.sin(press * Math.PI) * (1 - press * 0.4);
     const sc = lerp(1.22, 1, down);
-    ctx.save();
+    lib.layer(ctx, 'Seal', () => {
     ctx.translate(sx, sy);
     // shadow of the lifted stamp, shrinking as it descends
     if (down < 1) {
@@ -234,7 +229,7 @@ lib.camera(ctx, { zoom, y: -6 * u * S(p), cx, cy }, () => {
       ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 6.29);
     }
     ctx.globalAlpha *= 0.75; ctx.fill();
-    ctx.restore();
+    });
   }
 });
 
@@ -244,10 +239,10 @@ const lh = L.ps * 1.75;
 POEM.forEach((line, i) => {
   const k = seg(p, 0.5 + i * 0.105, 0.5 + i * 0.105 + 0.13);
   if (k <= 0) return;
-  lib.words(ctx, line, L.px + i * L.ps * 0.9, L.py + i * lh, k, {
+  lib.layer(ctx, 'Poem line ' + (i + 1), () => lib.words(ctx, line, L.px + i * L.ps * 0.9, L.py + i * lh, k, {
     size: L.ps, family: 'serif', italic: true, weight: 400, color: '#2c2823', alpha: 0.88,
     stagger: 0.7, rise: 3 * u, ease: S, blur: 4 * u, tracking: 0.01, maxWidth: L.pw,
-  });
+  }));
 });
 `,
 };

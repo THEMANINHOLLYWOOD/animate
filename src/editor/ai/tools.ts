@@ -12,6 +12,7 @@ import {
   removeLayers,
   renameLayer,
   reorderLayer,
+  restorePart,
   retime,
   setEase,
   setLayerFlags,
@@ -131,6 +132,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   ),
   tool("delete_layers", "Delete layers (and children of groups; deleting a code layer deletes its split text).", { layer_ids: { type: "array", items: { type: "string" } } }),
+  tool("restore_object", "Bring back an object that was deleted from a code layer's film (the code layer lists them as removed objects).", { layer_id: { type: "string" }, name: { type: "string" } }),
   tool("rename_layer", "Rename a layer. A layer named by its words keeps the new name from then on.", { layer_id: { type: "string" }, name: { type: "string" } }),
   tool("unlink_layer", "Take a text layer out of its link, so its words, size and face stop changing with its linked copies.", { layer_id: { type: "string" } }),
   tool("set_layer_flags", "Show/hide or lock/unlock a layer. Pass null to leave a flag unchanged.", {
@@ -201,7 +203,9 @@ export function summarizeDoc(doc: Doc, time: number) {
             .map((d) => `${d.name} (${d.kind}${d.kind === "number" ? ` ${d.min}..${d.max}` : d.kind === "select" ? ` ${d.options.join("/")}` : ""}) = ${short(JSON.stringify(round(controlValue(d, propAt(l, controlPath(d.name), time)))), 40)}`)
             .join("; ")}`,
         );
-      if (n) notes.push(`${n} split text layer${n === 1 ? "" : "s"}${splitLive(withKeyedControls(l.props, l.anim)) ? "" : ", stood down (code changed since the split)"}`);
+      const gone = Array.isArray(l.props.dropParts) ? (l.props.dropParts as unknown[]).map(String) : [];
+      if (gone.length) notes.push(`removed objects: ${gone.join(", ")} (restore_object brings one back)`);
+      if (n) notes.push(`${n} split text layer${n === 1 ? "" : "s"}${splitLive(withKeyedControls(l.props, l.anim)) ? "" : ", stood down (the code, or a control that shapes its text, changed since the split)"}`);
     }
     const owner = splitOwner(doc, l);
     if (owner) notes.push(`split text of ${owner.id}${isStoodDown(doc, l) ? " (stood down)" : ""}`);
@@ -266,8 +270,6 @@ function layerJson(doc: Doc, l: Layer, time: number) {
     transform: round(l.transform, 3),
     props,
     anim: Object.fromEntries(Object.entries(l.anim).map(([path, keys]) => [path, trackJson(l, keys)])),
-    effects: l.effects,
-    ...(l.mask ? { mask: l.mask } : {}),
     ...(status ? { split: { from: l.props.splitFrom, status } } : {}),
     ...(linked.length ? { linkedWith: linked } : {}),
     ...(l.type === "code" ? { splitText: splitChildren(doc, l.id).map((x) => x.id) } : {}),
@@ -295,7 +297,7 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
     return { doc: next, result, label, ...(created.length ? { created } : {}) };
   };
   // Edits to text that has stood down don't show until its text is split again: say so.
-  const shows = (l: Layer, result = "ok") => (isStoodDown(doc, l) ? `${result}. Note: this split text has stood down (its code changed), so the change won't show until the text is split again.` : result);
+  const shows = (l: Layer, result = "ok") => (isStoodDown(doc, l) ? `${result}. Note: this split text has stood down (its code, or a control that shapes its text, changed), so the change won't show until the text is split again.` : result);
 
   try {
     switch (name) {
@@ -330,7 +332,7 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
         const after = next.layers.find((x) => x.id === l.id);
         const text = splitChildren(next, l.id).length;
         if (l.type === "code" && text && splitLive(withKeyedControls(l.props, l.anim)) && after && !splitLive(withKeyedControls(after.props, after.anim)))
-          return ok(next, `Set ${l.name} · ${input.path}`, `ok. The code changed, so its ${text} split text layer${text === 1 ? "" : "s"} stood down: the code paints all its words again, and they show once the user splits the text again in the editor.`);
+          return ok(next, `Set ${l.name} · ${input.path}`, `ok. That changes what the code draws as text, so its ${text} split text layer${text === 1 ? "" : "s"} stood down: the code paints all its words again, and they show once the user splits the text again in the editor.`);
         return ok(next, `Set ${l.name} · ${input.path}`, shows(l));
       }
       case "set_text": {
@@ -402,6 +404,12 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
       case "delete_layers": {
         const ids = (input.layer_ids as string[]).map((id) => layer(id).id);
         return ok(apply(removeLayers(ids)), `Deleted ${ids.length} layer${ids.length === 1 ? "" : "s"}`);
+      }
+      case "restore_object": {
+        const l = layer(input.layer_id);
+        const next = apply(restorePart(l.id, String(input.name)));
+        if (next === doc) throw new Error(`${l.name} has no removed object named "${input.name}".`);
+        return ok(next, `Restored ${input.name}`);
       }
       case "rename_layer": {
         const l = layer(input.layer_id);

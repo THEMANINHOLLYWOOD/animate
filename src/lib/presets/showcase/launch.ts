@@ -37,7 +37,7 @@ const dyA = -scrAt(t) * H * 1.05, dyB = (1 - scrAt(t)) * H * 1.05;   // station 
 const STATUS_Y = HY + HS + 54 * u;
 
 // ── cursor: one hand, sprung between targets ──
-const CK = [[0, [W + 90 * u, H * 0.92]], [ts(2.6), L0(-264, -6)], [ts(3.5), L0(200, 168)], [ts(4.3), L0(330, 330)],
+const CK = [[0, [W + 90 * u, H * 0.92]], [ts(2.6), L0(-264, -6)], [ts(3.5), L0(394, 66)], [ts(4.3), L0(330, 330)],
   [ts(9.35), L1(470, 330)], [ts(9.6), L1(-372, 236)], [ts(10.6), L1(-150, 440)],
   [ts(14.2), [W + 90 * u, SY + 220 * u]], [ts(14.65), L1(150, 70)], [ts(15.75), L1(330, 300)],
   [ts(22.4), L1(560, 430)], [ts(22.75), L1(385, 262)], [ts(23.7), L1(470, 380)]];
@@ -67,6 +67,7 @@ const TTL = F(96, 'serif', IV, { align: 'center', tracking: -0.02 }), HZ = 392, 
 function film(X, Y, f) {
   const sky = mix(INK, NAVY, bk[0]), gw = 960 * ease.inOut(rs[1]);
   ctx.save(); ctx.translate(X, Y); ctx.scale(f, f);
+  lib.layer(ctx, 'Film', () => {
   lib.mask(ctx, (c) => c.roundRect(0, 0, 960, 540, 10), () => {
     if (rs[0] > 0) { R(0, 0, 960 * ease.inOut(rs[0]), 540, 0, { fill: INK }); if (bk[0] > 0) lib.circle(ctx, 190, 130, 1150 * ease.inOut(bk[0]), { fill: NAVY }); }
     if (rs[2] > 0) {
@@ -107,6 +108,8 @@ function film(X, Y, f) {
     });
     TX('R 136', 632, 272, F(14, 'mono', CLAY, { alpha: ha }));
   }
+  });
+  lib.layer(ctx, 'Film title', () => {
   const tw = mw('Hello, world.', TTL), bx = 480 - tw / 2 - 22, ta = wk[3] * (1 - rs[3]);
   if (ta > 0) {
     ctx.save(); ctx.setLineDash([6, 6]);
@@ -123,6 +126,7 @@ function film(X, Y, f) {
     [[0, 0], [0.5, 0], [1, 0], [0, 0.5], [1, 0.5], [0, 1], [0.5, 1], [1, 1]].forEach((q) => R(sx + q[0] * w2 - 6, sy + q[1] * h2 - 6, 12, 12, 2, { fill: WH, stroke: CLAY, lineWidth: 2 }));
     ctx.restore();
   }
+  });
   ctx.restore();
 }
 
@@ -246,22 +250,29 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     const fcy = lib.track(t, [[0, -48], [ts(4.15), -150], [ts(10.95), 40]], 120, 22);
     const fw = lerp(860, 960, m), fh = lerp(296, 540, m), drag = S(2.95, 3.15) * (1 - S(3.25, 3.5));
     ctx.save(); ctx.globalAlpha *= ca; ctx.translate(0, fcy); ctx.scale(cs, cs); ctx.translate(0, -fcy);
+    lib.layer(ctx, 'Composer frame', () => {
     shadow(-fw / 2, fcy - fh / 2, fw, fh, lerp(30, 10, m), 1);
     R(-fw / 2, fcy - fh / 2, fw, fh, lerp(30, 10, m), { fill: WH, stroke: mix(LS, CLAY, drag), lineWidth: 1.5 + drag });
     if (drag > 0) R(-fw / 2 - 7, fcy - fh / 2 - 7, fw + 14, fh + 14, 36, { stroke: CLAY, lineWidth: 6, alpha: 0.14 * drag });
+    });
     if (s > 4.9) film(-fw / 2, fcy - fh / 2, fw / 960);
-    // composer chrome: attached file, add-files bar, Animate button
+    // composer chrome, as in the app: one box with add-files (+), length, format and style, and a round send button
     const cOut = S(4.1, 4.3, ease.in);
     if (cOut < 1) {
       ctx.save(); ctx.globalAlpha *= 1 - cOut;
-      ctx.strokeStyle = SL; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(-398, 66); ctx.lineTo(-378, 66); ctx.moveTo(-388, 56); ctx.lineTo(-388, 76); ctx.stroke();
-      TX('Add, drop or paste files', -362, 75, F(26, 'sans', SL));
-      const bp = press(4.0), bo = S(4.2, 4.5, ease.in);
-      ctx.save(); ctx.globalAlpha *= 1 - bo; ctx.translate(0, 164 + bo * 40); ctx.scale(1 - 0.015 * bp, 1 - 0.015 * bp);
-      R(-430, -42, 860, 84, 22, { fill: mix(INK, '#2A2A28', bp) }); TX('Animate', 0, 10, F(30, 'sans', IV, { align: 'center', weight: 500 }));
+      lib.layer(ctx, 'Composer controls', () => {
+      lib.circle(ctx, -392, 62, 22, { stroke: LS, lineWidth: 1.5 });
+      ctx.strokeStyle = SL; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(-402, 62); ctx.lineTo(-382, 62); ctx.moveTo(-392, 52); ctx.lineTo(-392, 72); ctx.stroke();
+      let px = -354;
+      ['20s', '16:9', 'Style'].forEach((lb) => { const pw = mw(lb, F(21, 'sans', SL)) + 36; R(px, 42, pw, 40, 20, { fill: PAPER }); TX(lb, px + pw / 2, 69, F(21, 'sans', SL, { align: 'center' })); px += pw + 10; });
+      const bp = press(4.0);
+      ctx.save(); ctx.translate(392, 62); ctx.scale(1 - 0.08 * bp, 1 - 0.08 * bp);
+      lib.circle(ctx, 0, 0, 25, { fill: mix(INK, '#2A2A28', bp) });
+      ctx.strokeStyle = IV; ctx.lineWidth = 2.8; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(0, 10); ctx.lineTo(0, -10); ctx.moveTo(-8, -2); ctx.lineTo(0, -10); ctx.lineTo(8, -2); ctx.stroke();
       ctx.restore();
+      });
       // the file chip: dragged in by the cursor, then settles into the composer
-      if (s > 2.6) {
+      if (s > 2.6) lib.layer(ctx, 'File chip', () => {
         const rel = 3.25, slot = [-394, -38];
         let q, rot = -4;
         if (s < rel) { const c = toLocal(cur, 0); q = [c[0] - 130, c[1] - 32]; }
@@ -273,28 +284,30 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
         TX('logo.png', 66, 39, F(24, 'sans', INK));
         R(184, 15, 132, 30, 8, { fill: CLAY, alpha: 0.16 }); TX('IN VIDEO', 250, 36, F(15, 'mono', CLAYD, { align: 'center', tracking: 0.06 }));
         ctx.restore();
-      }
+      });
       ctx.restore();
     }
     ctx.restore();
-    panel();
+    lib.layer(ctx, 'Timeline', panel);
     // brand: paste a link, read its colours, pour them into the frame
     const pk = S(11.2, 11.6, ease.linear);
     if (pk > 0) {
       const py = -372 + (1 - SPR(pk, 0.65, 1.6)) * 40, paste = S(11.62, 11.68, ease.linear), fl = 1 - S(11.72, 12.2, ease.linear);
-      ctx.save(); ctx.globalAlpha *= clamp(pk * 2.5);
+      const SW = [NAVY, SUN, BLUE, MIST], sw = (x, y, r, c) => { if (r < 4) return; lib.circle(ctx, x, y, r + 1.5, { fill: LINE }); lib.circle(ctx, x, y, r, { fill: c, stroke: IV, lineWidth: 3 }); };
+      lib.layer(ctx, 'Brand link', () => {
+      ctx.globalAlpha *= clamp(pk * 2.5);
       shadow(-330, py, 660, 80, 40, 1); R(-330, py, 660, 80, 40, { fill: WH, stroke: LS, lineWidth: 1.5 });
       ctx.save(); ctx.strokeStyle = ST; ctx.lineWidth = 2.4; ctx.translate(-288, py + 40); ctx.rotate(-Math.PI / 4); ctx.beginPath(); ctx.roundRect(-13, -6, 15, 12, 6); ctx.roundRect(-2, -6, 15, 12, 6); ctx.stroke(); ctx.restore();
       const uw = mw('yourcompany.com', F(31, 'sans', INK));
       if (paste > 0) { R(-258, py + 18, uw + 8, 44, 6, { fill: CLAY, alpha: 0.28 * fl }); TX('yourcompany.com', -254, py + 51, F(31, 'sans', INK, { alpha: paste })); }
       const rd = S(11.75, 11.95) * (1 - S(12.1, 12.25, ease.in));
       if (rd > 0) { lib.circle(ctx, 160, py + 41, 5.5 * (0.8 + 0.2 * Math.sin(t * 9)), { fill: CLAY, alpha: rd }); TX('Reading', 176, py + 49, F(23, 'sans', ST, { alpha: rd })); }
-      const SW = [NAVY, SUN, BLUE, MIST], sw = (x, y, r, c) => { if (r < 4) return; lib.circle(ctx, x, y, r + 1.5, { fill: LINE }); lib.circle(ctx, x, y, r, { fill: c, stroke: IV, lineWidth: 3 }); };
       for (let i = 3; i >= 0; i--) {   // the palette it read stays in the field
         const pop = SPR(S(12.2 + 0.06 * i, 12.5 + 0.06 * i, ease.linear), 0.55, 2);
         if (pop > 0) sw(182 + i * 30, py + 40, 21 * pop, SW[i]);
       }
-      ctx.restore();
+      });
+      lib.layer(ctx, 'Brand colours', () => {
       for (let i = 0; i < 3; i++) {    // and a copy of each colour flies into the layer it belongs to
         const fk = S(12.55 + 0.12 * i, 13.05 + 0.12 * i, ease.inOut);
         if (fk <= 0 || fk >= 1) continue;
@@ -302,6 +315,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
         const x = lerp(x0, tg[0], fk) + Math.sin(Math.PI * fk) * 70, y = lerp(y0, tg[1], fk) - Math.sin(Math.PI * fk) * 80;
         sw(x, y, 21 * (1 + 0.9 * Math.sin(Math.PI * fk)) * (1 - seg(fk, 0.93, 1)), SW[i]);
       }
+      });
     }
   }
   ctx.restore();
@@ -313,19 +327,19 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     ctx.save(); ctx.globalAlpha *= 1 - col; ctx.translate(385, 260); ctx.scale(1 - 0.85 * col, 1 - 0.85 * col); ctx.translate(-385, -260);
     const hover = S(14.95, 15.15) * (1 - S(15.3, 15.45));
     const dz = 1 - S(15.3, 15.6, ease.in);
-    if (dz > 0) {
+    if (dz > 0) lib.layer(ctx, 'Drop zone', () => {
       ctx.save(); ctx.setLineDash([10, 9]); R(-320, -200, 640, 360, 18, { stroke: mix(LS, CLAY, hover), lineWidth: 2 + hover, alpha: dz }); ctx.restore();
       lib.line(ctx, [[0, -46], [0, 6], [-16, -10], [0, 6], [16, -10]], 1, { color: ST, width: 2.4, alpha: dz * (1 - hover) });
       lib.line(ctx, [[-30, 0], [-30, 22], [30, 22], [30, 0]], 1, { color: ST, width: 2.4, alpha: dz * (1 - hover) });
-    }
+    });
     // the reference video, carried in by the cursor
     const rel = 15.3, ce = S(15.85, 16.2, ease.inOut);
     let vc;
     if (s < rel) { const c = toLocal(cur, dyB); vc = [c[0] - 150, c[1] - 90, 0.9, -3]; }
     else { const c = toLocal(curAt(rel), (1 - scrAt(ts(rel))) * H * 1.05), k = SPR(S(rel, rel + 0.45, ease.linear), 0.6, 1.8); vc = [lerp(c[0] - 150, 0, k), lerp(c[1] - 90, -20, k), lerp(0.9, 1, k), -3 * (1 - k)]; }
     const sk = S(15.45, 15.85, ease.inOut);
-    if (ce < 1 && s > 14.55) {
-      ctx.save(); ctx.globalAlpha *= 1 - ce * ce; ctx.translate(vc[0], vc[1]); ctx.rotate(vc[3] * Math.PI / 180); ctx.scale(vc[2], vc[2]);
+    if (ce < 1 && s > 14.55) lib.layer(ctx, 'Reference video', () => {
+      ctx.globalAlpha *= 1 - ce * ce; ctx.translate(vc[0], vc[1]); ctx.rotate(vc[3] * Math.PI / 180); ctx.scale(vc[2], vc[2]);
       ctx.translate(0, 147); ctx.scale(1, 1 - 0.96 * ce); ctx.translate(0, -147);
       shadow(-320, -180, 640, 360, 20, s < rel ? 2.2 : 1.2);
       shot(0, 0, 0, 640, 360, true, 1, 0);
@@ -334,10 +348,10 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
       R(-294, -162, 214, 38, 10, { fill: INK, alpha: 0.5 }); TX('reference.mp4', -280, -136, F(18, 'mono', WH, { tracking: 0.02 }));
       R(-290, 144, 580, 6, 3, { fill: WH, alpha: 0.35 }); if (sk > 0) R(-290, 144, 580 * sk, 6, 3, { fill: WH });
       CUTF.forEach((f, i) => { const tk = SPR(seg(sk, f, f + 0.15), 0.5, 2); if (tk > 0) R(-292 + 580 * f, 147 - 14 * tk, 4, 28 * tk, 2, { fill: CLAY }); });
-      ctx.restore();
-    }
+    });
     // its shots: pulled out of the scrubber (top), rebuilt beneath (bottom)
     const topOut = (i) => S(17.55 + 0.03 * i, 17.85 + 0.03 * i, ease.in);
+    lib.layer(ctx, 'Source shots', () => {
     for (let i = 0; i < 5; i++) {
       const q = SPR(S(15.9 + 0.06 * i, 16.45 + 0.06 * i, ease.linear), 0.65, 1.6), to = topOut(i);
       if (q <= 0 || to >= 1) continue;
@@ -351,6 +365,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
       lib.line(ctx, [[XS[i] - 8, -16], [XS[i], -8], [XS[i] + 8, -16]], 1, { color: ST, width: 2, alpha: S(16.3 + 0.1 * i, 16.55 + 0.1 * i) });
       ctx.restore();
     }
+    });
     for (let i = 0; i < 6; i++) {
       const kb = i < 5 ? S(16.3 + 0.1 * i, 16.75 + 0.1 * i, ease.linear) : 1;
       const g = i < 5 ? SPR(S(17.8 + 0.04 * i, 18.4 + 0.04 * i, ease.linear), 0.7, 1.5) : 1, ga = i < 5 ? 1 : SPR(S(18.2, 18.6, ease.linear), 0.6, 1.8);
@@ -361,11 +376,13 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
       x = lerp(x, -400 + 160 * i, q); y = lerp(y, -300, q); w = lerp(w, 150, q);
       const h = w * 9 / 16, d = 1 - fixK(i), ph = s > 22.2 ? clamp(1 - Math.abs(lerp(-475, 300, S(22.2, 23.3, ease.linear)) - x) / 80) : 0;
       ctx.save(); ctx.globalAlpha *= i < 5 ? 1 : clamp(ga);
+      lib.layer(ctx, 'Shot ' + (i + 1), () => {
       if (q > 0.5) shadow(x - w / 2, y - h / 2, w, h, 8, 0.6);
       shot(i, x, y, w, h, false, kb, d);
       if (ph > 0) R(x - w / 2 - 3, y - h / 2 - 3, w + 6, h + 6, h * 0.08, { stroke: CLAY, lineWidth: 3, alpha: ph });
+      });
       const P = PROB[i];
-      if (P) {   // review marks: a red ring and tag, then a check once fixed
+      if (P) lib.layer(ctx, 'Review marks', () => {   // review marks: a red ring and tag, then a check once fixed
         const mk = S(P[6], P[6] + 0.35, ease.linear), fx = S(P[5], P[5] + 0.4, ease.in), sc = w / 160, X = x - w / 2, Y = y - h / 2;
         const ex = X + P[0] * sc, ey = Y + P[1] * sc, out = 1 - S(20.9, 21.1, ease.in);
         if (mk > 0 && fx < 1) {
@@ -377,14 +394,15 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
         }
         const bd = SPR(S(P[5] + 0.25, P[5] + 0.6, ease.linear), 0.55, 2) * out;
         if (bd > 0) { lib.circle(ctx, X + w - 20, Y + 20, 13 * bd, { fill: OLIVE }); lib.line(ctx, [[X + w - 26, Y + 20], [X + w - 21, Y + 25], [X + w - 13, Y + 15]], seg(bd, 0.4, 1), { color: WH, width: 2.6 }); }
-      }
+      });
       ctx.restore();
     }
     const scan = S(18.55, 19.05, ease.inOut);
-    if (scan > 0 && scan < 1) lib.line(ctx, [[-475, lerp(-190, 190, scan)], [475, lerp(-190, 190, scan)]], 1, { color: CLAY, width: 2, alpha: Math.sin(Math.PI * scan) });
+    if (scan > 0 && scan < 1) lib.layer(ctx, 'Review scan', () => lib.line(ctx, [[-475, lerp(-190, 190, scan)], [475, lerp(-190, 190, scan)]], 1, { color: CLAY, width: 2, alpha: Math.sin(Math.PI * scan) }));
     // sound: one mix that splits into its three generated lanes
     const wd = S(21.4, 21.95, ease.linear), sp = SPR(S(21.95, 22.55, ease.linear), 0.65, 1.6), LY = [-160, -40, 80];
     if (wd > 0) {
+      lib.layer(ctx, 'Sound lanes', () => {
       [0, 1, 2].forEach((l) => {
         const y = lerp(-40, LY[l], sp);
         lib.line(ctx, [[-475, y], [475, y]], 1, { color: LINE, width: 1.5, alpha: sp });
@@ -394,8 +412,9 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
       ctx.save(); ctx.setLineDash([4, 6]);
       CUTX.forEach((c, j) => lib.line(ctx, [[c, -254], [c, 46]], S(22.4 + 0.05 * j, 22.75 + 0.05 * j, ease.inOut), { color: ST, width: 1.4, alpha: 0.7 }));
       ctx.restore();
+      });
       const phk = S(22.2, 23.3, ease.linear);
-      if (phk > 0) { const x = lerp(-475, 300, phk); lib.line(ctx, [[x, -352], [x, 120]], 1, { color: CLAY, width: 2.4, alpha: clamp(phk * 8) }); }
+      if (phk > 0) lib.layer(ctx, 'Playhead', () => { const x = lerp(-475, 300, phk); lib.line(ctx, [[x, -352], [x, 120]], 1, { color: CLAY, width: 2.4, alpha: clamp(phk * 8) }); });
     }
     ctx.restore();
     ctx.restore();
@@ -406,7 +425,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
   let nC = 0;
   for (let i = 0; i < BRIEF.length; i++) if (s > 1.0 + ((i + 0.45 * (lib.rand(i + 3) - 0.5)) / BRIEF.length) * 1.75) nC = i + 1;
   const bm = S(4.1, 4.95, ease.out), bOut = S(9.2, 9.45, ease.in), bsz = 36 * S0;
-  if (bOut < 1) {
+  if (bOut < 1) lib.layer(ctx, 'Brief', () => {
     const bp0 = L0(-386, -130), bY = HY - (wide || tall ? 80 : 40) * u, bp1 = [HX + 26 * u, bY], sc = lerp(1, BS / bsz, bm);
     const lh = bsz * 1.4, bo = F(bsz, 'sans', mix(INK, SL, bm), { lineHeight: 1.4 });
     if (bm > 0) R(HX, bY - BS * 0.9, 3 * u, BS * 2.55 * S(4.7, 5.2, ease.inOut), 1.5 * u, { fill: CLAY, alpha: bm * (1 - bOut) });
@@ -415,15 +434,15 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     const typing = s > 1.0 && s < 2.8, lines = BRIEF.slice(0, nC).split('\n');
     if (s < 4.2 && (typing || (s % 0.9) < 0.5)) R(mw(lines[lines.length - 1], bo) + 3 * S0, (lines.length - 1) * lh - bsz * 0.82, 3 * S0, bsz * 1.0, 1, { fill: CLAY });
     ctx.restore();
-  }
-  status('ANIMATING THE SCENE', 4.9, 5.3, 9.2, 9.45, HY - (wide || tall ? 80 : 40) * u + BS * 1.4 + 70 * u);
-  head('Edit every layer.', 9.35, 9.75, 10.95, 11.2);
-  head('Paste a link.\nIt reads your brand.', 11.2, 11.7, 99, 99, dyA);
-  head('Any video, rebuilt\nshot for shot.', 14.55, 15.05, 17.7, 17.95, dyB);
-  head('We check\nour own work.', 17.95, 18.45, 20.95, 21.2);
-  status('LOOKING AT ITS OWN FRAMES', 18.35, 18.65, 19.35, 19.5);
-  status('FIXING THE 3 WORST PROBLEMS', 19.5, 19.8, 20.9, 21.1);
-  head('Sound, made for\nevery film.', 21.2, 21.6, 23.65, 23.9);
+  });
+  lib.layer(ctx, 'Animating status', () => status('ANIMATING THE SCENE', 4.9, 5.3, 9.2, 9.45, HY - (wide || tall ? 80 : 40) * u + BS * 1.4 + 70 * u));
+  lib.layer(ctx, 'Edit headline', () => head('Edit every layer.', 9.35, 9.75, 10.95, 11.2));
+  lib.layer(ctx, 'Brand headline', () => head('Paste a link.\nIt reads your brand.', 11.2, 11.7, 99, 99, dyA));
+  lib.layer(ctx, 'Video headline', () => head('Any video, rebuilt\nshot for shot.', 14.55, 15.05, 17.7, 17.95, dyB));
+  lib.layer(ctx, 'Review headline', () => head('We check\nour own work.', 17.95, 18.45, 20.95, 21.2));
+  lib.layer(ctx, 'Looking status', () => status('LOOKING AT ITS OWN FRAMES', 18.35, 18.65, 19.35, 19.5));
+  lib.layer(ctx, 'Fixing status', () => status('FIXING THE 3 WORST PROBLEMS', 19.5, 19.8, 20.9, 21.1));
+  lib.layer(ctx, 'Sound headline', () => head('Sound, made for\nevery film.', 21.2, 21.6, 23.65, 23.9));
 
   // ════ export → the animate mark → end card ════
   const E = [SX + 385 * SS, SY + dyB + 260 * SS], bin = SPR(S(22.3, 22.7, ease.linear), 0.6, 1.8);
@@ -433,31 +452,33 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     const bm2 = S(23.4, 23.75, ease.inOut), tv = S(23.72, 24.5, ease.inOut), mm = S(24.4, 24.85, ease.inOut), rk = S(23.55, 24.35, ease.inOut);
     const r0 = 30 * SS, Rr = lerp(r0, D / 2, tv) * (1 + 0.45 * Math.sin(Math.PI * tv)), x = lerp(E[0], MK[0], tv), y = lerp(E[1], MK[1], tv) - Math.sin(Math.PI * tv) * (wide ? 420 : -200) * u;   // arcs clear of the word into its place
     const bw = lerp(190 * SS, 2 * r0, bm2), br = 0.88 + 0.12 * Math.sin((t * Math.PI * 2) / 2.4);
-    ctx.save(); ctx.globalAlpha *= clamp(bin * 2);
+    lib.layer(ctx, 'Export button and mark', () => {
+    ctx.globalAlpha *= clamp(bin * 2);
     if (tv <= 0) { R(x - bw / 2, y - r0 * bin, bw, 2 * r0 * bin, r0 * lerp(0.47, 1, bm2), { fill: mix(INK, '#2A2A28', press(23.3)) }); TX('Export MP4', x, y + 8 * SS, F(22 * SS, 'sans', IV, { align: 'center', weight: 500, alpha: 1 - S(23.4, 23.55) })); }
     else lib.circle(ctx, x, y, Rr, { fill: INK });
     if (mm > 0) lib.circle(ctx, x, y, (Rr - 0.068 * D) * mm, { fill: IV });          // the disc hollows into the animate mark
     if (rk > 0 && mm < 1) lib.ring(ctx, x, y, lerp(Rr + 12 * u, 0.1 * D, mm), rk, { color: CLAY, width: 4 * u, alpha: 1 - mm });
     if (mm > 0) lib.circle(ctx, x, y, 0.18 * D * lerp(1, br, mm) * SPR(mm, 0.5, 2), { fill: CLAY });   // ...and the progress ring collapses into its clay dot
-    ctx.restore();
+    });
     const wk2 = S(24.15, 24.9, ease.outQuint);
-    if (wk2 > 0) TX('animate', lx + D + gap, ly + (1 - wk2) * 40 * u, F(WS, 'serif', INK, { alpha: clamp(wk2 * 1.4), tracking: -0.01 }));
+    if (wk2 > 0) lib.layer(ctx, 'Wordmark', () => TX('animate', lx + D + gap, ly + (1 - wk2) * 40 * u, F(WS, 'serif', INK, { alpha: clamp(wk2 * 1.4), tracking: -0.01 })));
     const tg = S(25.0, 25.9, ease.linear), TS = (wide ? 50 : 46) * u;
-    if (tg > 0) lib.words(ctx, 'Describe it. Drop in your files. Get a film.', W / 2, ly + (wide ? 150 : 170) * u, tg, { size: TS, family: 'serif', color: SL, align: 'center', highlight: ['Get', 'a', 'film.'], highlightColor: CLAYD, maxWidth: W - 2 * M, lineHeight: 1.25, stagger: 0.6 });
+    if (tg > 0) lib.layer(ctx, 'Tagline', () => lib.words(ctx, 'Describe it. Drop in your files. Get a film.', W / 2, ly + (wide ? 150 : 170) * u, tg, { size: TS, family: 'serif', color: SL, align: 'center', highlight: ['Get', 'a', 'film.'], highlightColor: CLAYD, maxWidth: W - 2 * M, lineHeight: 1.25, stagger: 0.6 }));
     const sm = S(25.7, 26.2), uy = ly + (wide ? 262 : tall ? 360 : 330) * u;
     if (sm > 0) {
       const url = 'animate-navy.vercel.app', uo = F(24 * u, 'mono', INK, { align: 'center', tracking: 0.02 }), w2 = mw(url, uo);
       ctx.save(); ctx.globalAlpha *= sm; ctx.translate(0, (1 - sm) * 16 * u);
-      R(W / 2 - w2 / 2 - 26 * u, uy - 36 * u, w2 + 52 * u, 54 * u, 27 * u, { fill: WH, stroke: LS, lineWidth: 1.5 * u });
-      TX(url, W / 2, uy, uo);
-      TX('No sign-in needed to start.', W / 2, uy + 74 * u, F(24 * u, 'sans', ST, { align: 'center' }));
+      lib.layer(ctx, 'URL pill', () => { R(W / 2 - w2 / 2 - 26 * u, uy - 36 * u, w2 + 52 * u, 54 * u, 27 * u, { fill: WH, stroke: LS, lineWidth: 1.5 * u }); TX(url, W / 2, uy, uo); });
+      lib.layer(ctx, 'Sign-in note', () => TX('No sign-in needed to start.', W / 2, uy + 74 * u, F(24 * u, 'sans', ST, { align: 'center' })));
       ctx.restore();
     }
   }
+  lib.layer(ctx, 'Cursor', () => {
   cursor(cur[0], cur[1], curP, curA);
   ripple(cur[0], cur[1], S(4.0, 4.4, ease.linear), 34 * u);
   ripple(cur[0], cur[1], S(10.1, 10.5, ease.linear), 30 * u);
   ripple(cur[0], cur[1], S(23.3, 23.7, ease.linear), 34 * u);
+  });
 });
 `,
 };

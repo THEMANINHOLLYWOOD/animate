@@ -96,7 +96,7 @@ export async function POST(req: Request) {
           messages.push({ role: "assistant", content: msg.content });
 
           if (msg.stop_reason === "refusal") {
-            send({ type: "error", message: "Claude declined this request.", ...(changes ? result() : {}) });
+            send({ type: "error", message: "The model declined this request.", ...(changes ? result() : {}) });
             return;
           }
           if (msg.stop_reason !== "tool_use") break;

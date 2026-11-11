@@ -27,6 +27,7 @@ const CH = [
   { col: TAN, h: 1.9 * S, face: [0.04, 0.22, 0.2, 0.4], sheen: [0.0, -0.5], say: 'Hi hi!', sink: 0.36 * S },
 ];
 const ORDER = [1, 0, 2, 3], LVL = [1, 0, 2, 3];
+const NAMES = ['Circle', 'Square', 'Triangle', 'Star'];
 const slotA = [-375, -200, 200, 375].map(function (v) { return cx + v * u; });
 const rowX = [-330, -110, 110, 330].map(function (v) { return cx + v * u; });
 const LAND = [0.062, 0.135, 0.208, 0.282];
@@ -227,31 +228,33 @@ function confetti(p0, ox, oy, n, seed, dir, spread, sp0) {
 lib.bg(ctx, W, H, CREAM);
 const fin = lib.seg(p, 0.715, 0.8, E.out);
 // polka dots drifting
-ctx.fillStyle = '#FFE4BD';
-const sp = 96 * u, off = (sec * 14 * u) % sp;
-ctx.beginPath();
-for (let yy = -sp; yy < H + sp; yy += sp) for (let xx = -sp; xx < W + sp; xx += sp) {
-  const odd = Math.round(yy / sp) % 2 ? sp / 2 : 0;
-  ctx.moveTo(xx + odd + off + 10 * u, yy + off * 0.5); ctx.arc(xx + odd + off, yy + off * 0.5, 10 * u, 0, TAU);
-}
-ctx.fill();
+lib.layer(ctx, 'Polka dots', function () {
+  ctx.fillStyle = '#FFE4BD';
+  const sp = 96 * u, off = (sec * 14 * u) % sp;
+  ctx.beginPath();
+  for (let yy = -sp; yy < H + sp; yy += sp) for (let xx = -sp; xx < W + sp; xx += sp) {
+    const odd = Math.round(yy / sp) % 2 ? sp / 2 : 0;
+    ctx.moveTo(xx + odd + off + 10 * u, yy + off * 0.5); ctx.arc(xx + odd + off, yy + off * 0.5, 10 * u, 0, TAU);
+  }
+  ctx.fill();
+});
 // title-time sunburst
 const ty0 = wide ? H * 0.3 : tall ? H * 0.39 : H * 0.31;
-if (fin > 0) {
-  ctx.save(); ctx.translate(cx, ty0); ctx.rotate(sec * 0.18); ctx.scale(lib.spring(fin, { damping: 0.5, freq: 1.4 }), lib.spring(fin, { damping: 0.5, freq: 1.4 }));
+if (fin > 0) lib.layer(ctx, 'Sunburst', function () {
+  ctx.translate(cx, ty0); ctx.rotate(sec * 0.18); ctx.scale(lib.spring(fin, { damping: 0.5, freq: 1.4 }), lib.spring(fin, { damping: 0.5, freq: 1.4 }));
   ctx.fillStyle = '#FFE19A'; ctx.globalAlpha = 0.45; ctx.beginPath();
   const RR = Math.max(W, H) * 1.3;
   for (let j = 0; j < 18; j++) { const a0 = j * TAU / 18; ctx.moveTo(0, 0); ctx.arc(0, 0, RR, a0, a0 + TAU / 36); ctx.closePath(); }
-  ctx.fill(); ctx.restore();
-}
+  ctx.fill();
+});
 // puffy clouds
-for (let j = 0; j < 3; j++) {
+for (let j = 0; j < 3; j++) lib.layer(ctx, 'Cloud ' + (j + 1), function () {
   const cxx = ((lib.rand(j + 40) * W + sec * (10 + j * 6) * u) % (W + 400 * u)) - 200 * u;
   const cyy = H * (0.1 + 0.12 * j) + (tall ? H * 0.05 : 0);
   ctx.fillStyle = j === 1 ? '#FFD9EA' : '#D8F1FF'; ctx.beginPath();
   for (const b of [[-70, 10, 46], [-20, -18, 60], [40, -4, 50], [85, 14, 36], [10, 20, 44]]) { ctx.moveTo(cxx + (b[0] + b[2]) * u, cyy + b[1] * u); ctx.arc(cxx + b[0] * u, cyy + b[1] * u, b[2] * u, 0, TAU); }
   ctx.fill();
-}
+});
 
 // ---------- the stage ----------
 const zoom = lib.keys(p, [[0, 1.0], [0.52, 1.0], [0.6, 1.06], [0.655, 1.1], [0.73, 1.0], [1, 1.02]]);
@@ -264,35 +267,39 @@ const poses = [0, 1, 2, 3].map(function (i) { return pose(i, p); });
 
 lib.camera(ctx, { zoom: zoom, cy: gy - 260 * u }, function () {
   // ground
-  ctx.fillStyle = '#C6F1DC'; ctx.fillRect(-W, gy, W * 3, H);
-  ctx.fillStyle = '#B2EACF'; ctx.fillRect(-W, gy + 26 * u, W * 3, 14 * u);
-  ctx.lineWidth = 7 * u; ctx.strokeStyle = INK; ctx.beginPath(); ctx.moveTo(-W, gy); ctx.lineTo(W * 2, gy); ctx.stroke();
-  // contact shadows
-  ctx.fillStyle = 'rgba(59,35,64,0.16)';
+  lib.layer(ctx, 'Ground', function () {
+    ctx.fillStyle = '#C6F1DC'; ctx.fillRect(-W, gy, W * 3, H);
+    ctx.fillStyle = '#B2EACF'; ctx.fillRect(-W, gy + 26 * u, W * 3, 14 * u);
+    ctx.lineWidth = 7 * u; ctx.strokeStyle = INK; ctx.beginPath(); ctx.moveTo(-W, gy); ctx.lineTo(W * 2, gy); ctx.stroke();
+  });
+  // contact shadows (each belongs to its character's layer)
   poses.forEach(function (P, i) {
     if (!P) return;
     const hgt = Math.max(0, gy - P.by), k = 1 / (1 + hgt / (220 * u));
     if (P.by < -100 * u) return;
-    ctx.beginPath(); ctx.ellipse(P.bx, gy + 4 * u, S * 1.05 * k, 13 * u * k, 0, 0, TAU); ctx.fill();
+    lib.layer(ctx, NAMES[i], function () {
+      ctx.fillStyle = 'rgba(59,35,64,0.16)';
+      ctx.beginPath(); ctx.ellipse(P.bx, gy + 4 * u, S * 1.05 * k, 13 * u * k, 0, 0, TAU); ctx.fill();
+    });
   });
-  [1, 0, 2, 3].forEach(function (i) { if (poses[i]) drawChar(i, poses[i], p, fx, fy); });
+  [1, 0, 2, 3].forEach(function (i) { if (poses[i]) lib.layer(ctx, NAMES[i], function () { drawChar(i, poses[i], p, fx, fy); }); });
   // speech
   poses.forEach(function (P, i) {
     if (!P) return;
     const tip = P.by - CH[i].h - 22 * u + (i === 2 ? 6 * u : 0);
-    bubble(CH[i].say, P.bx, tip - (i % 2) * 34 * u, LAND[i] + 0.006, LAND[i] + 0.078, p, CH[i].col);
-    if (i === 3) bubble('Uh-oh!', P.bx, tip + 6 * u, 0.598, 0.648, p, MINT);
+    lib.layer(ctx, NAMES[i] + ' bubble', function () { bubble(CH[i].say, P.bx, tip - (i % 2) * 34 * u, LAND[i] + 0.006, LAND[i] + 0.078, p, CH[i].col); });
+    if (i === 3) lib.layer(ctx, 'Uh-oh bubble', function () { bubble('Uh-oh!', P.bx, tip + 6 * u, 0.598, 0.648, p, MINT); });
   });
 });
 
 // ---------- finale: confetti + bouncing title ----------
-confetti(0.724, cx, gy - 140 * u, 120, 11, -Math.PI / 2, 2.3, 1700);
-confetti(0.875, W * 0.03, gy + 20 * u, 40, 500, -Math.PI / 2 + 0.5, 0.6, 1800);
-confetti(0.875, W * 0.97, gy + 20 * u, 40, 900, -Math.PI / 2 - 0.5, 0.6, 1800);
+lib.layer(ctx, 'Confetti burst', function () { confetti(0.724, cx, gy - 140 * u, 120, 11, -Math.PI / 2, 2.3, 1700); });
+lib.layer(ctx, 'Left confetti', function () { confetti(0.875, W * 0.03, gy + 20 * u, 40, 500, -Math.PI / 2 + 0.5, 0.6, 1800); });
+lib.layer(ctx, 'Right confetti', function () { confetti(0.875, W * 0.97, gy + 20 * u, 40, 900, -Math.PI / 2 - 0.5, 0.6, 1800); });
 
 const fsz = (wide ? 140 : 168) * u;
 const lines = wide ? ['Hello, Shapes!'] : ['Hello,', 'Shapes!'];
-ctx.save();
+lib.layer(ctx, 'Title', function () {
 ctx.font = lib.font({ family: 'sans', weight: 900, size: fsz });
 ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
 let li = 0;
@@ -323,6 +330,6 @@ lines.forEach(function (ln, row) {
     ctx.restore();
   });
 });
-ctx.restore();
+});
 `,
 };

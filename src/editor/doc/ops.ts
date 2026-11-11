@@ -157,6 +157,25 @@ export const removeLayers =
     pruneLinks(doc); // a copy whose other copies went links nothing
   };
 
+// Bring back an object deleted from a code layer's film: the code layer stops leaving it out and
+// it has a layer again, over the code layer's whole clip until the code is next looked at (which
+// finds when it shows, and its place among the other objects).
+export const restorePart =
+  (codeId: string, name: string): Op =>
+  (doc) => {
+    const at = doc.layers.findIndex((l) => l.id === codeId && l.type === "code");
+    const owner = doc.layers[at];
+    if (!owner) return;
+    const dropped = Array.isArray(owner.props.dropParts) ? (owner.props.dropParts as unknown[]).filter((x): x is string => typeof x === "string") : [];
+    if (!dropped.includes(name)) return;
+    const rest = dropped.filter((n) => n !== name);
+    if (rest.length) owner.props.dropParts = rest;
+    else delete owner.props.dropParts;
+    delete owner.props.partsKey;
+    if (!doc.layers.some((l) => l.type === "part" && l.props.partOf === codeId && l.props.part === name))
+      doc.layers.splice(at + 1, 0, LayerSchema.parse({ id: newId("part"), name, type: "part", start: owner.start, end: owner.end, props: { partOf: codeId, part: name } }));
+  };
+
 export const reorderLayer =
   (id: string, toIndex: number): Op =>
   (doc) => {

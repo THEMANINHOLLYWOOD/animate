@@ -90,7 +90,7 @@ const winS = lerp(0.92, 1, lib.spring(seg(p, P.winIn, P.winIn + 0.14), { damping
 // soft indigo atmosphere behind the window
 const glow = ctx.createRadialGradient(cx, cy + 80 * u, 0, cx, cy + 80 * u, Math.max(W, H) * 0.6);
 glow.addColorStop(0, 'rgba(91,91,247,0.10)'); glow.addColorStop(1, 'rgba(91,91,247,0)');
-ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+lib.layer(ctx, 'Backdrop glow', () => { ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H); });
 
 // ── data ───────────────────────────────────────────────────────────
 const ROWS = [
@@ -118,13 +118,17 @@ const hiKeys = [[0, 0], [at(P.hover + 0.012), 1]];
 // ── draw the product window ────────────────────────────────────────
 const WX = 0, WY = 0, WW = 1440, WH = 880;
 function drawWindow() {
-  ctx.save(); soft(WX, WY, WW, WH, 18, 80, 40, 0.18); R(WX, WY, WW, WH, 18, { fill: CARD });
+  ctx.save();
+  lib.layer(ctx, 'Window', () => {
+  soft(WX, WY, WW, WH, 18, 80, 40, 0.18); R(WX, WY, WW, WH, 18, { fill: CARD });
   R(WX, WY, WW, WH, 18, { stroke: LINE, lineWidth: 1.2 });
   // title bar
   lib.line(ctx, [[0, 48], [WW, 48]], 1, { color: LINE, width: 1 });
   [0, 1, 2].forEach((i) => lib.circle(ctx, 26 + i * 22, 24, 6.5, { fill: '#E1E4E8' }));
   Mo('relay  /  orbit-web', WW / 2, 30, 14, FAINT, { align: 'center' });
+  });
   // sidebar
+  lib.layer(ctx, 'Sidebar', () => {
   R(1, 49, 239, WH - 50, 0, { fill: '#FAFBFC' });
   lib.line(ctx, [[240, 48], [240, WH]], 1, { color: LINE, width: 1 });
   mark(44, 88, 30, 1); Tx('Relay', 70, 95, 19, INK, { weight: 600, tracking: -0.01 });
@@ -136,15 +140,21 @@ function drawWindow() {
   });
   R(16, WH - 74, 208, 54, 12, { fill: CARD, stroke: LINE, lineWidth: 1 });
   lib.circle(ctx, 42, WH - 47, 13, { fill: '#DADDFD' }); Tx('Orbit Labs', 64, WH - 42, 14, INK, { weight: 600 });
+  });
   // header
+  lib.layer(ctx, 'Page header', () => {
   Tx('Deploys', 280, 116, 30, INK, { weight: 600, tracking: -0.02 });
   Tx('orbit-web  ·  4 environments  ·  last deploy 2h ago', 280, 146, 15, SUB);
+  });
+  lib.layer(ctx, 'New deploy button', () => {
   const hov = seg(p, 0.15, 0.17) * (1 - seg(p, 0.25, 0.27));
   ctx.save(); if (hov > 0) soft(1196, 88, 204, 44, 11, 14, 8, 0.4 * hov, '70,70,224');
   R(1196, 88, 204, 44, 11, { fill: lib.mix(IND, '#4646E0', hov) }); ctx.restore();
   Tx('New deploy', 1216, 116, 15, '#fff', { weight: 600 });
   R(1336, 98, 48, 24, 6, { fill: 'rgba(255,255,255,0.18)' }); cmdG(1352, 110, 16, '#fff', 1.5); Tx('K', 1368, 115.5, 13, '#fff', { weight: 600, align: 'center' });
+  });
   // deploys table
+  lib.layer(ctx, 'Deploys table', () => {
   R(280, 176, 1120, 268, 14, { stroke: LINE, lineWidth: 1, fill: CARD });
   ['Commit', 'Branch', 'Environment', 'Status', 'When'].forEach((h, i) => Tx(h.toUpperCase(), [304, 470, 700, 920, 1260][i], 206, 11.5, FAINT, { weight: 600, tracking: 0.08 }));
   lib.line(ctx, [[280, 222], [1400, 222]], 1, { color: LINE, width: 1 });
@@ -168,7 +178,9 @@ function drawWindow() {
       Tx(st, 944, y + 32, 15, INK, { weight: 500, alpha: ra }); Tx(r[3], 1260, y + 33, 15, SUB, { alpha: ra });
     });
   });
+  });
   // pipeline card
+  lib.layer(ctx, 'Pipeline card', () => {
   R(280, 470, 540, 380, 14, { stroke: LINE, lineWidth: 1, fill: CARD });
   const running = p >= P.steps[0];
   Tx('Pipeline', 304, 508, 18, INK, { weight: 600 }); Mo(running ? 'run #1842  ·  main@f30c8b4' : 'idle', 304, 532, 13, FAINT);
@@ -190,7 +202,9 @@ function drawWindow() {
   if (tot > 0) R(304, 812, 492 * tot, 6, 3, { fill: tot >= 1 ? OK : IND });
   R(684, 488, 112, 26, 13, { fill: tot >= 1 ? OK_SOFT : running ? IND_SOFT : '#F1F3F5' });
   Tx(tot >= 1 ? 'Succeeded' : running ? 'Running' : 'Idle', 740, 506, 12.5, tot >= 1 ? OK : running ? IND : SUB, { weight: 600, align: 'center' });
+  });
   // latency chart card
+  lib.layer(ctx, 'Latency chart', () => {
   R(844, 470, 556, 380, 14, { stroke: LINE, lineWidth: 1, fill: CARD });
   Tx('p95 latency', 868, 508, 18, INK, { weight: 600 }); Mo('production · last 6h', 868, 532, 13, FAINT);
   const ck = seg(p, P.chart0, P.chart1, ease.inOut);
@@ -216,6 +230,7 @@ function drawWindow() {
   }
   const head = pts[pts.length - 1];
   lib.circle(ctx, head[0], head[1], 5.5, { fill: '#fff', stroke: IND, lineWidth: 2.6 });
+  });
   ctx.restore();
 }
 
@@ -224,7 +239,8 @@ function drawPalette() {
   const o = seg(p, P.palOpen, P.palOpen + 0.05), c = seg(p, P.palClose, P.palClose + 0.025, ease.in);
   const a = clamp(o * 2.5) * (1 - c); if (a <= 0) return;
   const s = lerp(0.86, 1, lib.spring(o, { damping: 0.5, freq: 2.6 })) * lerp(1, 0.97, c);
-  R(0, 0, WW, WH, 18, { fill: 'rgba(14,17,22,0.18)', alpha: a });
+  lib.layer(ctx, 'Palette scrim', () => R(0, 0, WW, WH, 18, { fill: 'rgba(14,17,22,0.18)', alpha: a }));
+  lib.layer(ctx, 'Command palette', () => {
   const PX = 400, PY = 150, PW = 640;
   const listH = lib.track(tt, cntKeys, 260, 30) * 50;
   ctx.save(); ctx.globalAlpha *= a; ctx.translate(720, PY + 40); ctx.scale(s, s); ctx.translate(-720, -PY - 40);
@@ -254,6 +270,7 @@ function drawPalette() {
     });
   });
   ctx.restore();
+  });
 }
 
 // toast
@@ -261,12 +278,14 @@ function drawToast() {
   const k = seg(p, P.toast, P.toast + 0.04), x = seg(p, 0.82, 0.85, ease.in);
   if (k <= 0 || x >= 1) return;
   const dy = -(1 - lib.spring(k, { damping: 0.6, freq: 2 })) * 90 - x * 30;
+  lib.layer(ctx, 'Toast', () => {
   ctx.save(); ctx.globalAlpha *= clamp(k * 3) * (1 - x); ctx.translate(0, dy);
   soft(740, 66, 360, 76, 14, 30, 14, 0.2); R(740, 66, 360, 76, 14, { fill: CARD });
   R(740, 66, 360, 76, 14, { stroke: LINE, lineWidth: 1 });
   check(774, 104, 15, seg(p, P.toast + 0.01, P.toast + 0.05));
   Tx('Deployed to production', 800, 98, 16, INK, { weight: 600 }); Mo('v2.14 · 41.0s · 3 regions', 800, 121, 12.5, SUB);
   ctx.restore();
+  });
 }
 
 // ── compose: window space → camera → screen ────────────────────────
@@ -280,8 +299,9 @@ lib.camera(ctx, { zoom: cam[2] }, () => {
   const cyk = [[0, 980], [at(0.125), 980], [at(0.15), 112], [at(0.25), 112], [at(0.29), 210], [at(P.hover), 274], [at(P.palClose + 0.02), 400], [at(0.66), 1000]];
   const mx = lib.track(tt, cxk, 120, 22), my = lib.track(tt, cyk, 120, 22);
   const press = seg(p, P.click - 0.008, P.click) * (1 - seg(p, P.click + 0.004, P.click + 0.014));
-  ripple(mx, my, seg(p, P.click, P.click + 0.04));
-  cursor(mx, my, press, seg(p, 0.125, 0.14) * (1 - seg(p, 0.6, 0.64)));
+  const rk = seg(p, P.click, P.click + 0.04), ca = seg(p, 0.125, 0.14) * (1 - seg(p, 0.6, 0.64));
+  if (rk > 0 && rk < 1) lib.layer(ctx, 'Click ripple', () => ripple(mx, my, rk));
+  if (ca > 0) lib.layer(ctx, 'Cursor', () => cursor(mx, my, press, ca));
   ctx.restore();
 });
 
@@ -291,9 +311,9 @@ if (kin > 0 && kout < 1) {
   const ks = 150 * u * (wide ? 1 : 0.85), gap = 26 * u;
   const press = seg(p, P.keyPress - 0.008, P.keyPress) * (1 - seg(p, P.keyPress + 0.012, P.keyPress + 0.03));
   ctx.save(); ctx.globalAlpha = clamp(kin * 2) * (1 - kout);
-  ctx.fillStyle = 'rgba(246,247,249,0.78)'; ctx.fillRect(0, 0, W, H);
+  lib.layer(ctx, 'Keycap scrim', () => { ctx.fillStyle = 'rgba(246,247,249,0.78)'; ctx.fillRect(0, 0, W, H); });
   ctx.translate(cx, cy - 40 * u); const sc = lerp(0.8, 1, lib.spring(kin, { damping: 0.55 })) * lerp(1, 0.55, kout); ctx.scale(sc, sc);
-  ['⌘', 'K'].forEach((g, i) => {
+  ['⌘', 'K'].forEach((g, i) => lib.layer(ctx, i === 0 ? 'Command key' : 'K key', () => {
     const x = (i - 0.5) * (ks + gap) - ks / 2, dn = (i === 1 ? press : press * 0.6) * 10 * u;
     soft(x, -ks / 2 + dn, ks, ks, 30 * u, 36 * u - dn, 20 * u - dn * 1.5, 0.2);
     lib.rrect(ctx, x, -ks / 2 + dn, ks, ks, 30 * u, { fill: '#fff' });
@@ -302,8 +322,8 @@ if (kin > 0 && kout < 1) {
     const gc = i === 1 && press > 0.3 ? IND : INK;
     if (i === 0) cmdG(x + ks / 2, dn - 4 * u, 78 * u, gc, 5 * u);
     else lib.text(ctx, g, x + ks / 2, dn - 2 * u, { size: 64 * u, family: 'sans', weight: 500, color: gc, align: 'center', baseline: 'middle' });
-  });
-  lib.words(ctx, 'One keystroke.', 0, ks / 2 + 110 * u, seg(p, P.keyIn + 0.006, P.keyIn + 0.032), { size: (wide ? 72 : 60) * u, family: 'sans', weight: 600, color: INK, align: 'center', tracking: -0.03, maxWidth: W * 0.84 / sc });
+  }));
+  lib.layer(ctx, 'One keystroke', () => lib.words(ctx, 'One keystroke.', 0, ks / 2 + 110 * u, seg(p, P.keyIn + 0.006, P.keyIn + 0.032), { size: (wide ? 72 : 60) * u, family: 'sans', weight: 600, color: INK, align: 'center', tracking: -0.03, maxWidth: W * 0.84 / sc }));
   ctx.restore();
 }
 
@@ -311,8 +331,8 @@ if (kin > 0 && kout < 1) {
 const h1 = seg(p, 0.005, 0.06), h1o = seg(p, P.winIn - 0.02, P.winIn + 0.025, ease.in);
 if (h1 > 0 && h1o < 1) {
   ctx.save(); ctx.globalAlpha = 1 - h1o; ctx.translate(0, -h1o * 80 * u);
-  lib.words(ctx, 'Every deploy.', cx, cy + 30 * u, h1, { size: (wide ? 120 : 96) * u, family: 'sans', weight: 600, color: INK, align: 'center', tracking: -0.035, maxWidth: W * 0.84, blur: 8 * u });
-  lib.text(ctx, 'Relay  ·  continuous delivery', cx, cy - 90 * u, { size: 22 * u, family: 'mono', color: IND, align: 'center', alpha: seg(p, 0.03, 0.07) });
+  lib.layer(ctx, 'Opening headline', () => lib.words(ctx, 'Every deploy.', cx, cy + 30 * u, h1, { size: (wide ? 120 : 96) * u, family: 'sans', weight: 600, color: INK, align: 'center', tracking: -0.035, maxWidth: W * 0.84, blur: 8 * u }));
+  lib.layer(ctx, 'Opening tagline', () => lib.text(ctx, 'Relay  ·  continuous delivery', cx, cy - 90 * u, { size: 22 * u, family: 'mono', color: IND, align: 'center', alpha: seg(p, 0.03, 0.07) }));
   ctx.restore();
 }
 
@@ -323,6 +343,7 @@ if (e > 0) {
   const ms = (wide ? 120 : 104) * u, fs = (wide ? 150 : 120) * u;
   const tw = lib.text(ctx, 'Relay', 0, -9999, { size: fs, family: 'sans', weight: 700, tracking: -0.045, alpha: 0 }).width;
   const gx = cx - (ms + 36 * u + tw) / 2, ey = cy - 40 * u;
+  lib.layer(ctx, 'Logo mark', () => {
   ctx.save(); ctx.globalAlpha = clamp(e * 2.5); ctx.translate(gx + ms / 2, ey); ctx.scale(lerp(0.6, 1, sp), lerp(0.6, 1, sp));
   soft(-ms / 2, -ms / 2, ms, ms, ms * 0.26, 44 * u, 22 * u, 0.4, '91,91,247');
   lib.rrect(ctx, -ms / 2, -ms / 2, ms, ms, ms * 0.26, { fill: IND }); ctx.restore();
@@ -330,11 +351,13 @@ if (e > 0) {
   lib.line(ctx, [[-ms * 0.24, -ms * 0.17], [-ms * 0.04, 0], [-ms * 0.24, ms * 0.17]], seg(e, 0.2, 0.6, ease.out), { color: '#fff', width: ms * 0.09, cap: 'round' });
   lib.line(ctx, [[ms * 0.03, ms * 0.19], [ms * 0.25, ms * 0.19]], seg(e, 0.45, 0.8, ease.out), { color: '#fff', width: ms * 0.09, cap: 'round' });
   ctx.restore();
-  lib.mask(ctx, (c) => c.rect(gx + ms + 20 * u, ey - fs, tw + 60 * u, fs * 1.6), () => {
+  });
+  lib.layer(ctx, 'Wordmark', () => lib.mask(ctx, (c) => c.rect(gx + ms + 20 * u, ey - fs, tw + 60 * u, fs * 1.6), () => {
     const sl = ease.outExpo(seg(e, 0.15, 0.85));
     lib.text(ctx, 'Relay', gx + ms + 36 * u - (1 - sl) * 120 * u, ey + fs * 0.36, { size: fs, family: 'sans', weight: 700, color: INK, tracking: -0.045, alpha: sl });
-  });
-  lib.words(ctx, 'Every deploy. One keystroke.', cx, ey + ms / 2 + 110 * u, seg(p, P.mark + 0.02, P.mark + 0.06), { size: (wide ? 40 : 38) * u, family: 'sans', weight: 500, color: SUB, align: 'center', tracking: -0.01, maxWidth: W * 0.84 });
+  }));
+  lib.layer(ctx, 'End tagline', () => lib.words(ctx, 'Every deploy. One keystroke.', cx, ey + ms / 2 + 110 * u, seg(p, P.mark + 0.02, P.mark + 0.06), { size: (wide ? 40 : 38) * u, family: 'sans', weight: 500, color: SUB, align: 'center', tracking: -0.01, maxWidth: W * 0.84 }));
+  lib.layer(ctx, 'Press K pill', () => {
   const kb = seg(p, P.mark + 0.06, P.mark + 0.1, ease.out);
   const po = { size: 19 * u, family: 'mono', color: SUB, alpha: 0 };
   const w1 = lib.text(ctx, 'Press', 0, -9999, po).width, w2 = lib.text(ctx, 'K to ship', 0, -9999, po).width;
@@ -343,6 +366,7 @@ if (e > 0) {
   lib.text(ctx, 'Press', px0, py, Object.assign({}, po, { alpha: kb }));
   cmdG(px0 + w1 + 20 * u, py - 7 * u, 22 * u, IND, 2 * u, kb);
   lib.text(ctx, 'K to ship', px0 + w1 + 34 * u, py, Object.assign({}, po, { color: IND, alpha: kb }));
+  });
 }
 `,
 };

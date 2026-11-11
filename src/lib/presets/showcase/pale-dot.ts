@@ -44,7 +44,7 @@ const onScreen = (x, y, r) => x > -r && x < W + r && y > -r && y < H + r;
 
 // ---------- deep background: nebula + log-periodic parallax starfield ----------
 const bgDim = 1 - 0.7 * sstep((L - Math.log(1e17)) / (Math.log(3e19) - Math.log(1e17)));
-ctx.save();
+lib.layer(ctx, 'Nebula', () => {
 ctx.globalCompositeOperation = 'lighter';
 const NEB = ['#24306e', '#4a2160', '#14505e', '#3a1f3a'];
 for (let i = 0; i < 6; i++) {
@@ -63,9 +63,10 @@ for (let i = 0; i < 6; i++) {
     ctx.beginPath(); ctx.arc(nx + ox, ny + oy, gr, 0, TAU); ctx.fill();
   }
 }
-ctx.restore();
+});
 
 const STARC = ['#9fb6ff', '#ffffff', '#ffe2b8'];
+lib.layer(ctx, 'Stars', () => {
 for (let layer = 0; layer < 5; layer++) {
   const q = ((L - L0) / 6 + layer / 5) % 1;
   const f = 3 * Math.exp(-4.2 * q);
@@ -83,11 +84,12 @@ for (let layer = 0; layer < 5; layer++) {
     ctx.globalAlpha = la * (cls === 1 ? 0.9 : 0.6); ctx.fillStyle = STARC[cls]; ctx.fill();
   }
 }
+});
 ctx.globalAlpha = 1;
 
 // ---------- galaxy field ----------
 const fieldA = sstep((L - Math.log(2e18)) / (Math.log(4e19) - Math.log(2e18)));
-if (fieldA > 0.01) {
+if (fieldA > 0.01) lib.layer(ctx, 'Galaxy field', () => {
   for (let i = 0; i < 280; i++) {
     const a = R(i * 13 + 1) * TAU, d = (i === 0 ? 2.5e6 : 2.5e6 + Math.pow(R(i * 13 + 2), 0.85) * 3e7) * KM_LY;
     const g = P(GC[0] + Math.cos(a) * d, GC[1] + Math.sin(a) * d * 1.4);
@@ -105,12 +107,12 @@ if (fieldA > 0.01) {
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, rad * 2.2, 0, TAU); ctx.fill();
     ctx.restore();
   }
-}
+});
 
 // ---------- the Milky Way ----------
 const gpx = 50000 * KM_LY * s; // galactic radius in px
 const galA = 1 - sstep((gpx - 25 * SS) / (60 * SS));
-if (galA > 0.01) {
+if (galA > 0.01) lib.layer(ctx, 'Milky Way', () => {
   const gc = P(GC[0], GC[1]);
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -144,12 +146,12 @@ if (galA > 0.01) {
   ctx.save(); ctx.globalCompositeOperation = 'lighter';
   for (let c = 0; c < 3; c++) { blob(paths[c], GCOL[c], galA * (c === 1 ? 0.55 : 0.7) * tw); }
   ctx.restore();
-}
+});
 
 // ---------- the Oort cloud: a faint shell of icy bodies ----------
 const oortPx = 50000 * KM_AU * s;
 const oA = band(oortPx, 0.1 * SS, 0.4 * SS, 1.5 * SS, 5 * SS);
-if (oA > 0.01) {
+if (oA > 0.01) lib.layer(ctx, 'Oort cloud', () => {
   const arr = [];
   for (let i = 0; i < 700; i++) {
     const a = R(i + 9000) * TAU, d = (2000 + Math.pow(R(i + 9100), 0.6) * 98000) * KM_AU;
@@ -158,24 +160,25 @@ if (oA > 0.01) {
   }
   blob(arr, '#a9c4e8', oA * 0.8);
   ctx.globalAlpha = 1;
-}
+});
 
 // ---------- nearest star ----------
 const NS = [SUN[0] + 4.24 * KM_LY * Math.cos(1.1), SUN[1] + 4.24 * KM_LY * Math.sin(1.1)];
 const nsA = band(4.24 * KM_LY * s, 0.04 * SS, 0.15 * SS, 0.6 * SS, 2 * SS);
-if (nsA > 0.01) {
+if (nsA > 0.01) lib.layer(ctx, 'Nearest star', () => {
   const n = P(NS[0], NS[1]);
   const g = ctx.createRadialGradient(n[0], n[1], 0, n[0], n[1], 26 * u);
   g.addColorStop(0, 'rgba(255,190,150,0.9)'); g.addColorStop(0.15, 'rgba(255,150,110,0.3)'); g.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.globalAlpha = nsA; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n[0], n[1], 26 * u, 0, TAU); ctx.fill();
   lib.circle(ctx, n[0], n[1], 2.2 * u, { fill: '#fff1e6', alpha: nsA });
   ctx.globalAlpha = 1;
-}
+});
 
 // ---------- solar system ----------
 const sp = P(SUN[0], SUN[1]);
 const auPx = KM_AU * s;
 const ORB = [0.39, 0.72, 1, 1.52, 5.2, 9.58, 19.2, 30.1];
+lib.layer(ctx, 'Planet orbits', () => {
 ctx.lineWidth = 1 * u;
 for (let i = 0; i < ORB.length; i++) {
   const rp = ORB[i] * auPx;
@@ -189,9 +192,10 @@ for (let i = 0; i < ORB.length; i++) {
     lib.circle(ctx, px, py, (i >= 4 ? 2.6 : 1.8) * u, { fill: '#e8e2d6', alpha: Math.min(1, a * 2.5) });
   }
 }
+});
 ctx.globalAlpha = 1;
 const sunA = band(auPx, 0.01 * SS, 0.05 * SS, 1e9, 2e9);
-if (sunA > 0.01 && onScreen(sp[0], sp[1], 400 * u)) {
+if (sunA > 0.01 && onScreen(sp[0], sp[1], 400 * u)) lib.layer(ctx, 'Sun', () => {
   const rs = Math.max(696000 * s, 4 * u), gr = Math.max(rs * 7, 60 * u) * (0.4 + 0.6 * C(auPx / (0.15 * SS)));
   ctx.save(); ctx.globalCompositeOperation = 'lighter';
   const g = ctx.createRadialGradient(sp[0], sp[1], 0, sp[0], sp[1], gr);
@@ -199,7 +203,7 @@ if (sunA > 0.01 && onScreen(sp[0], sp[1], 400 * u)) {
   ctx.globalAlpha = sunA; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sp[0], sp[1], gr, 0, TAU); ctx.fill();
   ctx.restore();
   lib.circle(ctx, sp[0], sp[1], rs, { fill: '#fff8ea', alpha: sunA });
-}
+});
 
 // ---------- Earth & Moon ----------
 const ep = P(0, 0);
@@ -286,15 +290,20 @@ const mA = band(moonOrbPx, 0.02 * SS, 0.08 * SS, 2 * SS, 6 * SS);
 const ma = 0.5 + t * 0.012;
 const mp = P(384400 * Math.cos(ma), 384400 * Math.sin(ma));
 if (mA > 0.01) {
+  lib.layer(ctx, 'Moon orbit', () => {
   ctx.globalAlpha = mA * 0.35; ctx.strokeStyle = '#c9d2e6'; ctx.lineWidth = u;
   ctx.beginPath(); ctx.ellipse(ep[0], ep[1], moonOrbPx, moonOrbPx * sq, 0, 0, TAU); ctx.stroke();
+  });
+  lib.layer(ctx, 'Moon', () => {
   ctx.globalAlpha = mA;
   sphere(mp[0], mp[1], 1737 * s, 'moon');
   if (1737 * s < 2.5 * u) { lib.circle(ctx, mp[0], mp[1], 7 * u, { fill: '#d8d6d0', alpha: mA * 0.12 }); lib.circle(ctx, mp[0], mp[1], 2.4 * u, { fill: '#e4e2dc', alpha: mA }); }
+  });
   ctx.globalAlpha = 1;
 }
 const rE = 6371 * s;
 const dotR = Math.max(rE, lib.lerp(2.4, 1.1, sstep((L - Math.log(1e15)) / 12)) * u);
+lib.layer(ctx, 'Earth', () => {
 if (rE < 3 * u) {
   ctx.save(); ctx.globalCompositeOperation = 'lighter';
   const g = ctx.createRadialGradient(ep[0], ep[1], 0, ep[0], ep[1], dotR * 7);
@@ -302,6 +311,7 @@ if (rE < 3 * u) {
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ep[0], ep[1], dotR * 7, 0, TAU); ctx.fill(); ctx.restore();
   lib.circle(ctx, ep[0], ep[1], dotR, { fill: '#cfe6ff' });
 } else sphere(ep[0], ep[1], rE, 'earth');
+});
 
 // ---------- "you are here" ----------
 const mk = lib.seg(p, 0.04, 0.12, lib.ease.inOut);
@@ -310,20 +320,22 @@ if (mk > 0) {
   const left = ep[0] > W * 0.55;
   const dir = left ? -1 : 1, d45 = Math.SQRT1_2;
   const a0 = [ep[0] + dir * rc * d45, ep[1] - rc * d45];
-  if (rc < ring) { lib.circle(ctx, a0[0], a0[1], 4 * u, { fill: '#ffffff', alpha: mk }); lib.circle(ctx, a0[0], a0[1], 10 * u, { stroke: '#ffffff', lineWidth: 1.2 * u, alpha: 0.7 * mk }); }
   const diag = 70 * u + Math.min(rE, 0.3 * SS) * 0.12;
   const a1 = [a0[0] + dir * diag * d45, a0[1] - diag * d45];
   const lbl = 'you are here';
   const tw = lib.text(ctx, lbl, -9999, -9999, { size: 30 * u, family: 'serif', italic: true, weight: 300, alpha: 0 }).width + 30 * u;
   const a2 = [a1[0] + dir * (tw + 16 * u), a1[1]];
+  lib.layer(ctx, 'Pointer', () => {
+  if (rc < ring) { lib.circle(ctx, a0[0], a0[1], 4 * u, { fill: '#ffffff', alpha: mk }); lib.circle(ctx, a0[0], a0[1], 10 * u, { stroke: '#ffffff', lineWidth: 1.2 * u, alpha: 0.7 * mk }); }
   lib.line(ctx, [a0, a1, a2], mk, { color: '#e9eef8', width: 1.2 * u, alpha: 0.75 });
-  if (rE < 30 * u) {
+  });
+  if (rE < 30 * u) lib.layer(ctx, 'Earth ring', () => {
     lib.ring(ctx, ep[0], ep[1], ring, mk, { color: '#e9eef8', width: 1.2 * u, alpha: 0.6, start: -90 });
     const pr = lib.pulse(t, 2.4);
     lib.circle(ctx, ep[0], ep[1], ring + pr * 26 * u, { stroke: '#cfe6ff', lineWidth: u, alpha: 0.35 * (1 - pr) * mk });
-  }
+  });
   const ta = lib.seg(p, 0.09, 0.14, lib.ease.out);
-  lib.text(ctx, lbl, left ? a2[0] : a1[0] + 8 * u, a1[1] - 12 * u, { size: 30 * u, family: 'serif', italic: true, weight: 300, color: '#f2f5fb', alpha: ta });
+  lib.layer(ctx, 'You are here', () => lib.text(ctx, lbl, left ? a2[0] : a1[0] + 8 * u, a1[1] - 12 * u, { size: 30 * u, family: 'serif', italic: true, weight: 300, color: '#f2f5fb', alpha: ta }));
 }
 
 // ---------- readout ----------
@@ -337,15 +349,17 @@ else { const l = rv / KM_LY; val = fmt(l, l < 10 ? 2 : l < 100 ? 1 : 0); unit = 
 const rA = lib.seg(p, 0.02, 0.08, lib.ease.out);
 const ry = tall ? H * 0.875 : H - M - 40 * u;
 const rx = wide ? W - M - ruler : (W - ruler) / 2;
+lib.layer(ctx, 'Scale ruler', () => {
 ctx.save(); ctx.globalAlpha = rA * 0.55; ctx.strokeStyle = '#dfe6f2'; ctx.lineWidth = u;
 ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx + ruler, ry);
 ctx.moveTo(rx, ry - 8 * u); ctx.lineTo(rx, ry + 8 * u); ctx.moveTo(rx + ruler, ry - 8 * u); ctx.lineTo(rx + ruler, ry + 8 * u);
 const ph = ((L / Math.log(10)) % 1 + 1) % 1;
 for (let k = 1; k < 10; k++) { const xx = rx + ruler * (Math.log10(k) * (1 - ph) + 0); ctx.moveTo(xx, ry - 4 * u); ctx.lineTo(xx, ry); }
 ctx.stroke(); ctx.restore();
+});
 const rcx = rx + ruler / 2;
-lib.text(ctx, val + ' ' + unit, rcx, ry + 52 * u, { size: 40 * u, family: 'mono', weight: 400, color: '#f2f5fb', align: 'center', alpha: rA, maxWidth: ruler * 1.6 });
-lib.text(ctx, 'THIS WIDE', rcx, ry - 22 * u, { size: 18 * u, family: 'mono', color: '#b4c0d8', align: 'center', tracking: 0.35, alpha: rA * 0.8 });
+lib.layer(ctx, 'Scale readout', () => lib.text(ctx, val + ' ' + unit, rcx, ry + 52 * u, { size: 40 * u, family: 'mono', weight: 400, color: '#f2f5fb', align: 'center', alpha: rA, maxWidth: ruler * 1.6 }));
+lib.layer(ctx, 'Scale label', () => lib.text(ctx, 'THIS WIDE', rcx, ry - 22 * u, { size: 18 * u, family: 'mono', color: '#b4c0d8', align: 'center', tracking: 0.35, alpha: rA * 0.8 }));
 
 // ---------- milestones (driven by the zoom itself) ----------
 const LN = Math.log;
@@ -360,12 +374,15 @@ const MS = [
 const endOut = 1 - lib.seg(p, 0.8, 0.84, lib.ease.in);
 const capY = tall ? H * 0.13 : M + 40 * u;
 const capX = wide ? M : W / 2, capAl = wide ? 'left' : 'center';
+const CAPN = ['Home caption', 'Moon caption', 'Sun caption', 'Nearest star caption', 'Milky Way caption', 'Galaxies caption'];
 MS.forEach((m, i) => {
   const a = band(L, m[2], m[3], m[4], m[5]) * endOut * (i === 0 ? lib.seg(p, 0.015, 0.06, lib.ease.out) : 1);
   if (a < 0.01) return;
   const k = sstep((L - m[2]) / (m[3] - m[2]));
+  lib.layer(ctx, CAPN[i], () => {
   lib.text(ctx, m[0], capX, capY + (1 - k) * 10 * u, { size: 20 * u, family: 'mono', color: '#b4c0d8', tracking: 0.35, align: capAl, alpha: a });
   lib.text(ctx, m[1], capX, capY + 58 * u + (1 - k) * 18 * u, { size: 46 * u, family: 'serif', weight: 300, color: '#f2f5fb', align: capAl, alpha: a, maxWidth: W - 2 * M });
+  });
 });
 
 // ---------- closing lines ----------
@@ -373,8 +390,8 @@ const e1 = lib.seg(p, 0.84, 0.91), e2 = lib.seg(p, 0.89, 0.95);
 if (e1 > 0) {
   const sz = (tall ? 62 : 58) * u, ey = tall ? H * 0.16 : M + 70 * u;
   const ex = wide ? M : W / 2, al = wide ? 'left' : 'center';
-  lib.words(ctx, 'Everything you’ve ever known', ex, ey, e1, { size: sz, family: 'serif', weight: 300, color: '#f2f5fb', align: al, maxWidth: W - 2 * M, stagger: 0.5 });
-  lib.words(ctx, 'fits in one pixel.', ex, ey + sz * 1.3, e2, { size: sz, family: 'serif', italic: true, weight: 300, color: '#cfe6ff', align: al, maxWidth: W - 2 * M, stagger: 0.5 });
+  lib.layer(ctx, 'Closing line 1', () => lib.words(ctx, 'Everything you’ve ever known', ex, ey, e1, { size: sz, family: 'serif', weight: 300, color: '#f2f5fb', align: al, maxWidth: W - 2 * M, stagger: 0.5 }));
+  lib.layer(ctx, 'Closing line 2', () => lib.words(ctx, 'fits in one pixel.', ex, ey + sz * 1.3, e2, { size: sz, family: 'serif', italic: true, weight: 300, color: '#cfe6ff', align: al, maxWidth: W - 2 * M, stagger: 0.5 }));
 }
 `,
 };

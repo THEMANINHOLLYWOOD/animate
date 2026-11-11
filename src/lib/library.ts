@@ -36,6 +36,8 @@ export type LibraryFilm = {
   doc?: DocT;
   // Signed-in films' images (private Blob paths, drawn by name); a guest's are in loadGuestMedia.
   assets?: { name: string; pathname: string }[];
+  // Signed-in films' own typefaces (private Blob paths, by file name); a guest's are in loadGuestMedia.
+  fonts?: { name: string; pathname: string }[];
   // The soundtrack. Saved clips carry a Blob `pathname`; a guest's clips load from loadGuestMedia.
   audio?: AudioClip[];
   prompt?: string;
@@ -350,6 +352,60 @@ async function signedIn(): Promise<boolean | null> {
   } catch {
     return null;
   }
+}
+
+// ── The signed-in library ──────────────────────────────────────────────────
+// Read in two steps: the index says which films are stored and gives each a stamp that changes when
+// it is saved; only films that are new or changed since this page last read them are then fetched,
+// in batches that fit a response (4.5 MB on Vercel). So a library of any size loads, and coming
+// back to the tab costs one small request when nothing changed.
+type Held = { v: string; film: { id: string; createdAt?: number } };
+const BATCH_BYTES = 3_000_000;
+const BATCH_FILMS = 24;
+
+// The batches to ask for: ids in order, each batch within the byte and count budgets (a film larger
+// than the budget goes alone).
+export function filmBatches(want: { id: string; size: number }[], bytes = BATCH_BYTES, films = BATCH_FILMS): string[][] {
+  const out: string[][] = [];
+  let cur: string[] = [];
+  let sum = 0;
+  for (const f of want) {
+    if (cur.length && (sum + f.size > bytes || cur.length >= films)) {
+      out.push(cur);
+      cur = [];
+      sum = 0;
+    }
+    cur.push(f.id);
+    sum += f.size;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+// A reader with its own memory of what it has fetched. Each read gives every stored film, oldest
+// first, or null when the library couldn't be read (nothing is then known about what's stored).
+export function cloudLibrary(get: (url: string) => Promise<Response> = (url) => fetch(url, { cache: "no-store" })) {
+  const held = new Map<string, Held>();
+  return async function read<T extends { id: string; createdAt?: number }>(): Promise<T[] | null> {
+    try {
+      const r = await get("/api/projects?index=1");
+      if (!r.ok) return null;
+      const index = (await r.json()).index as { id: string; v: string; size: number }[];
+      const stale = index.filter((f) => held.get(f.id)?.v !== f.v);
+      const stamp = new Map(index.map((f) => [f.id, f.v]));
+      for (const ids of filmBatches(stale)) {
+        const b = await get(`/api/projects?ids=${ids.join(",")}`);
+        if (!b.ok) return null;
+        for (const film of (await b.json()).projects as Held["film"][]) held.set(film.id, { v: stamp.get(film.id)!, film });
+      }
+      for (const id of [...held.keys()]) if (!stamp.has(id)) held.delete(id);
+      // (A film deleted between the two steps is in the index but was never fetched.)
+      const films = index.flatMap((f) => (held.get(f.id)?.v === f.v ? [held.get(f.id)!.film] : []));
+      return films.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)) as T[];
+    } catch {
+      return null;
+    }
+  };
 }
 
 const newFilmId = () => {

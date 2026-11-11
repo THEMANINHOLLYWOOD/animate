@@ -20,13 +20,15 @@ export function codeHash(code: string): string {
 }
 
 // What a split holds for: the code, and what the film's controls are set to (a control can reword or
-// move text). With nothing set, it's the code's own fingerprint.
+// move text). With nothing set, it's the code's own fingerprint. Controls shown not to touch the
+// text (props.splitFree, see textFree.ts) don't count.
 export function splitKey(props: Record<string, unknown>): string {
+  const free = new Set(Array.isArray(props.splitFree) ? (props.splitFree as unknown[]).map(String) : []);
   const c = props.controls;
-  const set = c && typeof c === "object" ? Object.entries(c as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)) : [];
+  const set = c && typeof c === "object" ? Object.entries(c as Record<string, unknown>).filter(([k]) => !free.has(k)).sort(([a], [b]) => (a < b ? -1 : 1)) : [];
   // A keyed control (resolved props carry it as "controls.<name>") changes through the clip, which no
   // recording made at one setting holds for: its name alone is enough to stand the split down.
-  const keyed = Object.keys(props).filter((k) => k.startsWith("controls.")).sort();
+  const keyed = Object.keys(props).filter((k) => k.startsWith("controls.") && !free.has(k.slice(9))).sort();
   return codeHash(String(props.code ?? "") + (set.length ? `\n${JSON.stringify(set)}` : "") + (keyed.length ? `\n${keyed.join("|")}` : ""));
 }
 
@@ -40,7 +42,7 @@ export const withKeyedControls = (props: Record<string, unknown>, anim: Record<s
 export const splitLive = (props: Record<string, unknown>) => !!props.skipText && typeof props.splitHash === "string" && props.splitHash === splitKey(props);
 
 // A code layer's props without any split state (before splitting it again).
-const SPLIT_STATE = new Set(["skipText", "keepText", "splitHash", "textSplit", "splitSpan"]);
+const SPLIT_STATE = new Set(["skipText", "keepText", "splitHash", "textSplit", "splitSpan", "splitFree"]);
 export const unsplit = (props: Record<string, unknown>) => Object.fromEntries(Object.entries(props).filter(([k]) => !SPLIT_STATE.has(k)));
 
 // A code layer's scene clock: the scene time at the clip's start (props.sceneIn) and the scene's length

@@ -41,14 +41,8 @@ export const Transform = z.object({
 });
 export type Transform = z.infer<typeof Transform>;
 
-export const Effect = z.object({
-  id: z.string(),
-  type: z.enum(["blur", "motionBlur", "glow", "shadow", "colorGrade", "tint", "grain", "chromatic", "displace", "pixelate", "vignette"]),
-  enabled: z.boolean().default(true),
-  params: z.record(z.string(), Value).default({}),
-});
-export type Effect = z.infer<typeof Effect>;
-
+// What the renderer draws: text, shape, image, group, code, part, globe and waveform ("video", "chart"
+// and "particles" are only still named so a stored doc that has one opens).
 // "part": one object a code layer draws (lib.layer in its code), as a layer of its own: see extract/parts.ts.
 export const LayerType = z.enum(["text", "shape", "image", "video", "group", "code", "part", "globe", "chart", "particles", "waveform"]);
 export type LayerType = z.infer<typeof LayerType>;
@@ -68,8 +62,6 @@ export const Layer = z.object({
   props: z.record(z.string(), z.unknown()).default({}),
   // Keyframed properties by path, e.g. "transform.x" or "props.fill".
   anim: z.record(z.string(), z.array(Keyframe)).default({}),
-  effects: z.array(Effect).default([]),
-  mask: z.object({ layerId: z.string(), mode: z.enum(["alpha", "luma", "inverted"]) }).optional(),
 });
 export type Layer = z.infer<typeof Layer>;
 

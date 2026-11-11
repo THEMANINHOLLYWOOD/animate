@@ -7,14 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run",
-    "higgsfield:example": "tsx --env-file=.env.local scripts/higgsfield/index.ts"
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "@clerk/nextjs": "^7.9.11",
     "@fal-ai/client": "^1.10.1",
-    "@higgsfield/client": "^0.2.6",
     "@vercel/blob": "^2.8.0",
     "fflate": "^0.8.3",
     "immer": "^11.1.21",
@@ -33,7 +31,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^4.1.11"
   }

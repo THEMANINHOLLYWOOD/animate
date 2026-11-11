@@ -115,27 +115,6 @@
   white-space: nowrap;
 }
 
-/* A version an earlier editor kept, set aside until it's opened or deleted. */
-.ed-earlier {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--clay-deep);
-}
-
-.ed-earlier > span {
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ed-earlier .ed-link {
-  white-space: nowrap;
-}
-
 .ed-btn {
   height: 32px;
   padding: 0 12px;
@@ -806,6 +785,28 @@ kbd {
   color: var(--stone);
 }
 
+/* The music's beat on the ruler: a tick per beat, taller on the downbeat. */
+.tl-beat {
+  position: absolute;
+  bottom: 0;
+  height: 5px;
+  border-left: 1px solid color-mix(in srgb, var(--clay) 45%, transparent);
+  pointer-events: none;
+}
+
+.tl-beat.down {
+  height: 11px;
+  border-left-color: var(--clay);
+}
+
+.tl-bpm {
+  margin: 0 auto 0 12px;
+  font-family: var(--font-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--clay-deep);
+}
+
 .tl-marker {
   position: absolute;
   top: 0;
@@ -1105,7 +1106,6 @@ kbd {
     max-width: 40vw;
   }
 
-  .ed-earlier > span,
   .ed-conflict > span {
     max-width: 28vw;
   }

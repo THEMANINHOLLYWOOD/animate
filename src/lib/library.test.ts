@@ -34,6 +34,7 @@ import {
   withSceneCode,
 } from "./library";
 import { SHOWCASE } from "./presets/showcase";
+import { cloudLibrary, filmBatches } from "./library";
 
 // A Map-backed stand-in for localStorage; `limit` makes setItem throw like a full quota.
 function memoryStorage(limit = Infinity): Storage {
@@ -501,5 +502,53 @@ describe("announcements", () => {
     await new Promise((r) => setTimeout(r, 30));
     stop();
     expect(heard).toEqual([]);
+  });
+});
+
+describe("the signed-in library", () => {
+  it("asks for films in batches that fit a response", () => {
+    const f = (id: string, size: number) => ({ id, size });
+    expect(filmBatches([f("a", 2), f("b", 2), f("c", 2)], 5, 10)).toEqual([["a", "b"], ["c"]]);
+    expect(filmBatches([f("a", 9), f("b", 1)], 5, 10)).toEqual([["a"], ["b"]]);
+    expect(filmBatches([f("a", 1), f("b", 1), f("c", 1)], 5, 2)).toEqual([["a", "b"], ["c"]]);
+    expect(filmBatches([])).toEqual([]);
+  });
+
+  // A server holding films, counting what it's asked for.
+  const server = (films: Record<string, { v: string; createdAt: number }>) => {
+    const asked: string[] = [];
+    const get = async (url: string) => {
+      asked.push(url);
+      const q = new URL(url, "http://x").searchParams;
+      if (q.get("index")) return Response.json({ index: Object.entries(films).map(([id, f]) => ({ id, v: f.v, size: 100 })) });
+      const ids = (q.get("ids") ?? "").split(",");
+      return Response.json({ projects: ids.filter((id) => films[id]).map((id) => ({ id, createdAt: films[id].createdAt, v: films[id].v })) });
+    };
+    return { asked, get };
+  };
+
+  it("fetches a film once, and again only when it was saved since", async () => {
+    const films: Record<string, { v: string; createdAt: number }> = { b: { v: "1", createdAt: 2 }, a: { v: "1", createdAt: 1 } };
+    const s = server(films);
+    const read = cloudLibrary(s.get);
+    expect((await read())!.map((f) => f.id)).toEqual(["a", "b"]);
+    expect(s.asked).toEqual(["/api/projects?index=1", "/api/projects?ids=b,a"]);
+    const first = await read();
+    expect(s.asked.length).toBe(3); // the index alone
+    films.a = { v: "2", createdAt: 1 };
+    delete films.b;
+    films.c = { v: "1", createdAt: 3 };
+    const next = (await read<{ id: string; v: string }>())!;
+    expect(s.asked.slice(3)).toEqual(["/api/projects?index=1", "/api/projects?ids=a,c"]);
+    expect(next.map((f) => [f.id, f.v])).toEqual([["a", "2"], ["c", "1"]]);
+    expect(first!.map((f) => f.id)).toEqual(["a", "b"]);
+  });
+
+  it("is null when the library can't be read, and leaves out a film deleted mid-read", async () => {
+    expect(await cloudLibrary(async () => new Response("no", { status: 500 }))()).toBeNull();
+    expect(await cloudLibrary(async () => Promise.reject(new TypeError("offline")))()).toBeNull();
+    const s = server({ a: { v: "1", createdAt: 1 } });
+    const read = cloudLibrary(async (url) => (url.includes("ids=") ? Response.json({ projects: [] }) : s.get(url)));
+    expect(await read()).toEqual([]);
   });
 });

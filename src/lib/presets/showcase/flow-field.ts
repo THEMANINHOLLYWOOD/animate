@@ -133,7 +133,7 @@ function replay(arr) {
 }
 lib.camera(ctx, { rot, zoom, x: -ax * 0.18 * vort, y: -ay * 0.18 * vort }, () => {
   ctx.translate(W / 2, H / 2);
-  if (blobR > 0) {
+  if (blobR > 0) lib.layer(ctx, 'Ground bloom', () => {
     const g = ctx.createRadialGradient(bx, by, Math.max(0, blobR - feather), bx, by, blobR + feather * 0.5);
     const col = exiting ? '236,229,214' : '6,18,21';
     g.addColorStop(0, 'rgba(' + col + ',1)');
@@ -141,13 +141,13 @@ lib.camera(ctx, { rot, zoom, x: -ax * 0.18 * vort, y: -ay * 0.18 * vort }, () =>
     g.addColorStop(1, 'rgba(' + col + ',0)');
     ctx.fillStyle = g;
     ctx.fillRect(-W, -H, 2 * W, 2 * H);
-  }
+  });
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (let md = 0; md < 2; md++) {
+  const strokes = (md, c0, c1) => {
     const glow = md === 1;
     ctx.globalCompositeOperation = glow ? 'lighter' : 'source-over';
-    for (let cb = 0; cb < NC; cb++) {
+    for (let cb = c0; cb < c1; cb++) {
       for (let lv = 0; lv < NL; lv++) {
         const arr = B[md * NC * NL + cb * NL + lv];
         if (!arr.length) continue;
@@ -167,7 +167,11 @@ lib.camera(ctx, { rot, zoom, x: -ax * 0.18 * vort, y: -ay * 0.18 * vort }, () =>
         ctx.stroke();
       }
     }
-  }
+  };
+  lib.layer(ctx, 'Ink lines', () => strokes(0, 0, NC));
+  lib.layer(ctx, 'Teal ribbons', () => strokes(1, 0, 3));
+  lib.layer(ctx, 'Coral ribbons', () => strokes(1, 3, 5));
+  lib.layer(ctx, 'Gold ribbons', () => strokes(1, 5, NC));
 });
 ctx.globalCompositeOperation = 'source-over';
 ctx.globalAlpha = 1;
@@ -176,27 +180,33 @@ ctx.globalAlpha = 1;
 const vg = ctx.createRadialGradient(W / 2, H / 2, S * 0.35, W / 2, H / 2, Math.hypot(W, H) * 0.56);
 vg.addColorStop(0, 'rgba(0,0,0,0)');
 vg.addColorStop(1, 'rgba(' + Math.round(lib.lerp(110, 0, dark)) + ',' + Math.round(lib.lerp(92, 4, dark)) + ',' + Math.round(lib.lerp(66, 6, dark)) + ',' + (0.16 + 0.5 * dark).toFixed(3) + ')');
-ctx.fillStyle = vg;
-ctx.fillRect(0, 0, W, H);
+lib.layer(ctx, 'Vignette', () => {
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+});
 
 // ---- caption ----
 const cap = lib.seg(p, 0.86, 0.95);
 if (cap > 0) {
   const m = S * 0.08, cx = m + 4 * u, cy = H - m - 6 * u;
-  ctx.save();
-  const fog = ctx.createLinearGradient(0, cy - 150 * u, 0, H);
-  fog.addColorStop(0, 'rgba(236,229,214,0)');
-  fog.addColorStop(0.55, 'rgba(232,224,208,0.88)');
-  fog.addColorStop(1, 'rgba(226,218,201,0.95)');
-  ctx.globalAlpha = lib.ease.inOut(cap);
-  ctx.fillStyle = fog;
-  ctx.fillRect(0, cy - 150 * u, W, H);
-  ctx.globalAlpha = lib.ease.out(cap);
-  ctx.fillStyle = INK;
-  ctx.fillRect(cx, cy - 7 * u, 36 * u * lib.ease.outExpo(cap), 1.5 * u);
-  ctx.restore();
-  lib.typewriter(ctx, 'flow field · seed 0417', cx + 50 * u, cy, lib.seg(p, 0.87, 0.95), {
-    size: 22 * u, family: 'mono', color: INK, alpha: 0.82, tracking: 0.16, caret: false, maxWidth: W - 2 * m - 60 * u,
+  lib.layer(ctx, 'Caption fog', () => {
+    const fog = ctx.createLinearGradient(0, cy - 150 * u, 0, H);
+    fog.addColorStop(0, 'rgba(236,229,214,0)');
+    fog.addColorStop(0.55, 'rgba(232,224,208,0.88)');
+    fog.addColorStop(1, 'rgba(226,218,201,0.95)');
+    ctx.globalAlpha = lib.ease.inOut(cap);
+    ctx.fillStyle = fog;
+    ctx.fillRect(0, cy - 150 * u, W, H);
+  });
+  lib.layer(ctx, 'Caption rule', () => {
+    ctx.globalAlpha = lib.ease.out(cap);
+    ctx.fillStyle = INK;
+    ctx.fillRect(cx, cy - 7 * u, 36 * u * lib.ease.outExpo(cap), 1.5 * u);
+  });
+  lib.layer(ctx, 'Caption', () => {
+    lib.typewriter(ctx, 'flow field · seed 0417', cx + 50 * u, cy, lib.seg(p, 0.87, 0.95), {
+      size: 22 * u, family: 'mono', color: INK, alpha: 0.82, tracking: 0.16, caret: false, maxWidth: W - 2 * m - 60 * u,
+    });
   });
 }
 `,

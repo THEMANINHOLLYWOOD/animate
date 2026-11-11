@@ -8,8 +8,8 @@ import { loadFonts, type Assets } from "@/lib/engine";
 import { makeKit } from "@/lib/kit";
 import { Doc } from "../doc/schema";
 import { codeHash } from "../extract/codeHash";
-import { uncheckedSplit } from "../extract/legacy";
 import { withParts } from "../extract/parts";
+import { withFree } from "../extract/textFree";
 import { splitDocText } from "../extract/splitText";
 import { pickDoc, type SavedRec } from "./session";
 
@@ -52,20 +52,10 @@ export const readSaved = (id: string) => docs<SavedRec | undefined>("readonly", 
 export const writeSaved = (id: string, rec: SavedRec) => docs("readwrite", (s) => s.put(rec, id));
 export const dropSaved = (id: string) => docs("readwrite", (s) => s.delete(id));
 
-// Where the first editor kept docs (localStorage). One whose text was split the first, unchecked way
-// is set aside (`earlier`), and offered until it's opened or deleted; any other is edits to bring back.
-export const LEGACY_KEY = (id: string) => `animate.editor.v1.${id}`;
-function readLegacy(id: string): Doc | null {
+// Where the first editor kept docs (localStorage). Nothing reads them any more; one found is cleared.
+function dropLegacy(id: string) {
   try {
-    const raw = localStorage.getItem(LEGACY_KEY(id));
-    return raw ? Doc.parse(JSON.parse(raw)) : null;
-  } catch {
-    return null;
-  }
-}
-export function dropLegacy(id: string) {
-  try {
-    localStorage.removeItem(LEGACY_KEY(id));
+    localStorage.removeItem(`animate.editor.v1.${id}`);
   } catch {}
 }
 
@@ -128,6 +118,11 @@ function loadImage(url: string, ms = 15_000) {
 async function loadMedia(film: LibraryFilm, where: FilmWhere): Promise<{ assets: Assets; audioBlobs: Record<string, Blob> }> {
   const byName: Record<string, HTMLImageElement> = {};
   let audioBlobs: Record<string, Blob> = {};
+  // A signed-in film's own typefaces, registered under their family names before anything is measured or drawn.
+  if (where === "cloud" && film.fonts?.length) {
+    const files = await Promise.all(film.fonts.map(async (f) => ({ name: f.name, blob: await (await fetch(mediaUrl(f.pathname))).blob() })).map((p) => p.catch(() => null)));
+    await loadFontFiles(files.filter((f) => f !== null)).catch(() => []);
+  }
   if (where === "local") {
     const kept = await loadGuestMedia(film.id);
     audioBlobs = kept.audio;
@@ -169,9 +164,6 @@ export type Session = {
   filmDoc: Doc | null;
   // Edits from this browser that never reached the film (see pickDoc).
   restored: null | "same" | "conflict";
-  fromLegacy: boolean;
-  // A doc the first editor kept whose text it split unchecked: set aside, and offered.
-  earlier: Doc | null;
   assets: Assets;
   audioBlobs: Record<string, Blob>;
 };
@@ -180,19 +172,18 @@ export async function openFilm(id: string, cloud: boolean, onProgress: (k: numbe
   const o = await getFilm(id, { cloud });
   const filmDoc = o.film.doc ?? codeDoc(o.film);
   const [saved, media] = await Promise.all([readSaved(id).catch(() => undefined), loadMedia(o.film, o.where)]);
-  const legacy = readLegacy(id);
-  const earlier = legacy && uncheckedSplit(legacy) ? legacy : null;
   // Earlier editors fingerprinted the film by its doc; today's by its version.
-  const picked = pickDoc({ film: filmDoc, sources: [o.version, codeHash(JSON.stringify(filmDoc))], saved, legacy: earlier ? null : legacy, splitVersion: SPLIT_VERSION, parse });
+  const picked = pickDoc({ film: filmDoc, sources: [o.version, codeHash(JSON.stringify(filmDoc))], saved, splitVersion: SPLIT_VERSION, parse });
   if (picked.dropSaved) void dropSaved(id).catch(() => {});
-  if (picked.dropLegacy) dropLegacy(id);
+  dropLegacy(id);
   if (signal.aborted) throw new DOMException("Closed", "AbortError");
   const fonts = await loadFonts();
   const { w, h } = picked.doc.meta.size;
   // Splits whatever code layers aren't split yet (none, when the film was edited here before).
   const kit = makeKit(w, h, fonts);
   // …and gives each object its code draws (lib.layer) a layer of its own.
-  const doc = await withParts(await splitDocText(picked.doc, kit, media.assets, { onProgress, signal }), kit, media.assets, signal);
+  // …and notes which of its controls leave its split text alone.
+  const doc = await withFree(await withParts(await splitDocText(picked.doc, kit, media.assets, { onProgress, signal }), kit, media.assets, signal), kit, media.assets, signal);
   if (!picked.restored && doc !== picked.doc) void writeSaved(id, { v: SPLIT_VERSION, doc, edited: false, source: o.version }).catch(() => {});
   return {
     film: o.film,
@@ -202,8 +193,6 @@ export async function openFilm(id: string, cloud: boolean, onProgress: (k: numbe
     doc,
     filmDoc: picked.restored ? null : doc,
     restored: picked.restored,
-    fromLegacy: picked.fromLegacy,
-    earlier,
     ...media,
   };
 }

@@ -210,7 +210,7 @@ export default function AgentPanel({ store }: { store: Store }) {
         {!msgs.length && (
           <div className="agent-empty">
             <b>Edit by talking</b>
-            <p>Tell Claude what to change. It edits the timeline directly, and everything it does is one undo away.</p>
+            <p>Say what to change. animate edits the timeline directly, and everything it does is one undo away.</p>
             <div className="agent-sugs">
               {SUGGESTIONS.map((s) => (
                 <button key={s} onClick={() => send(s)}>

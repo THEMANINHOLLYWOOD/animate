@@ -75,7 +75,7 @@ const flowA = 0.45 + 0.55 * seg(p, 0.6, 0.66);
 
 // ── Sky + sun ──
 lib.bg(ctx, W, H, '#B3D6EE');
-{ // sky: thin solid bands (cheaper than a full-frame gradient), darkening a little in the storm
+lib.layer(ctx, 'Sky', () => { // sky: thin solid bands (cheaper than a full-frame gradient), darkening a little in the storm
   const h3 = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const SK = [['#5E9DD2', '#8392A6', 0.55], ['#8EC0E6', '#A3B1C0', 0.55], ['#BFDDF1', '#C6CED6', 0.5], ['#F2E7D0', '#DCDCD5', 0.5]].map(([a, b, k]) => h3(a).map((v, i) => lerp(v, h3(b)[i], storm * k)));
   const end = clamp(Y(D), 0, H), y0 = Y(-1500), y1 = Y(10);
@@ -84,10 +84,10 @@ lib.bg(ctx, W, H, '#B3D6EE');
     ctx.fillStyle = 'rgb(' + SK[j].map((v, q) => Math.round(lerp(v, SK[j + 1][q], k))).join(',') + ')';
     ctx.fillRect(0, ya, W, yb - ya + 1);
   }
-}
+});
 const SX = X(450), SY = Y(-360), SR = 46 * Z;
 const sunA = clamp((SX + SR * 1.5) / (SR * 3));
-if (sunA > 0) {
+if (sunA > 0) lib.layer(ctx, 'Sun', () => {
   ctx.save(); ctx.globalAlpha = sunA;
   const hg = ctx.createRadialGradient(SX, SY, SR, SX, SY, SR * 4.5);
   hg.addColorStop(0, 'rgba(255,226,160,0.6)'); hg.addColorStop(1, 'rgba(255,226,160,0)');
@@ -101,10 +101,10 @@ if (sunA > 0) {
   lib.circle(ctx, SX, SY, SR, { fill: '#FFC53F' });
   lib.circle(ctx, SX - SR * 0.12, SY - SR * 0.12, SR * 0.74, { fill: '#FFD978' });
   ctx.restore();
-}
+});
 // sunlight arriving at the sea (beat 1, and in the final loop)
 const heat = seg(p, 0.015, 0.06) * (1 - seg(p, 0.17, 0.22)) + 0.45 * seg(p, 0.87, 0.92);
-if (heat > 0.01) {
+if (heat > 0.01) lib.layer(ctx, 'Sunlight', () => {
   ctx.save(); ctx.strokeStyle = '#F39B33'; ctx.lineWidth = 2.6 * Z; ctx.lineCap = 'round';
   ctx.setLineDash([12 * Z, 16 * Z]); ctx.lineDashOffset = -t * 46 * Z; ctx.globalAlpha = heat * 0.75;
   ctx.beginPath();
@@ -113,31 +113,37 @@ if (heat > 0.01) {
     ctx.moveTo(SX + Math.cos(a) * r, SY + Math.sin(a) * r); ctx.lineTo(X(450 + dx * 0.95), Y(8));
   });
   ctx.stroke(); ctx.restore();
-}
+});
 
 // ── Far range, back hills, and the mountain (forest, stone, snow, shaded ridge) ──
 const Lm = (x) => -(500 * gs(x, 2560, 240) + 600 * gs(x, 3160, 280) + 540 * gs(x, 3760, 300) + 230 * gs(x, 2020, 260) + 22 * wob(x, 55, 7));
-if (band(1500, 4600, Lm, () => 60, 0.86)) fillB(mix('#B4C7DC', '#A2AFBE', storm));
-if (band(1500, 4600, Lm, (x) => Lm(x) + Math.max(0, (-430 + 18 * wob(x, 22, 9) - Lm(x)) * 0.8), 0.86)) fillB('#EEF3F8');
-const Lb = (x) => Lf(x) - (70 + 60 * Math.sin(x / 170 + 0.6) ** 2 + 26 * wob(x, 90, 2)) * ss((x - XC + 30) / 380) * (1 - ss((x - 2330) / 280));
-if (band(XC - 30, 2700, Lb, (x) => Lf(x) + D, 0.94)) fillB('#B2D58F');
-if (band(XC - 30, 2700, Lb, (x) => Lb(x) + 4, 0.94)) fillB('#D3E9B3', 0.9);
-const SL = -560 + 75 * seg(p, 0.53, 0.63, ease.inOut) - 40 * seg(p, 0.64, 0.78, ease.inOut); // snowline
-if (band(2250, 4600, Mt, (x) => Lf(x) + D)) fillB(vgrad(Y(-800), Y(-150), ['#D9CBB9', '#B9A894']));
-if (band(2250, 4600, (x) => Math.max(Mt(x), -280 + 10 * Math.abs(Math.sin(x / 7)) + 30 * wob(x, 48, 8)), (x) => Lf(x) + D)) fillB('#6E9F55');
-if (band(2400, 4600, Mt, (x) => Math.max(Mt(x), SL + 26 * wob(x, 16, 4)))) fillB('#F7FAFD');
-ctx.beginPath();
-[[2920, 3250, 3110], [3520, 4400, 3700]].forEach(([pk, sx2, rx]) => {
-  ctx.moveTo(X(pk), Y(Mt(pk)));
-  for (let x = pk; x <= sx2; x += 12) ctx.lineTo(X(x), Y(Mt(x)));
-  if (sx2 > 4000) ctx.lineTo(X(sx2), Y(-90));
-  ctx.lineTo(X(rx), Y(-90)); ctx.closePath();
+lib.layer(ctx, 'Far mountains', () => {
+  if (band(1500, 4600, Lm, () => 60, 0.86)) fillB(mix('#B4C7DC', '#A2AFBE', storm));
+  if (band(1500, 4600, Lm, (x) => Lm(x) + Math.max(0, (-430 + 18 * wob(x, 22, 9) - Lm(x)) * 0.8), 0.86)) fillB('#EEF3F8');
 });
-fillB('#3A3F6E', 0.2);
+const Lb = (x) => Lf(x) - (70 + 60 * Math.sin(x / 170 + 0.6) ** 2 + 26 * wob(x, 90, 2)) * ss((x - XC + 30) / 380) * (1 - ss((x - 2330) / 280));
+lib.layer(ctx, 'Back hills', () => {
+  if (band(XC - 30, 2700, Lb, (x) => Lf(x) + D, 0.94)) fillB('#B2D58F');
+  if (band(XC - 30, 2700, Lb, (x) => Lb(x) + 4, 0.94)) fillB('#D3E9B3', 0.9);
+});
+const SL = -560 + 75 * seg(p, 0.53, 0.63, ease.inOut) - 40 * seg(p, 0.64, 0.78, ease.inOut); // snowline
+lib.layer(ctx, 'Mountain', () => {
+  if (band(2250, 4600, Mt, (x) => Lf(x) + D)) fillB(vgrad(Y(-800), Y(-150), ['#D9CBB9', '#B9A894']));
+  if (band(2250, 4600, (x) => Math.max(Mt(x), -280 + 10 * Math.abs(Math.sin(x / 7)) + 30 * wob(x, 48, 8)), (x) => Lf(x) + D)) fillB('#6E9F55');
+  if (band(2400, 4600, Mt, (x) => Math.max(Mt(x), SL + 26 * wob(x, 16, 4)))) fillB('#F7FAFD');
+  ctx.beginPath();
+  [[2920, 3250, 3110], [3520, 4400, 3700]].forEach(([pk, sx2, rx]) => {
+    ctx.moveTo(X(pk), Y(Mt(pk)));
+    for (let x = pk; x <= sx2; x += 12) ctx.lineTo(X(x), Y(Mt(x)));
+    if (sx2 > 4000) ctx.lineTo(X(sx2), Y(-90));
+    ctx.lineTo(X(rx), Y(-90)); ctx.closePath();
+  });
+  fillB('#3A3F6E', 0.2);
+});
 
 // ── Sea surface strip, waves, glitter under the sun ──
-if (band(-3000, XC + 4, () => 0, () => D)) fillB(vgrad(Y(0), Y(D), ['#A3D3EC', '#4E9BCF']));
-{
+lib.layer(ctx, 'Ocean', () => { if (band(-3000, XC + 4, () => 0, () => D)) fillB(vgrad(Y(0), Y(D), ['#A3D3EC', '#4E9BCF'])); });
+lib.layer(ctx, 'Waves', () => {
   ctx.save(); ctx.strokeStyle = WHITE; ctx.lineCap = 'round'; ctx.beginPath();
   for (let r = 0; r < 4; r++) {
     const y = D * (0.16 + r * 0.23), gap = 80 + r * 26, o = (t * (14 + r * 7)) % gap, w = 9 + r * 4;
@@ -152,22 +158,24 @@ if (band(-3000, XC + 4, () => 0, () => D)) fillB(vgrad(Y(0), Y(D), ['#A3D3EC', '
     if (a > 0.2) { ctx.moveTo(X(x - 7 * a), Y(y)); ctx.lineTo(X(x + 7 * a), Y(y)); }
   }
   ctx.strokeStyle = '#FFF6D8'; ctx.lineWidth = 2.6 * Z; ctx.globalAlpha = 0.9; ctx.stroke(); ctx.restore();
-}
+});
 
 // ── Land strip (top surface), lake, river, trees ──
-if (band(XC, 4600, Lf, (x) => Lf(x) + D)) {
-  const g = ctx.createLinearGradient(X(XC), 0, X(3000), 0);
-  [[0, '#E6D29E'], [0.035, '#A5CC69'], [0.45, '#8BBE58'], [0.7, '#78AE52'], [1, '#6A9E4C']].forEach(([o, c]) => g.addColorStop(o, c));
-  fillB(g);
-}
-curve(Lf, Math.max(XC, xa), xb, 200); ctx.strokeStyle = 'rgba(255,255,240,0.55)'; ctx.lineWidth = 2.4 * Z; ctx.stroke();
+lib.layer(ctx, 'Land', () => {
+  if (band(XC, 4600, Lf, (x) => Lf(x) + D)) {
+    const g = ctx.createLinearGradient(X(XC), 0, X(3000), 0);
+    [[0, '#E6D29E'], [0.035, '#A5CC69'], [0.45, '#8BBE58'], [0.7, '#78AE52'], [1, '#6A9E4C']].forEach(([o, c]) => g.addColorStop(o, c));
+    fillB(g);
+  }
+  curve(Lf, Math.max(XC, xa), xb, 200); ctx.strokeStyle = 'rgba(255,255,240,0.55)'; ctx.lineWidth = 2.4 * Z; ctx.stroke();
+});
 const lakeTop = (x) => YL + D * (1 - 0.88 * Math.sqrt(clamp(1 - ((x - 2110) / 114) ** 2)));
-if (band(1996, 2224, lakeTop, () => YL + D)) fillB('#7FC0E9');
+lib.layer(ctx, 'Lake', () => { if (band(1996, 2224, lakeTop, () => YL + D)) fillB('#7FC0E9'); });
 const wR = (x) => (x < 2100 ? lerp(12, 7, (x - XC) / 958) : lerp(6, 3.5, (x - 2222) / 300));
-for (const [a, b] of [[XC - 6, 1998], [2222, 2522]]) if (band(a, b, (x) => yR(x) - wR(x) / 2, (x) => yR(x) + wR(x) / 2)) fillB('#3E8FD0');
+lib.layer(ctx, 'River', () => { for (const [a, b] of [[XC - 6, 1998], [2222, 2522]]) if (band(a, b, (x) => yR(x) - wR(x) / 2, (x) => yR(x) + wR(x) / 2)) fillB('#3E8FD0'); });
 // the stream that drains the snowfield, down the mountain's face
 const SP = []; for (let i = 0; i <= 24; i++) { const k = i / 24; SP.push([lerp(2810, 2522, k) + 16 * Math.sin(k * 7), lerp(-528, yR(2522), Math.pow(k, 0.9))]); }
-{
+lib.layer(ctx, 'River', () => {
   const melt = 0.55 + 0.45 * seg(p, 0.64, 0.68);
   lib.line(ctx, SP.map(([x, y]) => [X(x), Y(y)]), 1, { color: '#3E8FD0', width: 3.4 * Z, alpha: melt });
   ctx.save(); ctx.strokeStyle = '#D4ECFB'; ctx.lineWidth = 1.8 * Z; ctx.lineCap = 'round';
@@ -178,32 +186,36 @@ const SP = []; for (let i = 0; i <= 24; i++) { const k = i / 24; SP.push([lerp(2
   ctx.moveTo(X(1998), Y(yR(1998)));
   for (let x = 1998; x >= XC; x -= 8) ctx.lineTo(X(x), Y(yR(x)));
   ctx.stroke(); ctx.restore();
-}
+});
 // trees, back to front; the sun is on the left so the left flank is lit
 const TR = [];
 for (let i = 0; i < 26; i++) { const x = 1110 + i * 33 + rand(i * 7 + 1) * 18; if (x < 1985) TR.push([x, 0.1 + rand(i * 7 + 2) * 0.75, 0.85 + rand(i * 7 + 3) * 0.4, 0]); }
 for (let i = 0; i < 34; i++) TR.push([2262 + i * 36 + rand(i * 5 + 90) * 16, 0.1 + rand(i * 5 + 91) * 0.75, 0.8 + rand(i * 5 + 92) * 0.4, 1]);
 TR.sort((a, b) => a[1] - b[1]);
-for (const [x, f, s, kind] of TR) {
-  if (x < xa || x > xb) continue;
-  const bx = X(x), by = Y(Lf(x) + D * f), k = Z * s * (0.78 + 0.32 * f), sw = Math.sin(t * 1.1 + x) * 1.2 * k;
-  if (kind) {
-    ctx.beginPath(); ctx.moveTo(bx + sw, by - 40 * k); ctx.lineTo(bx + 10 * k, by - 3 * k); ctx.lineTo(bx - 10 * k, by - 3 * k); fillB('#2D6645');
-    ctx.beginPath(); ctx.moveTo(bx + sw, by - 40 * k); ctx.lineTo(bx - 10 * k, by - 3 * k); ctx.lineTo(bx - 2 * k, by - 3 * k); fillB('#478A5C');
-  } else {
-    ctx.fillStyle = '#6B4A32'; ctx.fillRect(bx - 1.6 * k, by - 13 * k, 3.2 * k, 13 * k);
-    ctx.beginPath(); [[0, -23, 12], [-8, -16, 9], [8, -15, 9]].forEach(([dx, dy, r]) => dot(bx + dx * k + sw, by + dy * k, r * k)); fillB('#3E7E3A');
-    ctx.beginPath(); [[-4, -26, 7.5], [-9, -18, 5]].forEach(([dx, dy, r]) => dot(bx + dx * k + sw, by + dy * k, r * k)); fillB('#6EAD4B');
+lib.layer(ctx, 'Trees', () => {
+  for (const [x, f, s, kind] of TR) {
+    if (x < xa || x > xb) continue;
+    const bx = X(x), by = Y(Lf(x) + D * f), k = Z * s * (0.78 + 0.32 * f), sw = Math.sin(t * 1.1 + x) * 1.2 * k;
+    if (kind) {
+      ctx.beginPath(); ctx.moveTo(bx + sw, by - 40 * k); ctx.lineTo(bx + 10 * k, by - 3 * k); ctx.lineTo(bx - 10 * k, by - 3 * k); fillB('#2D6645');
+      ctx.beginPath(); ctx.moveTo(bx + sw, by - 40 * k); ctx.lineTo(bx - 10 * k, by - 3 * k); ctx.lineTo(bx - 2 * k, by - 3 * k); fillB('#478A5C');
+    } else {
+      ctx.fillStyle = '#6B4A32'; ctx.fillRect(bx - 1.6 * k, by - 13 * k, 3.2 * k, 13 * k);
+      ctx.beginPath(); [[0, -23, 12], [-8, -16, 9], [8, -15, 9]].forEach(([dx, dy, r]) => dot(bx + dx * k + sw, by + dy * k, r * k)); fillB('#3E7E3A');
+      ctx.beginPath(); [[-4, -26, 7.5], [-9, -18, 5]].forEach(([dx, dy, r]) => dot(bx + dx * k + sw, by + dy * k, r * k)); fillB('#6EAD4B');
+    }
   }
-}
+});
 
 // ── Cut-away section: soil, groundwater, bedrock, ocean, lake ──
-if (band(-3000, 4600, (x) => Lf(x) + D, (x) => Math.max(Lf(x) + D, Math.min(WT(x), BR(x)) + 2))) fillB(vgrad(Y(0), Y(300), ['#E4CC9F', '#CDAA78']));
-if (band(-3000, 4600, WT, (x) => Math.max(WT(x), BR(x)) + 2)) fillB(vgrad(Y(0), Y(320), ['#A8C6DA', '#7FA3C2']));
-if (band(-3000, 4600, BR, () => BOT)) fillB(vgrad(Y(0), Y(500), ['#8A7F72', '#5E564D']));
-ctx.beginPath();
-for (let j = 1; j <= 3; j++) { const fn = (x) => BR(x) + j * 46 + 12 * wob(x, 80, j * 5); for (let i = 0; i <= 90; i++) { const x = xa + ((xb - xa) * i) / 90; i ? ctx.lineTo(X(x), Y(fn(x))) : ctx.moveTo(X(x), Y(fn(x))); } }
-ctx.strokeStyle = 'rgba(30,24,20,0.22)'; ctx.lineWidth = 1.8 * Z; ctx.stroke();
+lib.layer(ctx, 'Soil', () => { if (band(-3000, 4600, (x) => Lf(x) + D, (x) => Math.max(Lf(x) + D, Math.min(WT(x), BR(x)) + 2))) fillB(vgrad(Y(0), Y(300), ['#E4CC9F', '#CDAA78'])); });
+lib.layer(ctx, 'Groundwater', () => { if (band(-3000, 4600, WT, (x) => Math.max(WT(x), BR(x)) + 2)) fillB(vgrad(Y(0), Y(320), ['#A8C6DA', '#7FA3C2'])); });
+lib.layer(ctx, 'Bedrock', () => {
+  if (band(-3000, 4600, BR, () => BOT)) fillB(vgrad(Y(0), Y(500), ['#8A7F72', '#5E564D']));
+  ctx.beginPath();
+  for (let j = 1; j <= 3; j++) { const fn = (x) => BR(x) + j * 46 + 12 * wob(x, 80, j * 5); for (let i = 0; i <= 90; i++) { const x = xa + ((xb - xa) * i) / 90; i ? ctx.lineTo(X(x), Y(fn(x))) : ctx.moveTo(X(x), Y(fn(x))); } }
+  ctx.strokeStyle = 'rgba(30,24,20,0.22)'; ctx.lineWidth = 1.8 * Z; ctx.stroke();
+});
 {
   const G = [[], []], c0 = Math.floor(xa / 26), c1 = Math.ceil(xb / 26);
   for (let c = c0; c <= c1; c++) for (let r = 0; r < 7; r++) {
@@ -211,29 +223,35 @@ ctx.strokeStyle = 'rgba(30,24,20,0.22)'; ctx.lineWidth = 1.8 * Z; ctx.stroke();
     if (y > BR(x) - 6) break;
     G[y > WT(x) ? 1 : 0].push([X(x), Y(y), (1.4 + rand(id + 2) * 1.4) * Z]);
   }
-  [['#B08A5A', 0.55], ['#E6D3A6', 0.75]].forEach(([c, a], i) => { ctx.beginPath(); G[i].forEach(([x, y, r]) => dot(x, y, r)); fillB(c, a); });
+  [['#B08A5A', 0.55], ['#E6D3A6', 0.75]].forEach(([c, a], i) => lib.layer(ctx, i ? 'Groundwater' : 'Soil', () => { ctx.beginPath(); G[i].forEach(([x, y, r]) => dot(x, y, r)); fillB(c, a); }));
 }
-if (band(XC, 4600, (x) => Lf(x) + D, (x) => Lf(x) + D + 14)) fillB('#6A4A33');
-if (band(-3000, XC + 2, (x) => Lf(x) + D, (x) => Lf(x) + D + 12)) fillB('#D9C08F');
-if (band(-3000, XC + 2, () => D, (x) => Lf(x) + D)) fillB(vgrad(Y(D), Y(D + 480), ['#2F80BC', '#11487A', '#0A2D52']));
-if (band(1996, 2224, () => YL + D, (x) => Math.max(YL + D, Lf(x) + D))) fillB(vgrad(Y(YL + D), Y(YL + D + 80), ['#4F9EDA', '#2A69A3']));
-curve((x) => Lf(x) + D, Math.max(XC, xa), xb, 200); ctx.strokeStyle = 'rgba(50,34,24,0.45)'; ctx.lineWidth = 2 * Z; ctx.stroke();
-ctx.save(); ctx.setLineDash([7 * Z, 9 * Z]); curve(WT, Math.max(XC - 100, xa), xb, 160);
-ctx.strokeStyle = '#1F6FB4'; ctx.globalAlpha = 0.7; ctx.lineWidth = 2 * Z; ctx.stroke(); ctx.restore();
+lib.layer(ctx, 'Soil', () => {
+  if (band(XC, 4600, (x) => Lf(x) + D, (x) => Lf(x) + D + 14)) fillB('#6A4A33');
+  if (band(-3000, XC + 2, (x) => Lf(x) + D, (x) => Lf(x) + D + 12)) fillB('#D9C08F');
+});
+lib.layer(ctx, 'Ocean', () => { if (band(-3000, XC + 2, () => D, (x) => Lf(x) + D)) fillB(vgrad(Y(D), Y(D + 480), ['#2F80BC', '#11487A', '#0A2D52'])); });
+lib.layer(ctx, 'Lake', () => { if (band(1996, 2224, () => YL + D, (x) => Math.max(YL + D, Lf(x) + D))) fillB(vgrad(Y(YL + D), Y(YL + D + 80), ['#4F9EDA', '#2A69A3'])); });
+lib.layer(ctx, 'Soil', () => { curve((x) => Lf(x) + D, Math.max(XC, xa), xb, 200); ctx.strokeStyle = 'rgba(50,34,24,0.45)'; ctx.lineWidth = 2 * Z; ctx.stroke(); });
+lib.layer(ctx, 'Groundwater', () => {
+  ctx.save(); ctx.setLineDash([7 * Z, 9 * Z]); curve(WT, Math.max(XC - 100, xa), xb, 160);
+  ctx.strokeStyle = '#1F6FB4'; ctx.globalAlpha = 0.7; ctx.lineWidth = 2 * Z; ctx.stroke(); ctx.restore();
+});
 // groundwater: slow drift toward the sea; infiltration: rain soaking down to the water table
 {
   const gwA = 0.55 + 0.45 * seg(p, 0.73, 0.78);
-  ctx.beginPath();
-  for (let i = 0; i < 90; i++) {
-    const r1 = rand(i * 3 + 400), r2 = rand(i * 3 + 401);
-    const x = 2700 - ((t * 16 * (0.7 + 0.6 * r1) + r1 * 1850) % 1850);
-    const top = WT(x), y = lerp(top + 8, Math.min(BR(x), top + 150) - 6, r2);
-    const r = 3.4 * Z * clamp(Math.min((2700 - x) / 80, (x - 860) / 80));
-    if (r > 0.3 && y < BR(x) - 4) dot(X(x), Y(y), r);
-  }
-  fillB('#1E66A8', gwA * 0.75);
+  lib.layer(ctx, 'Groundwater flow', () => {
+    ctx.beginPath();
+    for (let i = 0; i < 90; i++) {
+      const r1 = rand(i * 3 + 400), r2 = rand(i * 3 + 401);
+      const x = 2700 - ((t * 16 * (0.7 + 0.6 * r1) + r1 * 1850) % 1850);
+      const top = WT(x), y = lerp(top + 8, Math.min(BR(x), top + 150) - 6, r2);
+      const r = 3.4 * Z * clamp(Math.min((2700 - x) / 80, (x - 860) / 80));
+      if (r > 0.3 && y < BR(x) - 4) dot(X(x), Y(y), r);
+    }
+    fillB('#1E66A8', gwA * 0.75);
+  });
   const infA = seg(p, 0.58, 0.64) * (1 - 0.5 * seg(p, 0.84, 0.88));
-  if (infA > 0) {
+  if (infA > 0) lib.layer(ctx, 'Infiltration', () => {
     ctx.beginPath();
     for (let i = 0; i < 50; i++) {
       const r1 = rand(i * 3 + 700), r2 = rand(i * 3 + 701), x = 1120 + r1 * 1500;
@@ -242,7 +260,7 @@ ctx.strokeStyle = '#1F6FB4'; ctx.globalAlpha = 0.7; ctx.lineWidth = 2 * Z; ctx.s
       ctx.moveTo(X(x), Y(y - 5)); ctx.lineTo(X(x), Y(y + 5));
     }
     ctx.strokeStyle = '#2B78C0'; ctx.lineWidth = 3 * Z; ctx.lineCap = 'round'; ctx.globalAlpha = infA * 0.85; ctx.stroke(); ctx.globalAlpha = 1;
-  }
+  });
 }
 
 // ── Vapour (an invisible gas: faint, wavy, rising) ──
@@ -260,13 +278,13 @@ function wisps(n, seed, x0, x1, base, rise, drift, a, len) {
   }
   ctx.restore();
 }
-wisps(34, 11, 150, 1010, D * 0.35, 470, 160, evapA, 44);
-wisps(30, 51, 1110, 1980, (x) => Lf(x) + D * 0.3 - 36, 260, 70, transA, 36);
-wisps(24, 91, 1700, 2500, -260, 560, 60, seg(p, 0.31, 0.35) * (1 - seg(p, 0.46, 0.5)) + 0.3 * seg(p, 0.87, 0.91), 50);
+lib.layer(ctx, 'Sea vapour', () => wisps(34, 11, 150, 1010, D * 0.35, 470, 160, evapA, 44));
+lib.layer(ctx, 'Forest vapour', () => wisps(30, 51, 1110, 1980, (x) => Lf(x) + D * 0.3 - 36, 260, 70, transA, 36));
+lib.layer(ctx, 'Rising vapour', () => wisps(24, 91, 1700, 2500, -260, 560, 60, seg(p, 0.31, 0.35) * (1 - seg(p, 0.46, 0.5)) + 0.3 * seg(p, 0.87, 0.91), 50));
 
 // ── Rain + snow ──
 const CH = 2420 + 380 * seg(p, 0.44, 0.56, ease.inOut); // the drop's cloud drifts inland to the peak
-if (rainA > 0.01) {
+if (rainA > 0.01) lib.layer(ctx, 'Rain', () => {
   ctx.beginPath();
   for (let i = 0; i < 100; i++) {
     const r1 = rand(i * 2 + 900), r2 = rand(i * 2 + 901), x = 2150 + (r1 - 0.5) * 380, by = -770, gy = Lf(x) + D * 0.5, hf = gy - by;
@@ -274,8 +292,8 @@ if (rainA > 0.01) {
     ctx.moveTo(X(xx), Y(y)); ctx.lineTo(X(xx + 2.6), Y(y - 26));
   }
   ctx.strokeStyle = '#3F78B0'; ctx.lineWidth = 2 * Z; ctx.lineCap = 'round'; ctx.globalAlpha = rainA * 0.75; ctx.stroke(); ctx.globalAlpha = 1;
-}
-if (snowA > 0.01) {
+});
+if (snowA > 0.01) lib.layer(ctx, 'Snow', () => {
   ctx.beginPath();
   for (let i = 0; i < 70; i++) {
     const r1 = rand(i * 2 + 1300), r2 = rand(i * 2 + 1301), x0 = CH + (r1 - 0.5) * 420, by = -880, gy = Mt(x0) + 18, hf = gy - by;
@@ -284,7 +302,7 @@ if (snowA > 0.01) {
     for (let j = 0; j < 3; j++) { const a = a0 + (j * Math.PI) / 3; ctx.moveTo(X(x) - Math.cos(a) * rr, Y(y) - Math.sin(a) * rr); ctx.lineTo(X(x) + Math.cos(a) * rr, Y(y) + Math.sin(a) * rr); }
   }
   ctx.strokeStyle = WHITE; ctx.lineWidth = 2 * Z; ctx.lineCap = 'round'; ctx.globalAlpha = snowA; ctx.stroke(); ctx.globalAlpha = 1;
-}
+});
 
 // ── Clouds: two-tone puffs with flat bases; they build upward, then darken ──
 function cloud(x0, by, w, g, dk, seed) {
@@ -307,10 +325,10 @@ function cloud(x0, by, w, g, dk, seed) {
 }
 const darkK = seg(p, 0.44, 0.52) * (1 - 0.65 * seg(p, 0.68, 0.8));
 const clear = (g) => g * (1 - seg(p, 0.615, 0.67, ease.inOut)) + 0.85 * seg(p, 0.83, 0.88, ease.inOut);
-if (wide) cloud(260 + t * 3, -600, 260, 1 - 0.6 * seg(p, 0.85, 0.89), 0, 3);
-cloud(3400, -930, 360, clear(seg(p, 0.36, 0.48, ease.inOut)), 0.5 * storm, 29);
-cloud(CH, -880, 560, clear(seg(p, 0.31, 0.45, ease.inOut)), 0.8 * darkK, 53);
-cloud(2150, -780, 520, clear(seg(p, 0.27, 0.42, ease.inOut)), darkK, 41);
+if (wide) lib.layer(ctx, 'Sea cloud', () => cloud(260 + t * 3, -600, 260, 1 - 0.6 * seg(p, 0.85, 0.89), 0, 3));
+lib.layer(ctx, 'Far cloud', () => cloud(3400, -930, 360, clear(seg(p, 0.36, 0.48, ease.inOut)), 0.5 * storm, 29));
+lib.layer(ctx, 'Snow cloud', () => cloud(CH, -880, 560, clear(seg(p, 0.31, 0.45, ease.inOut)), 0.8 * darkK, 53));
+lib.layer(ctx, 'Rain cloud', () => cloud(2150, -780, 520, clear(seg(p, 0.27, 0.42, ease.inOut)), darkK, 41));
 
 // ── The drop we follow ──
 const HP = [], LM = [0];
@@ -340,7 +358,7 @@ const hd = lib.keys(p, HK.map(([q, i]) => [q, HL[LM[i]]]), ease.inOut);
 const [hx, hy] = atL(hd);
 const state = p < 0.415 ? 0 : p < 0.55 ? 1 : p < 0.64 ? 2 : 1; // gas, liquid, ice, liquid
 const heroA = seg(p, 0.03, 0.06) * (1 - seg(p, 0.85, 0.865));
-if (heroA > 0.01) {
+if (heroA > 0.01) lib.layer(ctx, 'Drop', () => {
   const tr = [];
   for (let i = 0; i <= 18; i++) { const q = atL(hd - 260 + (i / 18) * 260); tr.push([X(q[0]), Y(q[1])]); }
   ctx.save(); ctx.setLineDash([3 * u, 7 * u]); lib.line(ctx, tr, 1, { color: ACC, width: 2.4 * u, alpha: 0.7 * heroA }); ctx.restore();
@@ -351,13 +369,16 @@ if (heroA > 0.01) {
   else if (state === 2) { ctx.strokeStyle = ACC; ctx.lineWidth = 2.6 * u; ctx.lineCap = 'round'; ctx.beginPath(); for (let j = 0; j < 3; j++) { const a = t * 0.8 + (j * Math.PI) / 3; ctx.moveTo(-Math.cos(a) * r * 1.2, -Math.sin(a) * r * 1.2); ctx.lineTo(Math.cos(a) * r * 1.2, Math.sin(a) * r * 1.2); } ctx.stroke(); }
   else { ctx.beginPath(); ctx.moveTo(0, -r * 1.5); ctx.bezierCurveTo(r * 0.9, -r * 0.3, r, r * 0.9, 0, r * 0.95); ctx.bezierCurveTo(-r, r * 0.9, -r * 0.9, -r * 0.3, 0, -r * 1.5); fillB(ACC); lib.circle(ctx, -r * 0.3, r * 0.15, r * 0.22, { fill: WHITE, alpha: 0.8 }); }
   ctx.restore();
-}
+});
 
 const rip = seg(p, 0.84, 0.9);
-if (rip > 0 && rip < 1) for (let j = 0; j < 2; j++) {
-  const k = clamp(rip * 1.4 - j * 0.35);
-  if (k > 0 && k < 1) { ctx.beginPath(); ctx.ellipse(X(770), Y(D * 0.45), (10 + 70 * ease.out(k)) * Z, (3 + 16 * ease.out(k)) * Z, 0, 0, TAU); ctx.strokeStyle = WHITE; ctx.lineWidth = 2.4 * Z; ctx.globalAlpha = 1 - k; ctx.stroke(); ctx.globalAlpha = 1; }
-}
+if (rip > 0 && rip < 1) lib.layer(ctx, 'Ripple', () => {
+  ctx.lineCap = 'round'; // the cap the rain and infiltration strokes used to leave set here
+  for (let j = 0; j < 2; j++) {
+    const k = clamp(rip * 1.4 - j * 0.35);
+    if (k > 0 && k < 1) { ctx.beginPath(); ctx.ellipse(X(770), Y(D * 0.45), (10 + 70 * ease.out(k)) * Z, (3 + 16 * ease.out(k)) * Z, 0, 0, TAU); ctx.strokeStyle = WHITE; ctx.lineWidth = 2.4 * Z; ctx.globalAlpha = 1 - k; ctx.stroke(); ctx.globalAlpha = 1; }
+  }
+});
 // ── Lenses: a leaf breathing out vapour (beat 2), vapour condensing (beat 3); and temperature with height ──
 function lens(LX, LY, LR, a, ax, ay, inside) {
   if (a <= 0.01) return;
@@ -371,7 +392,7 @@ function lens(LX, LY, LR, a, ax, ay, inside) {
 }
 const L2 = seg(p, 0.215, 0.24) * (1 - seg(p, 0.3, 0.315));
 const L2X = wide ? W * 0.74 : W * 0.68, L2Y = wide ? H * 0.34 : H * (tall ? 0.42 : 0.5), LR = 140 * u;
-lens(L2X, L2Y, LR, L2, X(1640), Y(Lf(1640) - 6), (lr) => {
+lib.layer(ctx, 'Leaf lens', () => lens(L2X, L2Y, LR, L2, X(1640), Y(Lf(1640) - 6), (lr) => {
   lib.circle(ctx, L2X, L2Y, lr, { fill: '#A9D1EC' });
   const qx = L2X, qy = L2Y + 34 * u, LW = lr * 0.9, LH = lr * 0.95, hh = (x) => (LH / 2) * (1 - (x / LW) ** 2), ca = Math.cos(-0.15), sa = Math.sin(-0.15);
   ctx.save(); ctx.translate(qx, qy); ctx.rotate(-0.15);
@@ -397,17 +418,17 @@ lens(L2X, L2Y, LR, L2, X(1640), Y(Lf(1640) - 6), (lr) => {
     }
   });
   ctx.restore();
-});
+}));
 const b3 = seg(p, 0.335, 0.36) * (1 - seg(p, 0.465, 0.485));
-if (b3 > 0.01) {
+if (b3 > 0.01) lib.layer(ctx, 'Temperature scale', () => {
   const bx = X(1560), y0 = Y(-140), y1 = Y(-770);
   const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, '#F08A3A'); g.addColorStop(1, '#3E7FC4');
   ctx.save(); ctx.globalAlpha = b3; ctx.strokeStyle = g; ctx.lineWidth = 6 * u; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(bx, y0); ctx.lineTo(bx, lerp(y0, y1, ease.out(seg(p, 0.34, 0.39)))); ctx.stroke(); ctx.restore();
-}
+});
 const L3 = seg(p, 0.39, 0.41) * (1 - seg(p, 0.465, 0.48));
 const L3X = wide ? W * 0.72 : W * 0.7, L3Y = wide ? H * 0.66 : H * (tall ? 0.36 : 0.62);
-lens(L3X, L3Y, LR, L3, X(hx), Y(hy), (lr) => {
+lib.layer(ctx, 'Droplet lens', () => lens(L3X, L3Y, LR, L3, X(hx), Y(hy), (lr) => {
   lib.circle(ctx, L3X, L3Y, lr, { fill: '#DCEBF6' });
   const k = seg(p, 0.405, 0.46, ease.inOut), C = [[-44, -34], [42, -46], [-8, 32], [58, 40], [-64, 38]];
   ctx.beginPath();
@@ -422,7 +443,7 @@ lens(L3X, L3Y, LR, L3, X(hx), Y(hy), (lr) => {
     lib.circle(ctx, L3X + x * u, L3Y + y * u, r, { fill: '#3E8FD0' });
     lib.circle(ctx, L3X + x * u - r * 0.3, L3Y + y * u - r * 0.3, r * 0.3, { fill: WHITE, alpha: 0.8 });
   });
-});
+}));
 
 // ── Final beat: the whole loop as arrows ──
 function arrow(pts, k, a, dash) {
@@ -450,8 +471,9 @@ const ARROWS = [
   ['GROUNDWATER', qb([2100, 130], [1600, 150], [1120, 150], 30), [1600, 150], [0, 34], 'center'],
 ];
 const finA = seg(p, 0.845, 0.865);
+const arN = (nm) => nm[0] + nm.slice(1).toLowerCase() + ' arrow'; // layer name: 'Evaporation arrow' (the arrow and its label)
 const arK = (i) => seg(p, 0.85 + i * 0.013, 0.88 + i * 0.013, ease.inOut);
-if (finA > 0) ARROWS.forEach(([nm, pts], i) => arrow(pts, arK(i), finA, i === 5));
+if (finA > 0) ARROWS.forEach(([nm, pts], i) => lib.layer(ctx, arN(nm), () => arrow(pts, arK(i), finA, i === 5)));
 
 // ── Labels and facts (plain text, drawn last) ──
 const LS = 18 * u, LO = { family: 'sans', weight: 600, size: LS, tracking: 0.12, color: INK, baseline: 'middle' };
@@ -465,37 +487,37 @@ const lab = (str, wx, wy, dx, dy, a, gap) => {
   lib.text(ctx, str, x1 + s * 24 * u, y1, { ...LO, align: s > 0 ? 'left' : 'right', alpha: clamp(a * 1.6 - 0.5) });
 };
 const wa = (a, b, fi = 0.015, fo = 0.012) => seg(p, a, a + fi) * (1 - seg(p, b - fo, b));
-lab('FOLLOW THIS DROP', hx, hy, -70, 40, wa(0.06, 0.155), true);
-lab('WATER VAPOUR', 300, -150, -60, 40, wa(0.08, 0.165));
-if (L2 > 0.01) lib.text(ctx, 'TINY PORES RELEASE VAPOUR', L2X, L2Y - LR - 26 * u, { ...LO, align: 'center', alpha: L2 });
-if (b3 > 0.01) {
+lib.layer(ctx, 'Follow this drop', () => lab('FOLLOW THIS DROP', hx, hy, -70, 40, wa(0.06, 0.155), true));
+lib.layer(ctx, 'Water vapour label', () => lab('WATER VAPOUR', 300, -150, -60, 40, wa(0.08, 0.165)));
+if (L2 > 0.01) lib.layer(ctx, 'Leaf lens', () => lib.text(ctx, 'TINY PORES RELEASE VAPOUR', L2X, L2Y - LR - 26 * u, { ...LO, align: 'center', alpha: L2 }));
+if (b3 > 0.01) lib.layer(ctx, 'Temperature scale', () => {
   lib.text(ctx, 'COLDER', X(1560) + 18 * u, Y(-770), { ...LO, alpha: b3 * seg(p, 0.37, 0.39) });
   lib.text(ctx, 'WARMER', X(1560) + 18 * u, Y(-140), { ...LO, alpha: b3 });
-}
-if (L3 > 0.01) lib.text(ctx, 'VAPOUR CONDENSES INTO DROPLETS', L3X, L3Y + LR + 38 * u, { ...LO, align: 'center', alpha: L3 });
-lab('RAIN', 2060, -470, -70, 50, wa(0.52, 0.635));
-lab('SNOW', CH - 60, -800, -90, 40, wa(0.545, 0.635));
-lab('SNOWMELT', 2800, -520, 70, -40, wa(0.66, 0.73));
-lab('RIVER', 2400, yR(2400), 60, 70, wa(0.675, 0.735));
-lab('LAKE', 2110, YL + D * 0.6, -60, -70, wa(0.69, 0.75));
-lab('INFILTRATION', 1600, Lf(1600) + D + 40, 70, 30, wa(0.745, 0.835));
-lab('GROUNDWATER', 1250, WT(1250) + 70, -60, 60, wa(0.755, 0.835));
+});
+if (L3 > 0.01) lib.layer(ctx, 'Droplet lens', () => lib.text(ctx, 'VAPOUR CONDENSES INTO DROPLETS', L3X, L3Y + LR + 38 * u, { ...LO, align: 'center', alpha: L3 }));
+lib.layer(ctx, 'Rain label', () => lab('RAIN', 2060, -470, -70, 50, wa(0.52, 0.635)));
+lib.layer(ctx, 'Snow label', () => lab('SNOW', CH - 60, -800, -90, 40, wa(0.545, 0.635)));
+lib.layer(ctx, 'Snowmelt label', () => lab('SNOWMELT', 2800, -520, 70, -40, wa(0.66, 0.73)));
+lib.layer(ctx, 'River label', () => lab('RIVER', 2400, yR(2400), 60, 70, wa(0.675, 0.735)));
+lib.layer(ctx, 'Lake label', () => lab('LAKE', 2110, YL + D * 0.6, -60, -70, wa(0.69, 0.75)));
+lib.layer(ctx, 'Infiltration label', () => lab('INFILTRATION', 1600, Lf(1600) + D + 40, 70, 30, wa(0.745, 0.835)));
+lib.layer(ctx, 'Groundwater label', () => lab('GROUNDWATER', 1250, WT(1250) + 70, -60, 60, wa(0.755, 0.835)));
 const fact = (num, cap, sx, sy, a, col) => {
   if (a <= 0.01) return;
   lib.text(ctx, num, sx, sy, { family: 'serif', size: 72 * u, color: col, alpha: a });
   lib.text(ctx, cap, sx, sy + 38 * u, { family: 'sans', weight: 600, size: 16 * u, tracking: 0.12, color: col, maxWidth: 380 * u, lineHeight: 1.45, alpha: a });
 };
-fact(lib.count(seg(p, 0.085, 0.125, ease.out), 0, 97) + '%', "OF EARTH'S WATER IS IN THE OCEANS", X(330), Y(D + 160), wa(0.085, 0.185, 0.015, 0.016), WHITE);
-fact('The rest', 'IS MOSTLY GROUNDWATER', X(1820), Y(250), wa(0.765, 0.84), WHITE);
+lib.layer(ctx, 'Ocean fact', () => fact(lib.count(seg(p, 0.085, 0.125, ease.out), 0, 97) + '%', "OF EARTH'S WATER IS IN THE OCEANS", X(330), Y(D + 160), wa(0.085, 0.185, 0.015, 0.016), WHITE));
+lib.layer(ctx, 'Groundwater fact', () => fact('The rest', 'IS MOSTLY GROUNDWATER', X(1820), Y(250), wa(0.765, 0.84), WHITE));
 if (finA > 0) ARROWS.forEach(([nm, , [ax, ay], [ox, oy], al], i) => {
   const k = clamp(arK(i) * 2 - 0.6);
-  if (k > 0) lib.text(ctx, nm, X(ax) + ox * u, Y(ay) + oy * u, { ...LO, weight: 700, size: 17 * u, align: al, alpha: k * finA });
+  if (k > 0) lib.layer(ctx, arN(nm), () => lib.text(ctx, nm, X(ax) + ox * u, Y(ay) + oy * u, { ...LO, weight: 700, size: 17 * u, align: al, alpha: k * finA }));
 });
 
 // ── Copy column ──
 const TX = M, TY = M + (tall ? 30 : 0) * u, TW = wide ? 740 * u : W - 2 * M, HS = (wide ? 62 : tall ? 64 : 52) * u;
 const titleA = 1 - seg(p, 0.038, 0.052, ease.in);
-if (titleA > 0.01) lib.words(ctx, 'The water cycle', TX, TY + 104 * u - (1 - titleA) * 20 * u, seg(p, -0.012, 0.03), { family: 'serif', size: 108 * u, color: INK, alpha: titleA, stagger: 0.4 });
+if (titleA > 0.01) lib.layer(ctx, 'Title', () => lib.words(ctx, 'The water cycle', TX, TY + 104 * u - (1 - titleA) * 20 * u, seg(p, -0.012, 0.03), { family: 'serif', size: 108 * u, color: INK, alpha: titleA, stagger: 0.4 }));
 const BEATS = [
   [0.058, 0.165, '1', 'EVAPORATION', 'Sunlight turns seawater into invisible vapour.'],
   [0.2, 0.315, '2', 'TRANSPIRATION', 'Plants breathe out water vapour too.'],
@@ -507,15 +529,18 @@ BEATS.forEach(([a, b, n, name, head]) => {
   const kin = seg(p, a, a + 0.05), out = seg(p, b - 0.014, b, ease.in);
   if (kin <= 0 || out >= 1) return;
   const oy = -out * 14 * u, al = 1 - out, y = TY + 56 * u + oy;
-  lib.text(ctx, 'THE WATER CYCLE', TX, TY + 12 * u, { ...LO, size: 16 * u, tracking: 0.24, color: INK2, baseline: 'alphabetic', alpha: al * clamp(kin * 3) });
-  lib.circle(ctx, TX + 14 * u, y - 6 * u, 14 * u * ease.outBack(clamp(kin * 3)), { fill: ACC, alpha: al });
-  lib.text(ctx, n, TX + 14 * u, y - 5 * u, { ...LO, weight: 700, size: 16 * u, tracking: 0, color: WHITE, align: 'center', alpha: al * clamp(kin * 3) });
-  lib.text(ctx, name, TX + 40 * u, y - 5 * u, { ...LO, weight: 700, size: 19 * u, tracking: 0.16, alpha: al * clamp(kin * 2.5 - 0.2) });
-  const hr = lib.words(ctx, head, TX, y + 26 * u + HS, kin, { family: 'serif', size: HS, color: INK, maxWidth: TW, lineHeight: 1.08, stagger: 0.45, alpha: al });
-  if (n === '4') fact('2%', 'OF EARTH’S WATER IS FROZEN AS ICE AND SNOW', TX, y + 26 * u + HS + hr.height + 70 * u, wa(0.525, 0.635), INK);
+  lib.layer(ctx, 'Step heading', () => {
+    lib.text(ctx, 'THE WATER CYCLE', TX, TY + 12 * u, { ...LO, size: 16 * u, tracking: 0.24, color: INK2, baseline: 'alphabetic', alpha: al * clamp(kin * 3) });
+    lib.circle(ctx, TX + 14 * u, y - 6 * u, 14 * u * ease.outBack(clamp(kin * 3)), { fill: ACC, alpha: al });
+    lib.text(ctx, n, TX + 14 * u, y - 5 * u, { ...LO, weight: 700, size: 16 * u, tracking: 0, color: WHITE, align: 'center', alpha: al * clamp(kin * 3) });
+    lib.text(ctx, name, TX + 40 * u, y - 5 * u, { ...LO, weight: 700, size: 19 * u, tracking: 0.16, alpha: al * clamp(kin * 2.5 - 0.2) });
+  });
+  let hr;
+  lib.layer(ctx, 'Headline', () => { hr = lib.words(ctx, head, TX, y + 26 * u + HS, kin, { family: 'serif', size: HS, color: INK, maxWidth: TW, lineHeight: 1.08, stagger: 0.45, alpha: al }); });
+  if (n === '4') lib.layer(ctx, 'Ice fact', () => fact('2%', 'OF EARTH’S WATER IS FROZEN AS ICE AND SNOW', TX, y + 26 * u + HS + hr.height + 70 * u, wa(0.525, 0.635), INK));
 });
 // closing line
 const endK = seg(p, 0.855, 0.905);
-if (endK > 0) lib.words(ctx, 'The water in your glass has made this journey for billions of years.', TX, tall ? H * 0.3 : TY + 54 * u, endK, { family: 'serif', size: (wide ? 64 : 58) * u, color: INK, maxWidth: wide ? 1150 * u : TW, lineHeight: 1.08, stagger: 0.5 });
+if (endK > 0) lib.layer(ctx, 'Closing line', () => lib.words(ctx, 'The water in your glass has made this journey for billions of years.', TX, tall ? H * 0.3 : TY + 54 * u, endK, { family: 'serif', size: (wide ? 64 : 58) * u, color: INK, maxWidth: wide ? 1150 * u : TW, lineHeight: 1.08, stagger: 0.5 }));
 `,
 };

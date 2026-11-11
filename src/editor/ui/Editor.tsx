@@ -12,18 +12,19 @@ import { exportVideo, loadFonts, type SceneFn } from "@/lib/engine";
 import { makeKit, type Fonts } from "@/lib/kit";
 import { FilmGone, getFilm, onFilmSaved, saveFilmDoc } from "@/lib/library";
 import { propAt } from "../doc/interpolate";
-import { addKeyframe, keyAt, offsetPropTo, removeKeyframes, removeLayers, renameLayer, setLayerFlags, setProp, setText, unlinkLayer } from "../doc/ops";
+import { addKeyframe, keyAt, offsetPropTo, removeKeyframes, removeLayers, renameLayer, restorePart, setLayerFlags, setProp, setText, unlinkLayer } from "../doc/ops";
 import type { Doc, Layer, Value } from "../doc/schema";
 import { linkedLayers, splitChildren, splitOwner, splitStatus } from "../doc/split";
 import { renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
 import { splitLive, withKeyedControls } from "../extract/codeHash";
-import { fromUnchecked } from "../extract/legacy";
-import { invert, partsOp, partsStale, type Mat } from "../extract/parts";
+import { freeOpFor, freeUnknown } from "../extract/textFree";
+import { droppedParts, invert, partsOp, partsStale, type Mat } from "../extract/parts";
 import { applySplit, splitCodeLayer } from "../extract/splitText";
 import AgentPanel from "./AgentPanel";
 import Controls, { controlled, PointHandles } from "./Controls";
-import { dropLegacy, dropSaved, forkOf, openFilm, rememberFork, showFilmUrl, SPLIT_VERSION, writeSaved, type Session } from "./open";
+import { dropSaved, forkOf, openFilm, rememberFork, showFilmUrl, SPLIT_VERSION, writeSaved, type Session } from "./open";
+import { spacePresses } from "@/lib/keys";
 import { createSaver, type SaveStatus } from "./saver";
 import { isTextField, liveKeys, liveSelection, ownsKey, spanTime, unlocked, unlockedKeys, wordsOf, type KeySel } from "./session";
 import Timeline from "./Timeline";
@@ -174,7 +175,6 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   const [panel, setPanel] = useState<"controls" | "inspect" | "agent">("controls");
   const [notice, setNotice] = useState<string | null>(note ?? null);
   const [resplitting, setResplitting] = useState<number | null>(null);
-  const [earlier, setEarlier] = useState(session.earlier);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [burnCaptions, setBurnCaptions] = useState(true);
   // The film being edited: an example becomes a film of your own on its first save.
@@ -214,6 +214,13 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   const clips = useMemo(() => session.film.audio ?? [], [session]);
   const { loaded: loadedAudio, mixer } = useFilmAudio(clips, session.audioBlobs);
   const cues = useMemo(() => cuesFromClips(clips), [clips]);
+  // The beat of the film's music, in film seconds, for the timeline to show and snap to.
+  const beats = useMemo(() => {
+    const m = clips.find((c) => c.kind === "music" && c.beats && !c.muted) ?? clips.find((c) => c.beats && !c.muted && c.kind !== "voice");
+    if (!m?.beats || !(m.beats.bpm > 0)) return null;
+    const at = (xs: number[]) => xs.map((x) => +(x + m.start).toFixed(3)).filter((x) => x >= 0 && x <= m.start + m.duration);
+    return { bpm: m.beats.bpm, beats: at(m.beats.beats), downbeats: at(m.beats.downbeats) };
+  }, [clips]);
   const mixerRef = useRef(mixer);
 
   useEffect(() => {
@@ -239,7 +246,6 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         save: saveFilmDoc,
         keepLocal: (fid, d, source) => writeSaved(fid, { v: SPLIT_VERSION, doc: d, edited: true, source }).then(() => {}),
         clearLocal: (fid) => {
-          if (session.fromLegacy && fid === session.film.id) dropLegacy(fid);
           // An example's record goes back to being its split, so reopening it skips the split.
           if (fid === session.film.id && session.where === "example" && session.filmDoc)
             return writeSaved(fid, { v: SPLIT_VERSION, doc: session.filmDoc, edited: false, source: session.version }).then(() => {});
@@ -336,7 +342,6 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
     if (saver.busy() && !confirm("Use the film as the Studio saved it? Your edits here that it doesn't have are dropped.")) return;
     saver.discard();
     void dropSaved(saver.film.id).catch(() => {});
-    if (session.fromLegacy) dropLegacy(session.film.id);
     onReopen(saver.film.id);
   };
 
@@ -368,6 +373,24 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         for (const l of todo) store.getState().amend(await partsOp(l, store.getState().doc, kit, assets, ac.signal));
       } catch {}
     }, 400);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+  }, [doc.layers, kit, assets, store]);
+
+  // ── Which of a film's controls leave its split text alone (so changing them doesn't stand the text
+  // layers down): tried once per split, in the background, and noted on the code layer ──
+  useEffect(() => {
+    if (!kit) return;
+    const todo = doc.layers.filter(freeUnknown);
+    if (!todo.length) return;
+    const ac = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        for (const l of todo) store.getState().amend(await freeOpFor(l, store.getState().doc, kit, assets, ac.signal));
+      } catch {}
+    }, 900);
     return () => {
       clearTimeout(timer);
       ac.abort();
@@ -699,6 +722,8 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
       // A checkbox or slider reached with Tab keeps its own keys (Space toggles it, arrows move it), and
       // a color swatch keeps Space/Enter (open its picker) and Delete (never the layer it colors).
       if (ownsKey(el, e.key)) return;
+      // (A button reached with Tab keeps Space too: it presses the button.)
+      if (e.code === "Space" && spacePresses(el)) return;
       if (e.code === "Space") {
         e.preventDefault();
         setPlaying((p) => !p);
@@ -795,25 +820,6 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
     }
   };
 
-  // The doc an earlier editor kept, set aside on open: put in place of this one (an undoable edit,
-  // saved to the film like any other), or deleted.
-  const openEarlier = () => {
-    if (!earlier) return;
-    if (!confirm("Open the version from the earlier editor in place of this one? Its text was split without being checked, so some may sit above art that should cover it. Undo brings this one back.")) return;
-    pause();
-    const from = fromUnchecked(earlier);
-    store.getState().apply((d) => {
-      Object.assign(d, { ...from, meta: { ...from.meta, id: d.meta.id, title: d.meta.title } });
-    }, "Open earlier version");
-    dropLegacy(session.film.id);
-    setEarlier(null);
-  };
-  const deleteEarlier = () => {
-    if (!confirm("Delete the version from the earlier editor? This can't be undone.")) return;
-    dropLegacy(session.film.id);
-    setEarlier(null);
-  };
-
   // Everything since the editor opened, undone as one step (which undo brings back).
   const revert = () => {
     const opened = session.filmDoc;
@@ -866,9 +872,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
               <span>
                 {save.film !== session.film || session.restored !== "conflict"
                   ? "This film changed in the Studio while it was open here."
-                  : session.fromLegacy
-                    ? "Edits made in the earlier editor were never saved to this film."
-                    : "Edits made here earlier never reached this film, and it has changed since."}
+                  : "Edits made here earlier never reached this film, and it has changed since."}
               </span>
               {/* Nothing edited here since the last save: there's only the new version to take. */}
               {mine && (
@@ -889,19 +893,6 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
               </button>
             </span>
           )}
-          {earlier && (
-            <span className="ed-earlier" role="status">
-              <span title="This film has a version saved by an earlier editor, which split its text without checking it against the film. It was set aside, and this one split afresh.">
-                A version from the earlier editor was set aside.
-              </span>
-              <button className="ed-link" onClick={openEarlier}>
-                Open it
-              </button>
-              <button className="ed-link" onClick={deleteEarlier}>
-                Delete it
-              </button>
-            </span>
-          )}
         </div>
         <div className="ed-top-right">
           {(stale.length > 0 || resplitting !== null) && (
@@ -909,7 +900,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
               className="ed-btn"
               disabled={resplitting !== null || !kit}
               onClick={() => resplit(stale.map((l) => l.id))}
-              title="The code changed since its text was split, so the code draws all of its text. Split it into editable text layers again."
+              title="The code, or a control that shapes its text, changed since the text was split, so the code draws all of its text. Split it into editable text layers again."
             >
               {resplitting !== null ? `Splitting text… ${resplitting}%` : "Re-split text"}
             </button>
@@ -921,7 +912,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
             Redo
           </button>
           <button className="ed-btn agent-btn" onClick={() => setPanel((p) => (p === "agent" ? "inspect" : "agent"))}>
-            ✦ Ask Claude
+            ✦ Ask animate
           </button>
           {session.filmDoc && (
             <button className="ed-btn" onClick={revert} disabled={doc === session.filmDoc} title="Undo every change since the editor opened">
@@ -1043,7 +1034,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         )}
       </div>
 
-      <Timeline store={store} keySel={keys} setKeySel={setKeySel} onSelect={reveal} onEdit={pause} errors={errors} />
+      <Timeline store={store} keySel={keys} setKeySel={setKeySel} onSelect={reveal} onEdit={pause} errors={errors} beats={beats} />
     </div>
   );
 }
@@ -1063,11 +1054,11 @@ function Timecode({ store }: { store: Store }) {
 // How a code layer's text stands: split into layers, drawn by changed code, or kept in code.
 function SplitNote({ doc, layer, resplitting, onResplit }: { doc: Doc; layer: Layer; resplitting: number | null; onResplit: (ids: string[]) => void }) {
   if (layer.props.skipText && splitLive(withKeyedControls(layer.props, layer.anim)))
-    return <p className="ed-note">Its text is in {splitChildren(doc, layer.id).length} editable text layers. Changing the code draws the text from the code again.</p>;
+    return <p className="ed-note">Its text is in {splitChildren(doc, layer.id).length} editable text layers. Changing the code, or a control that shapes its text, draws the text from the code again.</p>;
   if (layer.props.skipText)
     return (
       <p className="ed-note">
-        The code changed, so it draws all of its text again, and its text layers stand down.{" "}
+        The code, or a control that shapes its text, changed, so it draws all of its text again, and its text layers stand down.{" "}
         <button className="ed-link" disabled={resplitting !== null} onClick={() => onResplit([layer.id])}>
           {resplitting !== null ? `Splitting text… ${resplitting}%` : "Re-split text"}
         </button>
@@ -1172,6 +1163,19 @@ function Inspector({
         </p>
       )}
       {layer.type === "code" && <SplitNote doc={doc} layer={layer} resplitting={resplitting} onResplit={onResplit} />}
+      {layer.type === "code" && droppedParts(layer.props).length > 0 && (
+        <p className="ed-note">
+          Removed from this film (click one to bring it back):{" "}
+          {droppedParts(layer.props).map((name, i) => (
+            <span key={name}>
+              {i > 0 && ", "}
+              <button className="ed-link" disabled={layer.locked} onClick={() => apply(restorePart(layer.id, name), `Restore ${name}`)}>
+                {name}
+              </button>
+            </span>
+          ))}
+        </p>
+      )}
       {layer.type === "part" && (
         <p className="ed-note">
           An object the scene&apos;s code draws. Drag it on the canvas, pull its corner to resize it, fade or hide it, and trim its clip to change when it shows. Its drawing lives in{" "}

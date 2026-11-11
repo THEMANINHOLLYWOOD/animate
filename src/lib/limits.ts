@@ -45,6 +45,8 @@ export const LIMITS = {
   separate: { guest: [[6, HOUR], [15, DAY]], user: [[40, HOUR]], guests: [[90, HOUR]], users: [[500, HOUR]] },
   brand: { guest: [[60, HOUR]], user: [[300, HOUR]], guests: [[900, HOUR]], users: [[3600, HOUR]] },
   reference: { guest: [[60, HOUR]], user: [[300, HOUR]], guests: [[900, HOUR]], users: [[3600, HOUR]] },
+  // Files kept in an account (a film's images, its sound clips, exported videos); a film stores 20-40. Guests keep theirs in the browser.
+  upload: { guest: [[1, HOUR]], user: [[600, HOUR], [3000, DAY]], guests: [[1, HOUR]], users: [[20000, HOUR]] },
 } as const satisfies Record<string, { guest: readonly Window[]; user: readonly Window[]; guests: readonly Window[]; users: readonly Window[] }>;
 export type LimitGroup = keyof typeof LIMITS;
 
