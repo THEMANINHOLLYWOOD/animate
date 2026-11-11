@@ -19,8 +19,25 @@ export function codeHash(code: string): string {
   return h;
 }
 
+// What a split holds for: the code, and what the film's controls are set to (a control can reword or
+// move text). With nothing set, it's the code's own fingerprint.
+export function splitKey(props: Record<string, unknown>): string {
+  const c = props.controls;
+  const set = c && typeof c === "object" ? Object.entries(c as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)) : [];
+  // A keyed control (resolved props carry it as "controls.<name>") changes through the clip, which no
+  // recording made at one setting holds for: its name alone is enough to stand the split down.
+  const keyed = Object.keys(props).filter((k) => k.startsWith("controls.")).sort();
+  return codeHash(String(props.code ?? "") + (set.length ? `\n${JSON.stringify(set)}` : "") + (keyed.length ? `\n${keyed.join("|")}` : ""));
+}
+
 // Whether a code layer's split still matches its code (so it skips the text its layers paint).
-export const splitLive = (props: Record<string, unknown>) => !!props.skipText && typeof props.splitHash === "string" && props.splitHash === codeHash(String(props.code ?? ""));
+// A layer's props as resolved props name its keyed controls, for asking splitLive about the layer itself.
+export const withKeyedControls = (props: Record<string, unknown>, anim: Record<string, unknown[]>) => {
+  const keyed = Object.keys(anim).filter((p) => p.startsWith("props.controls.") && anim[p].length);
+  return keyed.length ? { ...props, ...Object.fromEntries(keyed.map((p) => [p.slice(6), true])) } : props;
+};
+
+export const splitLive = (props: Record<string, unknown>) => !!props.skipText && typeof props.splitHash === "string" && props.splitHash === splitKey(props);
 
 // A code layer's props without any split state (before splitting it again).
 const SPLIT_STATE = new Set(["skipText", "keepText", "splitHash", "textSplit", "splitSpan"]);

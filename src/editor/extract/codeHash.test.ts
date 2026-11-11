@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codeHash, splitLive, unsplit } from "./codeHash";
+import { codeHash, splitKey, splitLive, unsplit, withKeyedControls } from "./codeHash";
 
 describe("split state", () => {
   it("hashes code stably and tells edits apart", () => {
@@ -20,5 +20,16 @@ describe("split state", () => {
 
   it("clears split state", () => {
     expect(unsplit({ code: "x", skipText: true, keepText: ["a"], splitHash: "h", textSplit: false, other: 1 })).toEqual({ code: "x", other: 1 });
+  });
+});
+
+describe("splitLive with a film's controls", () => {
+  const code = "lib.text(ctx, 'hi', 0, 0)";
+  it("holds while nothing is set, and stands down for a set or a keyed control", () => {
+    const props = { code, skipText: true, splitHash: splitKey({ code }) };
+    expect(splitLive(props)).toBe(true);
+    expect(splitLive({ ...props, controls: { Size: 2 } })).toBe(false);
+    expect(splitLive(withKeyedControls(props, { "props.controls.Size": [{}] }))).toBe(false);
+    expect(splitLive(withKeyedControls(props, { "transform.x": [{}] }))).toBe(true);
   });
 });

@@ -11,7 +11,7 @@ import { Renderer, type Assets } from "@/lib/engine";
 import type { Kit } from "@/lib/kit";
 import type { Doc, Layer } from "../doc/schema";
 import { renderDoc, type Bounds } from "../render/renderDoc";
-import { codeHash, sceneClock, unsplit } from "./codeHash";
+import { sceneClock, splitKey, unsplit } from "./codeHash";
 import { dropper } from "./keep";
 import type { Pace } from "./pace";
 import { invisible, type TextDraw } from "./textTap";
@@ -90,7 +90,6 @@ export async function verifySplit(
 
   // The code layer on its own, at the origin: split layers follow its transform, opacity, blend and
   // visibility when rendered, so this is the composition that has to match.
-  const code = String(layer.props.code ?? "");
   const base: Layer = {
     ...layer,
     parentId: null,
@@ -135,7 +134,7 @@ export async function verifySplit(
     if (!live.length) return { layers: [], keep };
     const docB: Doc = {
       ...doc,
-      layers: [{ ...base, props: { ...base.props, skipText: true, keepText: [...keep], splitHash: codeHash(code), splitSpan: splitSpanOf(layer) } }, ...live.map((k) => cand.layers[k])],
+      layers: [{ ...base, props: { ...base.props, skipText: true, keepText: [...keep], splitHash: splitKey(base.props), splitSpan: splitSpanOf(layer) } }, ...live.map((k) => cand.layers[k])],
     };
     const failed = new Set<number>();
     let stray = false;

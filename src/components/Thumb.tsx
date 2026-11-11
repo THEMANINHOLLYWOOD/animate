@@ -8,8 +8,8 @@ import { drawStill, previewUrl, shippedClip, type Preview } from "@/lib/preview"
 
 type Film = { id: string; code: string; doc?: Doc; aspect: Aspect; duration: number; builtin?: boolean; building?: string };
 
-// After an edit, wait this long for the next one before asking for a new clip (the Length
-// slider changes the film on every step it passes).
+// After an edit, wait this long for the next one before asking for a new clip (typing in the
+// code box, or stepping through lengths, changes the film several times in a row).
 const SETTLE_MS = 800;
 
 // A film's looping preview: a still right away, then the clip (shipped for examples,

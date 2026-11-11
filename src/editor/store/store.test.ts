@@ -60,3 +60,20 @@ describe("undo steps per gesture", () => {
     expect(s().past).toHaveLength(3);
   });
 });
+
+describe("amend", () => {
+  it("joins the last step in place: one undo takes both back, and the step and history list keep their identity", () => {
+    const store = createEditorStore(blank());
+    const s = () => store.getState();
+    s().apply(addLayer({ id: "a", type: "shape", name: "A", start: 0, end: 5 }), "Add");
+    const [past, step] = [s().past, s().past[0]];
+    s().amend(setProp("a", "transform.x", 40, 0));
+    expect(s().past).toBe(past);
+    expect(s().past[0]).toBe(step);
+    expect(s().doc.layers[0].transform.x).toBe(40);
+    s().undo();
+    expect(s().doc.layers).toHaveLength(0);
+    s().redo();
+    expect(s().doc.layers[0].transform.x).toBe(40);
+  });
+});

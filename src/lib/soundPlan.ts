@@ -39,7 +39,7 @@ export const SOUND_PLAN_SCHEMA = {
         properties: {
           p: { type: "number", description: "Start as a fraction of the film, 0..1" },
           prompt: { type: "string", description: "Description for a sound-effect generator, e.g. 'soft paper whoosh, short, airy'" },
-          seconds: { type: "number", description: "Length in seconds, 0.3..6" },
+          seconds: { type: "number", description: "Length in seconds, 0.5..6" },
           gain: { type: "number", description: "Relative loudness 0.2..1" },
         },
       },

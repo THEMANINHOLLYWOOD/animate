@@ -44,5 +44,5 @@ export function useFilmAudio(clips: AudioClip[], blobs: Record<string, Blob>) {
 
   useEffect(() => () => mixer?.stop(), [mixer]);
 
-  return { loaded, mixer, ready: loaded.length === clips.length };
+  return { loaded, mixer };
 }

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient, MODEL } from "@/lib/anthropic";
+import { anthropicClient, MODEL, modelError } from "@/lib/anthropic";
 import { errorResponse, limit } from "@/lib/limits";
 import { AGENT_SYSTEM, AGENT_TOOLS, MAX_AGENT_BODY, cleanHistory, runTool, summarizeDoc } from "@/editor/ai/tools";
 import { Doc } from "@/editor/doc/schema";
@@ -126,14 +126,7 @@ export async function POST(req: Request) {
           } else send({ type: "error", message: "That took longer than the 5-minute limit. Try a smaller request." });
           return;
         }
-        const message =
-          e instanceof Anthropic.APIError && /credit balance/i.test(e.message)
-            ? "The Anthropic account is out of credits. Add credits under Plans & Billing at console.anthropic.com."
-            : e instanceof Anthropic.RateLimitError
-              ? "Rate limited. Try again in a moment."
-              : e instanceof Error
-                ? e.message
-                : String(e);
+        const message = modelError(e);
         // Hand back whatever was already done so work isn't lost.
         send({ type: "error", message, ...(changes ? result() : {}) });
       } finally {

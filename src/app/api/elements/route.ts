@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient, MODEL } from "@/lib/anthropic";
+import { anthropicClient, MODEL, modelError, replyJson } from "@/lib/anthropic";
 import { clip, errorResponse, limit } from "@/lib/limits";
 import { ELEMENTS_SCHEMA, ELEMENTS_SYSTEM, type ElementsPlan } from "@/lib/elements";
 
@@ -44,12 +44,11 @@ export async function POST(req: Request) {
       { signal: AbortSignal.any([req.signal, deadline.signal]) },
     );
     const r = await stream.finalMessage();
-    const text = r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("");
-    const plan = JSON.parse(text) as ElementsPlan;
+    const plan = replyJson<ElementsPlan>(r);
     console.log(`[elements] stop=${r.stop_reason} out=${r.usage.output_tokens} elements=${plan.elements.length}`);
     return Response.json(plan);
   } catch (e) {
-    const message = deadline.signal.aborted ? "Extracting the elements took longer than the 5-minute limit." : (e as Error).message;
+    const message = deadline.signal.aborted ? "Extracting the elements took longer than the 5-minute limit." : modelError(e);
     return Response.json({ error: message }, { status: 502 });
   } finally {
     clearTimeout(timer);

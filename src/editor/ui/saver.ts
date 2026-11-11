@@ -184,8 +184,5 @@ export function createSaver(start: FilmRef, saved: Doc | null, deps: SaverDeps, 
     keptAt(id: string) {
       kept.add(id);
     },
-    stop() {
-      clearTimeout(timer);
-    },
   };
 }

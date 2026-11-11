@@ -9,7 +9,7 @@
 // One film, one source of truth: the Studio and the editor read and write the same film
 // record (getFilm, saveFilmDoc). Examples come from SHOWCASE and fork into a film of your
 // own on their first save; guests' films live in localStorage (FILMS_KEY), signed-in films
-// in the cloud (/api/projects). A guest film's sound and images, which have nowhere else to
+// in the cloud (/api/projects). A guest film's sound, images and fonts, which have nowhere else to
 // live, are kept in this browser's IndexedDB so they survive leaving the page.
 
 import { produce } from "immer";
@@ -589,12 +589,12 @@ export function dropEditorDoc(id: string): Promise<void> {
   });
 }
 
-// ── A guest film's sound and images ──
-// Guests have no cloud storage, so the blobs behind their films' audio clips (by clip id) and drawn
-// images (by asset name) are kept in IndexedDB ('animate.media'), keyed [film id, kind, name], and
+// ── A guest film's sound, images and fonts ──
+// Guests have no cloud storage, so the blobs behind their films' audio clips (by clip id), drawn
+// images (by asset name) and brand fonts (by file name) are kept in IndexedDB ('animate.media'), keyed [film id, kind, name], and
 // survive navigating away (to the editor and back, a reload). Every call fails soft: without
 // IndexedDB, a film's media lasts as long as the page, as before.
-export type MediaKind = "audio" | "image";
+export type MediaKind = "audio" | "image" | "font";
 type MediaKey = [string, MediaKind, string];
 type MediaRec = { blob: Blob; at: number };
 const MEDIA_DB = "animate.media";
@@ -649,9 +649,9 @@ export async function keepGuestMedia(filmId: string, kind: MediaKind, name: stri
   }
 }
 
-// A guest film's kept blobs: audio by clip id, images by asset name.
-export async function loadGuestMedia(filmId: string): Promise<{ audio: Record<string, Blob>; images: Record<string, Blob> }> {
-  const out = { audio: {} as Record<string, Blob>, images: {} as Record<string, Blob> };
+// A guest film's kept blobs: audio by clip id, images by asset name, fonts by file name.
+export async function loadGuestMedia(filmId: string): Promise<{ audio: Record<string, Blob>; images: Record<string, Blob>; fonts: Record<string, Blob> }> {
+  const out = { audio: {} as Record<string, Blob>, images: {} as Record<string, Blob>, fonts: {} as Record<string, Blob> };
   try {
     await inMedia("readonly", (s) => {
       const req = s.openCursor(filmRange(filmId));
@@ -660,7 +660,7 @@ export async function loadGuestMedia(filmId: string): Promise<{ audio: Record<st
         if (!c) return;
         const [, kind, name] = c.key as MediaKey;
         const rec = c.value as MediaRec;
-        if (rec?.blob instanceof Blob) (kind === "audio" ? out.audio : out.images)[name] = rec.blob;
+        if (rec?.blob instanceof Blob) (kind === "audio" ? out.audio : kind === "font" ? out.fonts : out.images)[name] = rec.blob;
         c.continue();
       };
     });

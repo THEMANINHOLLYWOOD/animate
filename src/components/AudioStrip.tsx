@@ -21,7 +21,7 @@ export default function AudioStrip({
   busyLabel: string | null;
   onChange: (id: string, patch: Partial<AudioClip>) => void;
   onRemove: (id: string) => void;
-  onUpload: (files: FileList) => void;
+  onUpload: (files: File[]) => void;
   onScore: () => void;
   onRegenerate: (id: string) => void;
   canScore: boolean;
@@ -40,7 +40,18 @@ export default function AudioStrip({
               ✦ Score this film
             </button>
           )}
-          <input ref={input} type="file" accept="audio/*,video/*" multiple hidden onChange={(e) => e.target.files && onUpload(e.target.files)} />
+          <input
+            ref={input}
+            type="file"
+            accept="audio/*,video/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) onUpload(Array.from(e.target.files));
+              // The same file can be picked again.
+              e.target.value = "";
+            }}
+          />
         </span>
       </div>
       {busyLabel && (

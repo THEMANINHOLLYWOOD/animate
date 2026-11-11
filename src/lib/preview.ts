@@ -17,7 +17,7 @@ export const PREVIEW_SIZE: Record<Aspect, [number, number]> = { "16:9": [480, 27
 export const PREVIEW_FPS = 30;
 const BPP = 0.11;
 // Bump when the drawing changes (kit, renderDoc, how previews are drawn): clips cached by
-// other versions are dropped. Shipped example clips are re-rendered by hand (/split-check).
+// other versions are dropped. Shipped example clips (public/previews) are re-rendered by hand.
 const RENDERER = 2;
 const FORMAT = `${RENDERER}|${PREVIEW_FPS}|${BPP}|${JSON.stringify(PREVIEW_SIZE)}`;
 const CACHE_PREFIX = "animate-previews-";

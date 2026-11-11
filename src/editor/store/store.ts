@@ -23,7 +23,6 @@ export type EditorState = {
   endGesture: () => void;
   undo: () => void;
   redo: () => void;
-  load: (doc: Doc) => void;
   setTime: (t: number) => void;
   select: (ids: string[]) => void;
 };
@@ -71,7 +70,13 @@ export const createEditorStore = (initial: Doc) => {
       if (!redo.length) return;
       const past = get().past;
       const prev = past[past.length - 1];
-      set(prev ? { doc: next, past: [...past.slice(0, -1), { ...prev, redo: [...prev.redo, ...redo], undo: [...undo, ...prev.undo] }] } : { doc: next });
+      // In place: whoever holds the step (the agent's reply tracks its own) still holds it, and the
+      // history list is the same list, so this doesn't read as a new edit (which stops playback).
+      if (prev) {
+        prev.redo = [...prev.redo, ...redo];
+        prev.undo = [...undo, ...prev.undo];
+      }
+      set({ doc: next });
     },
 
     beginGesture() {
@@ -96,11 +101,6 @@ export const createEditorStore = (initial: Doc) => {
       const step = future[0];
       if (!step) return;
       set({ doc: applyPatches(doc, step.redo), past: [...past, step], future: future.slice(1) });
-    },
-
-    load(doc) {
-      close();
-      set({ doc, past: [], future: [], selection: [], time: 0 });
     },
 
     setTime(t) {

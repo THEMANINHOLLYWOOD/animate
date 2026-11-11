@@ -5,6 +5,7 @@ import { CLERK_ENABLED, LOCAL_USER } from "./authMode";
 //   projects/<id>.json          project metadata + scene code
 //   assets/<projectId>/<name>   images drawn in a film
 //   videos/<projectId>/<ts>.mp4 exported renders
+//   audio/<projectId>/<clip>    a film's sound clips
 
 export const userRoot = (userId: string) => `users/${userId}/`;
 
@@ -16,7 +17,7 @@ export async function requireUser() {
 }
 
 export function ownsPath(userId: string, pathname: string) {
-  return pathname.startsWith(userRoot(userId)) && !pathname.includes("..");
+  return pathname.startsWith(userRoot(userId)) && !pathname.split(/[\\/]/).includes("..");
 }
 
 export const unauthorized = () => Response.json({ error: "Sign in required." }, { status: 401 });

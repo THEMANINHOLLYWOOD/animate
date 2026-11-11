@@ -16,7 +16,8 @@ const FOLDERS: Record<string, string[]> = {
 export async function POST(req: Request) {
   const userId = await requireUser();
   if (!userId) return unauthorized();
-  const body = (await req.json()) as HandleUploadBody;
+  const body = (await req.json().catch(() => null)) as HandleUploadBody | null;
+  if (!body) return Response.json({ error: "Invalid upload request." }, { status: 400 });
   try {
     const result = await handleUpload({
       body,

@@ -16,7 +16,8 @@ import type { Kit } from "@/lib/kit";
 import type { Op } from "../doc/ops";
 import { Doc, Layer, newId, type Doc as DocT, type Keyframe, type Layer as LayerT, type Value } from "../doc/schema";
 import { evolves, textLabel } from "../doc/split";
-import { codeHash, sceneClock, unsplit } from "./codeHash";
+import { sceneClock, splitKey, unsplit } from "./codeHash";
+import { controlsSet, withControls } from "@/lib/controls";
 import { dropper, paintOrder } from "./keep";
 import { pacer, type Pace } from "./pace";
 import { invisible, tapText, type Box, type Paint, type TextDraw } from "./textTap";
@@ -510,7 +511,8 @@ export async function splitCodeLayer(doc: DocT, layer: LayerT, kit: Kit, assets:
   const { w: W, h: H } = doc.meta.size;
   const T = layer.end - layer.start;
   const { sceneIn, sceneT } = sceneClock(layer.props, layer.start, layer.end);
-  const cand = await extractText(code, W, H, T, doc.meta.fps, kit, assets, layer.start, {
+  // Recorded as the film is set: its controls at their current values.
+  const cand = await extractText(code, W, H, T, doc.meta.fps, withControls(kit, controlsSet(layer.props)), assets, layer.start, {
     pace,
     onProgress: (k) => opts.onProgress?.(0.35 * k),
     sceneIn,
@@ -523,7 +525,7 @@ export async function splitCodeLayer(doc: DocT, layer: LayerT, kit: Kit, assets:
   if (!v.layers.length) return { name: layer.name, props: { textSplit: false }, layers: [] };
   return {
     name: "Artwork (code)",
-    props: { skipText: true, keepText: [...v.keep], splitHash: codeHash(code), splitSpan: splitSpanOf(layer) },
+    props: { skipText: true, keepText: [...v.keep], splitHash: splitKey(layer.props), splitSpan: splitSpanOf(layer) },
     layers: pruneLinks(v.layers),
   };
 }

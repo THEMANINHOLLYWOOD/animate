@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient, MODEL } from "@/lib/anthropic";
-import { clip, errorResponse, limit } from "@/lib/limits";
+import { anthropicClient, MODEL, modelError, replyJson } from "@/lib/anthropic";
+import { clip, errorResponse, limit, within } from "@/lib/limits";
 
 export const maxDuration = 120;
 
@@ -68,21 +68,24 @@ export async function POST(req: Request) {
   const duration = Math.min(120, Math.max(1, Number(b.duration) || 10));
   content.push({
     type: "text",
-    text: [`Film: ${duration}s, ${clip(b.aspect, 12)}.`, b.treatment ? `Treatment:\n${clip(b.treatment, 6000)}` : "", b.cues ? `Sound cues: ${clip(b.cues, 6000)}` : "No sound cues yet.", "Review the frames."].filter(Boolean).join("\n\n"),
+    text: [`Film: ${duration}s, ${clip(b.aspect, 12)}.`, b.treatment ? `Treatment:\n${clip(b.treatment, 20_000)}` : "", b.cues ? `Sound cues: ${clip(b.cues, 6000)}` : "No sound cues yet.", "Review the frames."].filter(Boolean).join("\n\n"),
   });
   try {
-    const r = await anthropicClient().messages.create({
-      model: MODEL,
-      max_tokens: 4000,
-      output_config: { effort: "medium", format: { type: "json_schema", schema: SCHEMA } },
-      system: SYSTEM,
-      messages: [{ role: "user", content }],
-    });
-    const text = r.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("");
-    const out = JSON.parse(text);
+    // Thinking counts against max_tokens, so the cap leaves room for it.
+    const r = await anthropicClient().messages.create(
+      {
+        model: MODEL,
+        max_tokens: 16000,
+        output_config: { effort: "medium", format: { type: "json_schema", schema: SCHEMA } },
+        system: SYSTEM,
+        messages: [{ role: "user", content }],
+      },
+      { signal: within(req, 110_000) },
+    );
+    const out = replyJson<{ scores: Record<string, number>; problems: unknown[] }>(r);
     console.log(`[critique] ${JSON.stringify(out.scores)} problems=${out.problems.length}`);
     return Response.json(out);
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 502 });
+    return Response.json({ error: modelError(e) }, { status: 502 });
   }
 }

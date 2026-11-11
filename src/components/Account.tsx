@@ -33,7 +33,7 @@ export const useAccount = () => useContext(Ctx);
 export function SignIn({ children }: { children: ReactNode }) {
   if (CLERK_ENABLED) return <SignInButton mode="modal">{children}</SignInButton>;
   return (
-    <span title="Accounts are being set up" style={{ opacity: 0.5, pointerEvents: "none", display: "contents" }}>
+    <span title="Accounts are being set up" style={{ opacity: 0.5, pointerEvents: "none", display: "inline-flex" }}>
       {children}
     </span>
   );

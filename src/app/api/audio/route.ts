@@ -1,4 +1,4 @@
-import { errorResponse, limit } from "@/lib/limits";
+import { errorResponse, limit, within } from "@/lib/limits";
 import { canonicalWav } from "@/lib/media";
 
 // ElevenLabs bridge. The key stays server-side; results stream straight back.
@@ -62,27 +62,27 @@ function wordsFromAlignment(a: Char | null) {
   return out;
 }
 
-export async function GET(req: Request) {
-  if (!key()) return Response.json({ error: "ELEVENLABS_API_KEY is not set." }, { status: 503 });
-  if (new URL(req.url).searchParams.get("voices")) {
-    const r = await fetch(`${EL}/voices`, { headers: { "xi-api-key": key() } });
-    if (!r.ok) return Response.json({ error: elError(r.status, await r.text()) }, { status: 502 });
-    const j = await r.json();
-    const voices = (j.voices as { voice_id: string; name: string; category: string; labels?: Record<string, string> }[])
-      .filter((v) => v.category === "premade")
-      .map((v) => ({ id: v.voice_id, name: v.name, labels: v.labels ?? {} }));
-    return Response.json({ voices });
-  }
-  return Response.json({ error: "Unknown request." }, { status: 400 });
-}
-
 export async function POST(req: Request) {
   if (!key()) return Response.json({ error: "ELEVENLABS_API_KEY is not set." }, { status: 503 });
+  // Stopping a build stops the provider call, and a slow one ends inside the function's own limit.
+  const signal = within(req, 110_000);
+  try {
+    return await handle(req, signal);
+  } catch (e) {
+    if (req.signal.aborted) return errorResponse("Stopped.", 499);
+    const timedOut = (e as Error).name === "TimeoutError" || signal.aborted;
+    console.error(`[elevenlabs] ${(e as Error).message}`);
+    return errorResponse(timedOut ? "The sound took too long to make. Try again." : "Couldn't reach the sound service. Try again.", timedOut ? 504 : 502);
+  }
+}
+
+async function handle(req: Request, signal: AbortSignal) {
   const H = { "xi-api-key": key() };
   const ct = req.headers.get("content-type") ?? "";
 
   if (ct.startsWith("multipart/form-data")) {
-    const form = await req.formData();
+    const form = await req.formData().catch(() => null);
+    if (!form) return errorResponse("Couldn't read the upload.", 400);
     const action = String(form.get("action") ?? "");
     if (action !== "isolate" && action !== "transcribe") return Response.json({ error: "Unknown action." }, { status: 400 });
     const limited = await limit(req, "speech");
@@ -97,13 +97,13 @@ export async function POST(req: Request) {
     const fd = new FormData();
     if (action === "isolate") {
       fd.append("audio", audio, "audio.wav");
-      return passthrough(await fetch(`${EL}/audio-isolation`, { method: "POST", headers: H, body: fd }));
+      return passthrough(await fetch(`${EL}/audio-isolation`, { signal, method: "POST", headers: H, body: fd }));
     }
     // transcribe
     fd.append("file", audio, "audio.wav");
     fd.append("model_id", "scribe_v1");
     fd.append("timestamps_granularity", "word");
-    const r = await fetch(`${EL}/speech-to-text`, { method: "POST", headers: H, body: fd });
+    const r = await fetch(`${EL}/speech-to-text`, { signal, method: "POST", headers: H, body: fd });
     if (!r.ok) return Response.json({ error: elError(r.status, await r.text()) }, { status: 502 });
     const j = await r.json();
     const words = ((j.words ?? []) as { text: string; start: number; end: number; type?: string }[])
@@ -112,7 +112,7 @@ export async function POST(req: Request) {
     return Response.json({ text: j.text ?? "", language: j.language_code ?? null, words });
   }
 
-  const body = await req.json();
+  const body = (await req.json().catch(() => null)) ?? {};
   const action = String(body.action ?? "");
   if (!Object.hasOwn(JSON_GROUPS, action)) return Response.json({ error: "Unknown action." }, { status: 400 });
   const limited = await limit(req, JSON_GROUPS[action as keyof typeof JSON_GROUPS]);
@@ -121,6 +121,7 @@ export async function POST(req: Request) {
     const seconds = Math.min(22, Math.max(0.5, Number(body.seconds) || 2));
     return passthrough(
       await fetch(`${EL}/sound-generation`, {
+        signal,
         method: "POST",
         headers: { ...H, "content-type": "application/json" },
         body: JSON.stringify({ text: String(body.prompt ?? "").slice(0, 400), duration_seconds: seconds, prompt_influence: 0.4 }),
@@ -128,8 +129,8 @@ export async function POST(req: Request) {
     );
   }
   if (action === "tts") {
-    const voice = /^[A-Za-z0-9]{10,40}$/.test(String(body.voice ?? "")) ? String(body.voice) : DEFAULT_VOICE;
-    const r = await fetch(`${EL}/text-to-speech/${voice}/with-timestamps?output_format=mp3_44100_128`, {
+    const r = await fetch(`${EL}/text-to-speech/${DEFAULT_VOICE}/with-timestamps?output_format=mp3_44100_128`, {
+      signal,
       method: "POST",
       headers: { ...H, "content-type": "application/json" },
       body: JSON.stringify({ text: String(body.text ?? "").slice(0, 2500), model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.2 } }),
@@ -142,6 +143,7 @@ export async function POST(req: Request) {
     const ms = Math.min(MAX_MUSIC_MS, Math.max(3000, Math.round((Number(body.seconds) || 30) * 1000)));
     return passthrough(
       await fetch(`${EL}/music`, {
+        signal,
         method: "POST",
         headers: { ...H, "content-type": "application/json" },
         body: JSON.stringify({ prompt: String(body.prompt ?? "").slice(0, 1000), music_length_ms: ms }),

@@ -38,7 +38,7 @@ export async function GET(req: Request) {
 export async function PUT(req: Request) {
   const userId = await requireUser();
   if (!userId) return unauthorized();
-  const project = await req.json();
+  const project = await req.json().catch(() => null);
   if (!ID.test(project?.id ?? "") || typeof project.code !== "string") {
     return Response.json({ error: "Invalid project." }, { status: 400 });
   }

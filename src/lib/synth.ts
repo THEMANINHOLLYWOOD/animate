@@ -1,6 +1,6 @@
 // A tempo-locked procedural music bed rendered with Web Audio, for films that
-// have no track (and when a music generator isn't available). Seeded, so the
-// same brief always renders the same bed. One motif returns on the key idea.
+// have no track (and when a music generator isn't available). Seeded by the film, so
+// one film always renders the same bed. One motif returns on the key idea.
 
 export type BedSpec = { bpm: number; energy: "low" | "medium" | "high"; mode: "major" | "minor"; seed: number; motifAt?: number[] };
 

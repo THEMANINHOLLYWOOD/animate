@@ -34,6 +34,7 @@ import { detectBeats, snapToGrid } from "@/lib/beats";
 import type { BrandKit } from "@/lib/brand";
 import { isXStatus, xStatusId, type XVideoRef } from "@/lib/xvideo";
 import { aspectFor, fitFrames, probeVideo, sampleFrames, type VideoRef } from "@/lib/videoref";
+import { cantDecode, extOf, type FontInfo, fontNote, gifInfo, lengthHint, loadFontFiles, type Opened, openArchive, psdComposite, rtfText, sizedSvg, sniff, soundsLikeVoice, soundtrackNote, TEXT_CAP, type Track, trackFacts, voiceNote } from "@/lib/intake";
 import {
   adoptFilm,
   adoptStoredFilms,
@@ -54,6 +55,7 @@ import {
   keepsOwnCopy,
   lastBeat,
   loadGuestMedia,
+  type MediaKind,
   mergeFilms,
   onFilmSaved,
   patchStoredFilm,
@@ -99,7 +101,6 @@ type Project = {
   favorite?: boolean;
   // The animation style it was made in (src/lib/styles.ts); edits keep it.
   style?: string;
-  share?: { id: string; createdAt: number };
   createdAt: number;
   // When it was last saved to the cloud (set by the server).
   updatedAt?: number;
@@ -172,17 +173,48 @@ const withMessages = (thread: Msg[] = [], msgs: Msg[]) => {
   );
 };
 
+// A voiceover's words, and how much of it (seconds) was transcribed.
+type Said = { text: string; words: { w: string; s: number; e: number }[]; seconds: number };
 type Attached = {
   id: string;
   name: string;
-  kind: "image" | "pdf" | "text";
+  // Images, PDFs and text go to the model; a sound file is the film's soundtrack and a font its typeface.
+  kind: "image" | "pdf" | "text" | "audio" | "font";
   file: File;
   url?: string;
   img?: HTMLImageElement;
   asset: boolean;
+  // The tile: the letters where there's no picture, and the line under the name.
+  tag?: string;
+  note?: string;
+  // Text already read out of the file (an Office document, RTF, text that isn't UTF-8).
+  text?: string;
+  // A soundtrack: its beat grid and loudness, whether it's a voiceover rather than music, and (once transcribed) its words.
+  track?: Track;
+  voice?: boolean;
+  said?: Said;
+  font?: FontInfo;
 };
 
-// Example films everyone starts with: ten deliberately opposite styles.
+// A soundtrack dropped with the brief, as the film's own clip: music with its beat grid, or a voiceover
+// with its words. It plays from its start for as long as the film runs.
+const soundClip = (f: Attached, T: number, underVoice: boolean): AudioClip => {
+  const t = f.track!;
+  const duration = Math.min(t.duration, T);
+  const label = f.file.name.replace(/\.[^.]+$/, "");
+  const base = { id: uid(), start: 0, duration, muted: false, source: "upload" as const };
+  if (f.voice) return { ...base, kind: "voice", label, gain: 1, text: f.said?.text, words: f.said?.words.filter((w) => w.s < duration) };
+  const within = (xs: number[]) => xs.filter((x) => x <= duration);
+  return { ...base, kind: "music", label: `${label} · ${Math.round(t.bpm)} BPM`, gain: underVoice ? 0.55 : 0.8, beats: { bpm: t.bpm, beats: within(t.beats), downbeats: within(t.downbeats), hits: within(t.hits) } };
+};
+// A film's sound with the user's own clips added: the music or voice they take the place of is muted, not lost.
+const withOwnSound = (audio: AudioClip[] = [], own: AudioClip[]) => {
+  const music = own.some((c) => c.kind === "music");
+  const voice = own.some((c) => c.kind === "voice");
+  return [...audio.map((c) => ((music && (c.kind === "music" || c.kind === "background")) || (voice && c.kind === "voice") ? { ...c, muted: true } : c)), ...own];
+};
+
+// Example films everyone starts with: deliberately opposite styles.
 const EXAMPLES: Project[] = SHOWCASE.map((f, i) => ({ ...f, builtin: true, createdAt: i }));
 const FIRST = EXAMPLES[0];
 const isExample = (id: string) => EXAMPLES.some((p) => p.id === id);
@@ -221,7 +253,8 @@ const friendlyError = (m: string) =>
 // Out of credits, in the API's words or the server's: nothing after it in a build can work either.
 const outOfCredits = (m: string) => /credit balance|out of credits/i.test(m);
 // A build's attachments as its requests carry them, held by the page so the build can be continued with them.
-type Kept = { files: unknown[]; stems: Stems | null; brands: BrandKit[]; images: Attached[]; assets: Assets };
+// `sound` and `fonts`: a soundtrack and brand fonts dropped with the brief, which the finished film keeps.
+type Kept = { files: unknown[]; stems: Stems | null; brands: BrandKit[]; images: Attached[]; assets: Assets; sound?: Attached[]; fonts?: Attached[]; notes?: string };
 const nowMs = () => Date.now();
 // A stopped run: fetches reject with an AbortError, but a Blob upload stopped mid-PUT throws its own
 // (plainly named) error, so the run's signal decides.
@@ -255,15 +288,43 @@ const hostOf = (u: string) => {
   }
 };
 
-const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|html|css|js|jsx|ts|tsx|py|yaml|yml|xml|srt|vtt)$/i;
+const AUDIO_MIME: Record<string, string> = { mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", flac: "audio/flac", webm: "audio/webm", aiff: "audio/aiff" };
+const fileOf = (bytes: Uint8Array | string, name: string, type = "") => new File([bytes as BlobPart], name, { type });
+const wordsIn = (s: string) => s.split(/\s+/).filter(Boolean).length;
 
-const isVideoFile = (f: File) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm)$/i.test(f.name);
+// A picture as a PNG or JPEG file no larger than `max` on its long side (what a browser decoded
+// natively, or pixels read out of a file it can't, kept in a form every browser opens).
+async function rasterFile(src: CanvasImageSource | ImageData, w: number, h: number, name: string, type: "image/png" | "image/jpeg" = "image/png", max = 4096) {
+  const k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement("canvas");
+  [c.width, c.height] = [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
+  const g = c.getContext("2d")!;
+  if (src instanceof ImageData) {
+    const full = document.createElement("canvas");
+    [full.width, full.height] = [w, h];
+    full.getContext("2d")!.putImageData(src, 0, 0);
+    g.drawImage(full, 0, 0, c.width, c.height);
+  } else g.drawImage(src, 0, 0, c.width, c.height);
+  const blob = await new Promise<Blob | null>((res) => c.toBlob(res, type, 0.92));
+  if (!blob) throw new Error("is too large to convert here: export it smaller");
+  return new File([blob], name, { type });
+}
 
-function kindOf(f: File): Attached["kind"] | null {
-  if (f.type.startsWith("image/")) return "image";
-  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) return "pdf";
-  if (f.type.startsWith("text/") || TEXT_EXT.test(f.name)) return "text";
-  return null;
+// A few frames from the middle of an animated GIF, as stills (where the browser can decode frames one by one).
+async function gifFrames(file: File, frames: number, count = 3): Promise<File[]> {
+  if (typeof ImageDecoder === "undefined" || frames < 2) return [];
+  const out: File[] = [];
+  try {
+    const dec = new ImageDecoder({ data: await file.arrayBuffer(), type: "image/gif" });
+    const picks = [...new Set(Array.from({ length: count }, (_, i) => Math.round(((i + 1) * (frames - 1)) / count)))].filter((i) => i > 0);
+    for (const i of picks) {
+      const { image } = await dec.decode({ frameIndex: i });
+      out.push(await rasterFile(image, image.displayWidth, image.displayHeight, `${file.name.replace(/\.gif$/i, "")}-frame${i + 1}.png`, "image/png", 1024));
+      image.close();
+    }
+    dec.close();
+  } catch {}
+  return out;
 }
 
 function loadImage(url: string) {
@@ -418,7 +479,7 @@ const resumeNote = (n: number, why: "continue" | "lighter" | "retry" | "busy") =
     : why === "lighter"
       ? "Still thinking at the time limit; trying again with a lighter pass"
       : why === "busy"
-        ? "Claude's servers were busy; trying again"
+        ? "The model service was busy; trying again"
         : "The connection dropped; trying again";
 
 // Effort steps down a rung per run that was still thinking at the limit; the last rung ("none")
@@ -466,7 +527,7 @@ async function runStage(
         onResume?.(++retries, "retry");
         continue;
       }
-      if (e instanceof Upstream) throw new Error("Claude's servers are busy right now. Try again in a minute.");
+      if (e instanceof Upstream) throw new Error("The model service is busy right now. Try again in a minute.");
       if (e instanceof PartialOutput || e instanceof StillThinking) throw new Error("This film is too long to finish within the time limit, even in parts. Try a shorter length or a simpler brief.");
       throw e;
     }
@@ -477,6 +538,11 @@ export default function Studio() {
   const { isLoaded, isSignedIn, userId } = useAccount();
   const [projects, setProjects] = useState<Project[]>(EXAMPLES);
   const [currentId, setCurrentId] = useState(FIRST.id);
+  // The open film as a long build sees it when it ends (not as it was when the build began).
+  const currentIdRef = useRef(currentId);
+  useEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
   const [prompt, setPrompt] = useState("");
   const [enhanced, setEnhanced] = useState<null | { brief: string; recreate?: boolean }>(null);
   const [modeState, setMode] = useState<"new" | "edit">("new");
@@ -487,6 +553,8 @@ export default function Studio() {
   const [brands, setBrands] = useState<BrandKit[]>([]);
   const [reading, setReading] = useState<string[]>([]);
   const [videos, setVideos] = useState<(VideoRef & { status: string })[]>([]);
+  // Dropped files still being read (a long song decoded, a deck unpacked).
+  const [taking, setTaking] = useState(0);
   const triedLinks = useRef(new Set<string>());
   const [projectImgs, setProjectImgs] = useState<Record<string, HTMLImageElement>>({});
   const [fps, setFps] = useState(30);
@@ -560,6 +628,15 @@ export default function Studio() {
   const cloud = !!isSignedIn;
   // An example can't be edited in place: while one is open, the composer always makes a new film.
   const mode = project.builtin ? "new" : modeState;
+  // Leaving the composer for the open film's thread (or back): a treatment written for a new film
+  // isn't sent as a change to this one, so the brief it came from goes back in the box.
+  const switchMode = (m: "new" | "edit") => {
+    if (enhanced) {
+      setPrompt(enhanced.brief);
+      setEnhanced(null);
+    }
+    setMode(m);
+  };
   // The brief without the links that became reference videos: pasting just a post's link is a
   // request to recreate its video, not a brief that happens to contain a URL.
   const briefText = withoutVideoLinks(prompt, videos);
@@ -736,7 +813,7 @@ export default function Studio() {
   };
 
   // Guests: keep a blob of a film in this browser, so its sound and images survive leaving the page.
-  const keepMedia = useCallback((filmId: string, kind: "audio" | "image", name: string, blob: Blob) => {
+  const keepMedia = useCallback((filmId: string, kind: MediaKind, name: string, blob: Blob) => {
     const w = keepGuestMedia(filmId, kind, name, blob).then((ok) => {
       if (!ok) setNotice("This browser couldn't keep this film's sound or images, so they last only while this page is open.");
     });
@@ -870,7 +947,8 @@ export default function Studio() {
         stored.get(id),
       );
     const adopt = (stored: Project[], since: number) => {
-      const fresh = stored.filter((p) => !deleted.current.has(p.id));
+      // (A building mark gone stale on the cloud's copy is settled here too, as it is at load.)
+      const fresh = settleBuilds(stored, nowMs(), liveRun).filter((p) => !deleted.current.has(p.id));
       const byId = new Map(fresh.map((p) => [p.id, p]));
       setProjects((list) => {
         const own = mine(since, byId);
@@ -982,8 +1060,10 @@ export default function Studio() {
     if (!isLoaded || cloud || project.builtin || guestImgsRead.current.has(project.id)) return;
     const id = project.id;
     guestImgsRead.current.add(id);
-    void loadGuestMedia(id).then(async ({ audio, images }) => {
+    void loadGuestMedia(id).then(async ({ audio, images, fonts: kept }) => {
       if (Object.keys(audio).length) setAudioBlobs((m) => ({ ...audio, ...m }));
+      // Its brand fonts, registered again; the frame is redrawn once they're in.
+      if (Object.keys(kept).length) void loadFontFiles(Object.entries(kept).map(([name, blob]) => ({ name, blob }))).then((got) => got.length && setFonts((f) => f && { ...f }));
       const pairs = await Promise.all(
         Object.entries(images).map(async ([name, blob]) => {
           // A loaded image keeps drawing after its URL is let go (as attachments' do).
@@ -1103,40 +1183,112 @@ export default function Studio() {
   const shownError = error ?? compiled.err;
 
   // ── files ──
+  // Anything can be dropped. Each file is read for what it is (by its bytes, not its name) and becomes
+  // what a film can use of it: pictures, a video, text for the model, the soundtrack, a typeface. A
+  // document gives its text and pictures, a zip its files; what can't be used is named, with what to drop instead.
   const addFiles = useCallback(async (list: FileList | File[]) => {
     const added: Attached[] = [];
-    const skipped: string[] = [];
-    for (const file of Array.from(list)) {
-      if (isVideoFile(file)) {
+    const told: string[] = [];
+    const take = async (file: File, depth = 0, ref = false): Promise<void> => {
+      const fail = (why: string) => void told.push(`“${file.name}” ${why}.`);
+      const s = sniff(new Uint8Array(await file.slice(0, 4096).arrayBuffer()), file.name, file.type);
+      const a: Attached = { id: uid(), name: safeName(file.name), kind: "text", file, asset: false, tag: (extOf(file.name) || s.format).slice(0, 4).toUpperCase() };
+      if (s.kind === "unknown") return fail(s.why!);
+      if (s.kind === "video") {
         const blobUrl = URL.createObjectURL(file);
         try {
           const info = await probeVideo(blobUrl);
           setVideos((v) => [...v, { id: uid(), source: "file", name: file.name, blobUrl, ...info, status: "Ready" }]);
-        } catch (e) {
+        } catch {
           URL.revokeObjectURL(blobUrl);
-          skipped.push(`${file.name} (${(e as Error).message})`);
+          fail(cantDecode(s));
         }
-        continue;
-      }
-      const kind = kindOf(file);
-      if (!kind) {
-        skipped.push(file.name);
-        continue;
-      }
-      const a: Attached = { id: uid(), name: safeName(file.name), kind, file, asset: kind === "image" };
-      if (kind === "image") {
-        a.url = URL.createObjectURL(file);
+      } else if (s.kind === "audio") {
+        const buf = await decodeAudio(file).catch(() => null);
+        if (!buf) return fail(cantDecode(s));
+        if (buf.duration < 1) return fail("is under a second long, too short for a soundtrack");
+        const voice = soundsLikeVoice(file.name);
+        const first = added.find((x) => x.kind === "audio" && !!x.voice === voice);
+        if (first) return fail(`wasn't added: a film takes one music track and one voiceover, and “${first.name}” came first`);
+        // Tempo, beats and the drop from its first two minutes (no film is longer).
+        const part = trimAudio(buf, 120);
+        const track = trackFacts(detectBeats(part), Array.from({ length: part.numberOfChannels }, (_, c) => part.getChannelData(c)), part.sampleRate, buf.duration);
+        added.push({ ...a, kind: "audio", track, voice, file: file.type.startsWith("audio/") ? file : new File([file], file.name, { type: AUDIO_MIME[s.format] ?? "audio/mpeg" }) });
+      } else if (s.kind === "pdf") added.push({ ...a, kind: "pdf", tag: "PDF", note: extOf(file.name) === "ai" ? "Illustrator, read as PDF" : "PDF" });
+      else if (s.kind === "text") {
+        // Text that isn't UTF-8 is decoded here; the rest is read when it's sent.
+        const text = s.format === "utf-8" ? undefined : new TextDecoder(s.format).decode(await file.slice(0, TEXT_CAP * 2).arrayBuffer());
+        added.push({ ...a, text, note: file.size > TEXT_CAP * (s.format.startsWith("utf-16") ? 2 : 1) ? "Text · its first 200,000 characters" : "Text" });
+      } else if (s.kind === "rtf") {
+        const text = rtfText(new TextDecoder("latin1").decode(await file.arrayBuffer()));
+        if (!text) return fail("has no text in it");
+        added.push({ ...a, text, tag: "RTF", note: `RTF · ${wordsIn(text).toLocaleString("en")} words` });
+      } else if (s.kind === "archive") {
+        if (file.size > 300_000_000) return fail("is too large to open here (over 300 MB): unzip it and drop the files you need");
+        let o: Opened;
+        try {
+          o = openArchive(new Uint8Array(await file.arrayBuffer()), file.name);
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+        if (o.files && depth) return fail("is a zip inside a zip: unzip it and drop its files");
+        if (o.text) added.push({ ...a, text: o.text, tag: o.format.slice(0, 4).toUpperCase(), note: o.note });
+        for (const m of [...o.images, ...(o.files ?? [])]) await take(fileOf(m.bytes, m.name), depth + 1, m.ref);
+        if (o.left) told.push(`In “${file.name}”, ${o.left}.`);
+        else if (!o.text && !o.images.length && !o.files?.length) fail(`is ${/^[AEIO]/.test(o.label) ? "an" : "a"} ${o.label} with nothing in it that could be read`);
+      } else if (s.kind === "font") {
+        // Loaded under its own family name, so a film's text can ask for it.
+        const [font] = await loadFontFiles([{ name: file.name, blob: file }]);
+        if (!font) return fail("is a font this browser couldn't load: drop its TTF, OTF or WOFF2 file");
+        const weight = Array.isArray(font.weight) ? `${font.weight[0]}–${font.weight[1]}` : font.weight;
+        added.push({ ...a, kind: "font", font, tag: "Aa", note: `Font · ${font.family} ${weight}${font.italic ? " italic" : ""}` });
+      } else {
+        let src = file;
+        let note: string | undefined;
+        const frames: File[] = [];
+        try {
+          if (s.format === "svg") {
+            // Sized, so every browser draws it, and large enough to stay sharp.
+            const svg = await file.text();
+            src = fileOf(sizedSvg(svg)?.svg ?? svg, file.name, "image/svg+xml");
+          } else if (s.format === "psd") {
+            const p = psdComposite(new Uint8Array(await file.arrayBuffer()));
+            src = await rasterFile(new ImageData(p.rgba as Uint8ClampedArray<ArrayBuffer>, p.width, p.height), p.width, p.height, `${file.name.replace(/\.ps[db]$/i, "")}.png`);
+            note = "Photoshop, flattened";
+          } else if (s.format === "gif") {
+            const g = gifInfo(new Uint8Array(await file.arrayBuffer()));
+            if (g.frames > 1) {
+              frames.push(...(await gifFrames(file, g.frames)));
+              note = `${g.frames} frames: drawn as a still`;
+            }
+          }
+        } catch (e) {
+          const why = (e as Error).message;
+          return fail(/^is(n't)? /.test(why) ? why : cantDecode(s));
+        }
+        a.url = URL.createObjectURL(src);
         try {
           a.img = await loadImage(a.url);
+          // What only some browsers decode (HEIC and TIFF, in Safari) is kept as a picture every browser opens.
+          if (s.format === "heic" || s.format === "tiff") {
+            const jpeg = s.format === "heic";
+            src = await rasterFile(a.img, a.img.naturalWidth, a.img.naturalHeight, `${file.name.replace(/\.[^.]+$/, "")}.${jpeg ? "jpg" : "png"}`, jpeg ? "image/jpeg" : "image/png");
+          }
         } catch {
-          skipped.push(file.name);
-          continue;
+          URL.revokeObjectURL(a.url);
+          return fail(cantDecode(s));
         }
+        added.push({ ...a, name: safeName(src.name), kind: "image", file: src, asset: !ref, note });
+        // An animation's later frames come along as references.
+        for (const f of frames) await take(f, depth + 1, true);
       }
-      added.push(a);
-    }
-    setFiles((f) => [...f, ...added]);
-    if (skipped.length) setError(`Skipped: ${skipped.join(", ")}. Use images, videos, PDFs or text.`);
+    };
+    setTaking((n) => n + 1);
+    for (const file of Array.from(list)) await take(file).catch((e) => void told.push(`“${file.name}” couldn't be read (${(e as Error).message}).`));
+    setTaking((n) => n - 1);
+    // One music track and one voiceover: a new one takes the place of the one attached before.
+    setFiles((f) => [...f.filter((x) => !(x.kind === "audio" && added.some((n) => n.kind === "audio" && !!n.voice === !!x.voice))), ...added]);
+    if (told.length) setError(told.join(" "));
   }, []);
 
   const removeFile = (id: string) =>
@@ -1150,18 +1302,20 @@ export default function Studio() {
   // images are re-encoded to share what PDFs and text leave, and anything that still can't fit is named.
   const filePayload = async (withFrames: boolean) => {
     const room = ATTACH_BUDGET - (withFrames ? FRAME_FLOOR : 0);
+    // (A soundtrack and fonts aren't sent: the brief says what the model needs to know of them.)
+    const sent = files.filter((f) => f.kind === "image" || f.kind === "pdf" || f.kind === "text");
     const docs = new Map<string, { kind: string; name: string; data?: string; text?: string }>();
-    for (const f of files) {
+    for (const f of sent) {
       if (f.kind === "pdf") docs.set(f.id, { kind: "pdf", name: f.name, data: await b64(f.file) });
-      else if (f.kind === "text") docs.set(f.id, { kind: "text", name: f.name, text: (await f.file.text()).slice(0, 200_000) });
+      else if (f.kind === "text") docs.set(f.id, { kind: "text", name: f.name, text: (f.text ?? (await f.file.slice(0, TEXT_CAP * 4).text())).slice(0, TEXT_CAP) });
     }
     for (const d of docs.values())
       if (d.kind === "pdf" && sizeOf(d) > room)
         throw new Error(`“${d.name}” is too large to send (${mb(sizeOf(d))} encoded; about ${mb(room)} fits${withFrames ? " beside the video frames" : ""}). Use a smaller PDF, or paste the text you need.`);
     const docBytes = [...docs.values()].reduce((n, d) => n + sizeOf(d), 0);
-    const images = files.length - docs.size;
+    const images = sent.length - docs.size;
     const perImage = Math.max(150_000, Math.min(900_000, Math.floor((room - docBytes) / Math.max(1, images))));
-    const out = files.map((f) => docs.get(f.id) ?? { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type, perImage) });
+    const out = sent.map((f) => docs.get(f.id) ?? { kind: "image", name: f.name, asset: f.asset, ...imagePayload(f.img!, f.file.type, perImage) });
     const total = out.reduce((n, x) => n + sizeOf(x), 0);
     if (total > room) {
       const largest = out.map((x) => ({ name: x.name, size: sizeOf(x) })).sort((a, b) => b.size - a.size).slice(0, 3);
@@ -1199,7 +1353,10 @@ export default function Studio() {
       const vr = await fetch(`/api/reference?media=${encodeURIComponent(ref.video)}`);
       if (!vr.ok) throw new Error("Couldn't download that video.");
       const blobUrl = URL.createObjectURL(await vr.blob());
-      const info = await probeVideo(blobUrl);
+      const info = await probeVideo(blobUrl).catch((e) => {
+        URL.revokeObjectURL(blobUrl);
+        throw e;
+      });
       setVideos((v) => [
         ...v.filter((x) => x.id !== `x-${id}`),
         {
@@ -1285,6 +1442,8 @@ export default function Studio() {
 
   useEffect(() => {
     const keyOf = (u: string) => (isXStatus(u) ? `x:${xStatusId(u)}` : hostOf(u));
+    // An enhanced brief is a treatment: the domains in it are its sources, not links to read.
+    if (enhanced) return;
     const fresh = linksIn(prompt).filter((u) => !triedLinks.current.has(keyOf(u)));
     if (!fresh.length) return;
     const t = setTimeout(() => {
@@ -1316,7 +1475,7 @@ export default function Studio() {
       }
     }, 700);
     return () => clearTimeout(t);
-  }, [prompt, importImage, grabXVideo]);
+  }, [prompt, enhanced, importImage, grabXVideo]);
 
   // ── Runs: every generation has its own steps, stream and stop button ──
   const patchRun = (id: string, f: (r: Run) => Run) => setRuns((rs) => (rs[id] ? { ...rs, [id]: f(rs[id]) } : rs));
@@ -1367,7 +1526,7 @@ export default function Studio() {
     else void generate(project);
   };
 
-  // ── stage 1: direct (also the ✦ Enhance button) ──
+  // ── stage 1: direct (also “Enhance my brief” in the + menu) ──
   async function direct(
     R: RunApi,
     brief: string,
@@ -1448,15 +1607,48 @@ export default function Studio() {
     return { files: [...attached, ...vids], stems };
   };
 
+  // A soundtrack and fonts dropped with the brief: what the brief says of them (the director's own
+  // tempo and typeface give way to these), a voiceover's words (transcribed once), and what the film keeps.
+  const readOwn = async (R: RunApi, duration: number) => {
+    const music = files.find((f) => f.kind === "audio" && !f.voice);
+    let voice = files.find((f) => f.kind === "audio" && f.voice);
+    const fonts = files.filter((f) => f.kind === "font");
+    const heard = voice ? Math.min(duration, voice.track!.duration) : 0;
+    if (voice && voice.said?.seconds !== heard) {
+      R.phase("Transcribing the voiceover");
+      const v = voice;
+      try {
+        const said = { ...(await transcribe(await decodeAudio(v.file), heard, R.signal)), seconds: heard };
+        voice = { ...v, said };
+        setFiles((l) => l.map((x) => (x.id === v.id ? { ...x, said } : x)));
+      } catch (e) {
+        R.signal.throwIfAborted();
+        voice = { ...v, said: undefined };
+        R.note(`Voiceover: ${(e as Error).message}; going on without its words`);
+      }
+    }
+    const words = voice?.said?.words ?? [];
+    const notes = [music && soundtrackNote(music.file.name, music.track!, duration), voice && voiceNote(voice.file.name, voice.track!.duration, duration, words.length > 0), fonts.length > 0 && fontNote(fonts.map((f) => f.font!))];
+    return {
+      files: words.length ? [{ kind: "text", name: "voiceover-transcript.txt", text: `Transcript of the attached voiceover, each word with the second it starts at:\n${words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ")}` }] : [],
+      sound: [music, voice].filter((f) => !!f) as Attached[],
+      fonts,
+      notes: notes.filter(Boolean).join("\n\n"),
+    };
+  };
+  const withNotes = (brief: string, notes?: string) => (notes && !brief.includes(notes) ? `${brief}\n\n${notes}` : brief);
+
   async function enhance() {
     if (!prompt.trim() && !files.length && !videos.length) return;
     const R = startRun(project.id, "enhance", "Treatment");
     setError(null);
     try {
       const recreating = recreate;
-      const brief = withExplainer(briefText || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files."));
       const film = filmFor(recreating);
-      const treatment = await direct(R, brief, (await collectFiles(R, recreating)).files, mode === "edit" && !project.builtin, film);
+      const read = await collectFiles(R, recreating);
+      const own = await readOwn(R, film.duration);
+      const brief = withNotes(withExplainer(briefText || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.")), own.notes);
+      const treatment = await direct(R, brief, [...read.files, ...own.files], mode === "edit" && !project.builtin, film);
       setPrompt(treatment.trim());
       setEnhanced({ brief, recreate: recreating });
       R.finish(true);
@@ -1594,18 +1786,36 @@ export default function Studio() {
         const lost = lostNote(plan, !!kept[id]);
         if (lost) R.note(lost);
       } else {
+        // A film made of elements is changed by the editing agent, which works on its layers and can't
+        // take files: said before anything is cleared, so the attachments and the request stay put.
+        if (editing && target.doc && (videos.length || files.some((f) => f.kind === "image" || f.kind === "pdf" || f.kind === "text")))
+          throw new Error("This film is edited layer by layer, and files can't be added to it through chat yet. Remove the attachments to send this change (a soundtrack or a font can stay).");
         const read = await collectFiles(R, recreating);
-        att = { files: read.files, stems: read.stems, brands, images: files.filter((f) => f.kind === "image" && f.asset), assets };
+        const own = await readOwn(R, film.duration);
+        att = { files: [...read.files, ...own.files], stems: read.stems, brands, images: files.filter((f) => f.kind === "image" && f.asset), assets, sound: own.sound, fonts: own.fonts, notes: own.notes };
         if (!editing) setKept((m) => ({ ...m, [id]: att }));
         clearAttachments();
       }
       const { files: payloadFiles, stems } = att;
       const look = { brands: att.brands, style: plan ? plan.style : style || undefined };
-      const brief = plan ? plan.brief : (enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.")));
+      const brief = plan ? plan.brief : withNotes(enhanced?.brief ?? withExplainer(request || (recreating ? "Recreate the attached video as closely as possible." : "Make a film from the attached files.")), att.notes);
+      // The brief's own soundtrack becomes the film's (stored like any other clip), and its fonts are
+      // kept with it (for a guest, in this browser).
+      const ownSound = async () => {
+        if (!toCloud) for (const f of att.fonts ?? []) keepMedia(id, "font", f.file.name, f.file);
+        // (Signed in, a font isn't stored yet: the upload route takes only images, video and sound.)
+        else if (att.fonts?.length) R.note("The brand font is loaded for this session only: after a reload, drop it in again");
+        if (att.sound?.length) R.phase("Saving your soundtrack");
+        return Promise.all((att.sound ?? []).map((f) => storeClipBlob(id, soundClip(f, film.duration, att.sound!.some((x) => x.voice)), f.file, R.signal)));
+      };
       // Small edits go straight to the animator; new films always get a treatment first.
       // Chat edits on an element-based film go through the editing agent (layers + keyframes), not the code animator.
       if (editing && target.doc) {
-        await agentEdit(R, target, request, toCloud);
+        // A soundtrack or a font dropped with nothing asked is simply added to the film.
+        if (request || !(att.sound?.length || att.fonts?.length)) await agentEdit(R, target, request, toCloud);
+        const own = await ownSound();
+        // Saved with the build mark cleared (the agent's own save, when it made one, cleared it already).
+        patchFilm(id, (cur) => (own.length || cur.building === R.id ? { ...(own.length ? { audio: withOwnSound(cur.audio, own) } : {}), ...(cur.building === R.id ? { building: undefined, buildingAt: undefined } : {}) } : null), toCloud);
         ok = true;
         return;
       }
@@ -1613,7 +1823,7 @@ export default function Studio() {
         const { draft, rounds, ...rest } = plan;
         saved = { ...rest, rounds: rounds || undefined, treatment: draft && target.treatment ? undefined : plan.treatment };
       } else if (!editing)
-        saved = { v: 1, stage: "direct", brief, request, recreate: film.recreate, duration: film.duration, aspect: film.aspect, style: look.style, attached: payloadFiles.length || undefined, at: startedAt };
+        saved = { v: 1, stage: "direct", brief, request, recreate: film.recreate, duration: film.duration, aspect: film.aspect, style: look.style, attached: payloadFiles.length + (att.sound?.length ?? 0) + (att.fonts?.length ?? 0) + (att.brands?.length ?? 0) || undefined, at: startedAt };
       // Written on the film while this run is still the one building it, along with anything else the stage made.
       const checkpoint = (next: Partial<Resume>, more?: (cur: Project) => Partial<Project>) => {
         if (!saved) return;
@@ -1709,7 +1919,7 @@ export default function Studio() {
       else {
         R.phase(editing ? "Revising the animation" : elementsPlan ? "Drawing what's left by code" : "Animating the scene");
         const first = parseScene(await runStage(base, R.signal, onText, R.think, resumed));
-        if (!first.code) throw new Error("Claude didn't return a scene. Try rephrasing the brief.");
+        if (!first.code) throw new Error("No scene came back. Try rephrasing the brief.");
         reply = { ...first, code: first.code };
 
         R.phase("Checking every frame");
@@ -1720,7 +1930,9 @@ export default function Studio() {
           const fixed = parseScene(await runStage({ ...base, previousCode: reply.code, error: problem, files: [] }, R.signal, onText, R.think, resumed));
           if (fixed.code) reply = { ...reply, code: fixed.code };
         }
-        if (!editing && (!problem || !check(reply.code))) saveDraft(reply.code);
+        const runs = !problem || !check(reply.code);
+        if (editing && !runs) throw new Error("That change didn't run cleanly, so the film was left as it was. Try asking another way.");
+        if (!editing && runs) saveDraft(reply.code);
       }
 
       // Claude watches its own frames: score the stills, fix the worst problems, up to two rounds
@@ -1808,6 +2020,7 @@ export default function Studio() {
         for (const f of drawn) keepMedia(id, "image", f.name, f.file);
       }
 
+      const own = await ownSound();
       const title = reply.title || prev?.title || brief.slice(0, 40) || "Untitled";
       const now = nowMs();
       const userMsg: Msg = { id: uid(), role: "user", text: request || brief, at: now };
@@ -1838,15 +2051,16 @@ export default function Studio() {
         resume: soundLeft ?? undefined,
       };
       const code = reply.code;
-      const withThread = (cur: Project) => ({ ...result, ...sceneOn(cur, code), thread: withMessages(cur.thread, [userMsg, botMsg]) });
+      const withThread = (cur: Project) => ({ ...result, ...sceneOn(cur, code), thread: withMessages(cur.thread, [userMsg, botMsg]), ...(own.length ? { audio: withOwnSound(cur.audio, own) } : {}) });
       // What scoring reads (it saves the sound it makes as its own patch).
       const built: Project = { ...(prev ?? (plan ? target : { id, createdAt: nowMs() })), ...result, ...sceneOn(target, code) } as Project;
+      if (own.length) built.audio = withOwnSound(built.audio, own);
       // The attachments have done their job.
       const release = () => setKept((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)));
       if (film.recreate && stems) {
         R.phase("Saving the original's sound elements");
         setAudioBlobs((m) => ({ ...m, ...stems.blobs }));
-        const stored = await Promise.all(stems.clips.map((c) => storeClipBlob(id, c, stems.blobs[c.id], R.signal)));
+        const stored = withOwnSound(await Promise.all(stems.clips.map((c) => storeClipBlob(id, c, stems.blobs[c.id], R.signal))), own);
         patchFilm(id, (cur) => ({ ...withThread(cur), audio: stored }), toCloud);
         saved = soundLeft;
         ok = true;
@@ -1866,7 +2080,10 @@ export default function Studio() {
       failed = true;
       const stopped = isStop(e, R.signal);
       const message = stopped ? "Stopped." : (e as Error).message;
-      if (!stopped && currentId === id) setError(friendlyError(message));
+      if (!stopped && currentIdRef.current === id) setError(friendlyError(message));
+      // Nothing holds the request yet (no checkpoint, and an edit joins the thread only when it lands):
+      // it goes back in the box, so it isn't typed again.
+      if (!saved && request) setPrompt((p) => p || request);
       R.finish(false, message);
       // Clear the building mark (saved too, or the tile spins forever after a reload).
       // A failed new film keeps its tile, with the reason, until it's deleted; its checkpoint (when the
@@ -1896,7 +2113,19 @@ export default function Studio() {
   }
 
   // ── sound: clips, uploads, stems, scoring ──
-  const audioExt = (type: string) => (type.includes("wav") ? "wav" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : "m4a");
+  const audioExt = (type: string) => (type.includes("wav") ? "wav" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : type.includes("flac") ? "flac" : "m4a");
+
+  // What's said in a recording, with word timings (they give a voice track captions and let the bed duck
+  // under it). Only its first `seconds`, at speech quality, so the upload fits a request.
+  const transcribe = async (buf: AudioBuffer, seconds: number, signal?: AbortSignal) => {
+    const f = new FormData();
+    f.append("action", "transcribe");
+    f.append("audio", await speechWav(trimAudio(buf, seconds)), "voice.wav");
+    const r = await elFetch("/api/audio", { method: "POST", body: f, signal });
+    const j = r.ok ? await r.json().catch(() => null) : null;
+    if (!j?.words?.length) throw new Error(r.ok ? "no speech found" : await failure(r));
+    return { text: j.text as string, words: j.words as Said["words"] };
+  };
 
   // Persist a clip's audio: a private Blob when signed in; for a guest, this browser's storage (so the
   // soundtrack is still there after leaving the page, for the editor or a reload).
@@ -1910,7 +2139,16 @@ export default function Studio() {
     return { ...clip, pathname: res.pathname };
   };
 
-  const updateClip = (id: string, patch: Partial<AudioClip>) => upsert({ ...project, audio: clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  // A voice clip's word timings are in film seconds: moved, its words (and so its captions) move with it.
+  const updateClip = (id: string, patch: Partial<AudioClip>) =>
+    upsert({
+      ...project,
+      audio: clips.map((c) => {
+        if (c.id !== id) return c;
+        const d = typeof patch.start === "number" ? patch.start - c.start : 0;
+        return { ...c, ...patch, ...(d && c.words ? { words: c.words.map((w) => ({ ...w, s: w.s + d, e: w.e + d })) } : {}) };
+      }),
+    });
   const removeClip = (id: string) => upsert({ ...project, audio: clips.filter((c) => c.id !== id) }, true);
 
   const addAudioFiles = async (list: FileList | File[]) => {
@@ -1920,7 +2158,7 @@ export default function Studio() {
       const added: AudioClip[] = [];
       for (const file of Array.from(list)) {
         const buf = await decodeAudio(file);
-        const kind: AudioClip["kind"] = /voice|vo\b|speech|narration/i.test(file.name) ? "voice" : /sfx|fx|whoosh|hit/i.test(file.name) ? "sfx" : "music";
+        const kind: AudioClip["kind"] = soundsLikeVoice(file.name) ? "voice" : /sfx|fx|whoosh|hit/i.test(file.name) ? "sfx" : "music";
         const clip: AudioClip = { id: uid(), kind, label: file.name.replace(/\.[^.]+$/, ""), start: 0, duration: Math.min(buf.duration, project.duration), gain: 1, muted: false, source: "upload" };
         if (kind === "music") {
           setAudioBusy(`Finding the beat in ${file.name}…`);
@@ -1930,18 +2168,14 @@ export default function Studio() {
           } catch {}
         }
         if (kind === "voice") {
-          // Word timings give the track captions and let the bed duck under it.
           setAudioBusy(`Transcribing ${file.name}…`);
-          const f = new FormData();
-          f.append("action", "transcribe");
-          // Only the part the film plays, at speech quality, so the upload fits a request.
-          f.append("audio", await speechWav(trimAudio(buf, project.duration)), "voice.wav");
-          const r = await elFetch("/api/audio", { method: "POST", body: f });
-          const j = r.ok ? await r.json().catch(() => null) : null;
-          if (j?.words?.length) {
-            clip.words = j.words;
-            clip.text = j.text;
-          } else setNotice(`Couldn't transcribe ${file.name} (${r.ok ? "no speech found" : await failure(r)}), so it has no captions.`);
+          try {
+            const said = await transcribe(buf, project.duration);
+            clip.words = said.words;
+            clip.text = said.text;
+          } catch (e) {
+            setNotice(`Couldn't transcribe ${file.name} (${(e as Error).message}), so it has no captions.`);
+          }
         }
         added.push(await storeClipBlob(project.id, clip, file));
       }
@@ -2101,6 +2335,10 @@ export default function Studio() {
         rebuild: stems.some((c) => c.separated || c.kind === "music" || c.kind === "sfx"),
       };
     }
+    // The user's own music or voiceover (dropped with the brief, or added in the sound strip): nothing is
+    // generated to compete with it, and the plan is told so.
+    const ownMusic = (target.audio ?? []).find((c) => c.kind === "music" && c.source === "upload" && !c.muted);
+    const ownVoice = (target.audio ?? []).find((c) => c.kind === "voice" && c.source === "upload" && !c.muted);
     let failure: string | undefined;
     // Rebuilding separated stems: match the original music's tempo and the effects' hit times.
     const origMusic = stems.find((c) => c.kind === "music" && c.beats);
@@ -2117,31 +2355,28 @@ export default function Studio() {
           duration: target.duration,
           aspect: target.aspect,
           recreate: !!opts.recreate,
-          transcript: opts.transcript,
+          transcript: opts.transcript ?? (ownVoice?.words?.length ? ownVoice.words.map((w) => `${w.w}[${w.s.toFixed(2)}]`).join(" ") : ownVoice?.text),
           hasBackground: !!opts.hasBackground,
           rebuild: opts.rebuild
             ? `REBUILD: the original's ${stems.map((c) => c.kind).filter((k) => k !== "original").join(", ")} stems were separated. Write new versions of each: voice lines from the transcript at their original timings${origMusic?.beats ? `; music matching the original's tempo (about ${Math.round(origMusic.beats.bpm)} BPM), mood and structure` : ""}; effects at the moments the original has them${origFx?.beats?.hits.length ? ` (hits near ${origFx.beats.hits.slice(0, 24).map((t) => t.toFixed(2)).join(", ")}s)` : ""}.`
             : undefined,
           grid: (() => {
-            const m = (target.audio ?? []).find((c) => c.kind === "music" && c.beats);
-            return m?.beats ? `Music grid: ${Math.round(m.beats.bpm)} BPM; downbeats at ${m.beats.downbeats.slice(0, 16).map((t) => (t + m.start).toFixed(2)).join(", ")}s. Place cues on beats or downbeats.` : undefined;
+            const m = ownMusic?.beats ? ownMusic : (target.audio ?? []).find((c) => c.kind === "music" && c.beats);
+            return (
+              [
+                m?.beats && `Music grid: ${Math.round(m.beats.bpm)} BPM; downbeats at ${m.beats.downbeats.slice(0, 16).map((t) => (t + m.start).toFixed(2)).join(", ")}s. Place cues on beats or downbeats.`,
+                ownMusic && `The film already has its music, the user's own track (“${ownMusic.label}”), and it stays: set music to null, and keep the effects few and on its beats so they sit inside it.`,
+                ownVoice && "The film already has the user's own voiceover (the transcript above), and it stays: leave voice empty, and keep effects clear of the words.",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined
+            );
           })(),
         }),
         signal,
       });
-      let plan = await r.json();
+      const plan = await r.json();
       if (!r.ok) throw new Error(plan.error ?? "Couldn't plan the sound.");
-      // A degenerate plan (no cues, placeholder notes) is worth one more try.
-      if (!plan.sfx?.length && !plan.voice?.length) {
-        R.note("Plan came back empty; trying again");
-        const r2 = await fetch("/api/audio-plan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ brief: target.prompt, treatment: target.treatment, duration: target.duration, aspect: target.aspect, recreate: !!opts.recreate, transcript: opts.transcript, hasBackground: !!opts.hasBackground }),
-          signal,
-        });
-        if (r2.ok) plan = await r2.json();
-      }
       R.note(plan.notes);
       if (plan.musicGuess) {
         const q = encodeURIComponent(`${plan.musicGuess.title} ${plan.musicGuess.artist}`);
@@ -2153,7 +2388,7 @@ export default function Studio() {
       const b64blob = (b64: string, type: string) => new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type });
 
       // Voice, line by line (skipped in recreate mode when the original voice is kept as is).
-      const voiceLines = opts.recreate && opts.transcript && !opts.rebuild ? [] : (plan.voice as { p: number; text: string }[]);
+      const voiceLines = ownVoice || (opts.recreate && opts.transcript && !opts.rebuild) ? [] : (plan.voice as { p: number; text: string }[]);
       for (let i = 0; i < voiceLines.length; i++) {
         const line = voiceLines[i];
         setAudioBusy(`Voicing line ${i + 1} of ${voiceLines.length}…`);
@@ -2172,7 +2407,7 @@ export default function Studio() {
       }
       if (voiceLines.length) R.note(`${made.length} voice line${made.length === 1 ? "" : "s"}`);
 
-      // Sound effects, a few at a time (ElevenLabs allows 4 concurrent requests on small plans).
+      // Sound effects, a few at a time (three at once: within what ElevenLabs allows small plans).
       const cues = plan.sfx as { p: number; prompt: string; seconds: number; gain: number }[];
       setAudioBusy(`Making ${cues.length} sound effects…`);
       const sfx: (AudioClip | null)[] = new Array(cues.length).fill(null);
@@ -2204,14 +2439,17 @@ export default function Studio() {
       made.push(...fx);
       R.note(`${fx.length} sound effects`);
 
-      // Music (paid ElevenLabs plans). Skipped in recreate mode when the original background is kept.
-      if (plan.music && (opts.rebuild || !(opts.recreate && opts.hasBackground))) {
+      // Music (paid ElevenLabs plans). Skipped when the film has the user's own track, and in recreate mode
+      // when the original background is kept.
+      const underVoice = voiceLines.length > 0 || !!ownVoice;
+      if (ownMusic) R.note(`Music: your own track (${ownMusic.label})`);
+      else if (plan.music && (opts.rebuild || !(opts.recreate && opts.hasBackground))) {
         setAudioBusy("Composing music…");
         const mr = await elFetch("/api/audio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "music", prompt: plan.music.prompt, seconds: T }), signal });
         if (mr.ok) {
           const blob = await mr.blob();
           const buf = await decodeAudio(blob);
-          const clip: AudioClip = { id: uid(), kind: "music", label: "Music", start: 0, duration: Math.min(buf.duration, T), gain: voiceLines.length ? 0.55 : 0.8, muted: false, source: "generated", prompt: plan.music.prompt };
+          const clip: AudioClip = { id: uid(), kind: "music", label: "Music", start: 0, duration: Math.min(buf.duration, T), gain: underVoice ? 0.55 : 0.8, muted: false, source: "generated", prompt: plan.music.prompt };
           blobsNew[clip.id] = blob;
           made.push(clip);
           R.note("Music composed");
@@ -2223,7 +2461,7 @@ export default function Studio() {
           const buf = await renderBed(spec, T);
           const blob = toWav(buf);
           const grid = bedBeats(spec, T);
-          const clip: AudioClip = { id: uid(), kind: "music", label: `Synth bed · ${spec.bpm} BPM`, start: 0, duration: T, gain: voiceLines.length ? 0.5 : 0.7, muted: false, source: "generated", prompt: plan.music.prompt, beats: { ...grid, hits: grid.downbeats } };
+          const clip: AudioClip = { id: uid(), kind: "music", label: `Synth bed · ${spec.bpm} BPM`, start: 0, duration: T, gain: underVoice ? 0.5 : 0.7, muted: false, source: "generated", prompt: plan.music.prompt, beats: { ...grid, hits: grid.downbeats } };
           blobsNew[clip.id] = blob;
           made.push(clip);
           R.note(`Synth bed at ${spec.bpm} BPM, ${spec.mode}`);
@@ -2456,15 +2694,20 @@ export default function Studio() {
 
   const unshareRender = async (v: Render) => {
     if (!v.shareId) return;
-    await fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" });
-    upsert({ ...project, videos: (project.videos ?? []).map((x) => (x.pathname === v.pathname ? { ...x, shareId: undefined } : x)) }, true);
+    const r = await fetch(`/api/share?id=${v.shareId}`, { method: "DELETE" }).catch(() => null);
+    if (!r || (!r.ok && r.status !== 404)) return setError("Couldn't turn the link off, so it still works. Try again.");
+    patchFilm(project.id, (cur) => ({ videos: (cur.videos ?? []).map((x) => (x.pathname === v.pathname ? { ...x, shareId: undefined } : x)) }), cloud);
     setNotice("Link turned off.");
   };
 
-  const deleteRender = (pathname: string) => {
+  const deleteRender = async (pathname: string) => {
     const shared = project.videos?.find((v) => v.pathname === pathname)?.shareId;
-    if (shared) fetch(`/api/share?id=${shared}`, { method: "DELETE" }).catch(() => {});
-    upsert({ ...project, videos: (project.videos ?? []).filter((v) => v.pathname !== pathname) }, true);
+    if (shared) {
+      // Its public link goes first: unlisted while still shared, there'd be nothing left to turn it off with.
+      const r = await fetch(`/api/share?id=${shared}`, { method: "DELETE" }).catch(() => null);
+      if (!r || (!r.ok && r.status !== 404)) return setError("Couldn't turn this video's link off, so it's still listed. Try again.");
+    }
+    patchFilm(project.id, (cur) => ({ videos: (cur.videos ?? []).filter((v) => v.pathname !== pathname) }), cloud);
   };
 
   // Paste anywhere: files/images become attachments; text or links pasted
@@ -2502,8 +2745,9 @@ export default function Studio() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (e.code === "Space" && tag !== "TEXTAREA" && tag !== "INPUT") {
+      const el = e.target as HTMLElement | null;
+      // Space plays and pauses, except in a field or on a menu that needs it (buttons still take Enter).
+      if (e.code === "Space" && !el?.closest?.("textarea, input, select, summary, [contenteditable]")) {
         e.preventDefault();
         setPlaying((p) => !p);
       }
@@ -2601,10 +2845,7 @@ export default function Studio() {
                     running={currentRun.status === "running"}
                     output={currentRun.stream}
                     onCancel={() => currentRun.abort.abort()}
-                    onDismiss={() => {
-                      dismissRun(currentRun.id);
-                      if (project.building && !project.code) remove(project.id, true);
-                    }}
+                    onDismiss={() => dismissRun(currentRun.id)}
                   />
                 )}
                 {/* A build that stopped: why, what's finished and what's left, and Continue from there. */}
@@ -2675,7 +2916,7 @@ export default function Studio() {
           <div className="section-label lib-head">
             <span className="lib-head-title">
               {cloud ? "Your library" : "On this device"}
-              {!cloud && isLoaded && <span> · sign in to keep animations and videos in the cloud</span>}
+              {!cloud && isLoaded && <span> · sign in to keep films and videos in the cloud</span>}
             </span>
             {projects.some((p) => p.favorite) && (
               <span className="lib-filter">
@@ -2797,7 +3038,7 @@ export default function Studio() {
           {mode === "edit" && !project.builtin ? (
             <div className="thread-head">
               <h1 className="headline small">{project.title}</h1>
-              <button className="linkish" onClick={() => setMode("new")}>
+              <button className="linkish" onClick={() => switchMode("new")}>
                 ＋ New film
               </button>
             </div>
@@ -2807,7 +3048,7 @@ export default function Studio() {
                 Describe it. Drop in your files. <em>Get a film.</em>
               </h1>
               {!project.builtin && (
-                <button className="linkish" onClick={() => setMode("edit")}>
+                <button className="linkish" onClick={() => switchMode("edit")}>
                   ← back to “{project.title}”
                 </button>
               )}
@@ -2879,7 +3120,7 @@ export default function Studio() {
                 </button>
               </div>
             )}
-            {(videos.length > 0 || reading.length > 0 || brands.length > 0 || files.length > 0) && (
+            {(videos.length > 0 || reading.length > 0 || brands.length > 0 || files.length > 0 || taking > 0) && (
               <div className="attachments">
                 {videos.map((v) => (
                   <div className="att" key={v.id} title={v.text ?? v.name}>
@@ -2936,23 +3177,37 @@ export default function Studio() {
                   </div>
                 ))}
                 {files.map((f) => (
-                  <div className="att" key={f.id}>
+                  <div className="att" key={f.id} title={f.note}>
                     <span className="att-thumb">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {f.url ? <img src={f.url} alt="" /> : <i className="ficon">{f.kind === "pdf" ? "PDF" : "TXT"}</i>}
+                      {f.url ? <img src={f.url} alt="" /> : <i className="ficon" style={f.font ? { fontFamily: f.font.family, fontSize: 17 } : undefined}>{f.tag ?? "TXT"}</i>}
                     </span>
                     <span className="att-text">
                       <b title={f.name}>{f.name}</b>
                       {f.kind === "image" ? (
-                        <button
-                          className={`chip-role${f.asset ? " asset" : ""}`}
-                          title="Toggle: draw this image in the video, or use it only as a style reference"
-                          onClick={() => setFiles((l) => l.map((x) => (x.id === f.id ? { ...x, asset: !x.asset } : x)))}
-                        >
-                          {f.asset ? "In the film" : "Reference"}
-                        </button>
+                        <span className="att-row">
+                          <button
+                            className={`chip-role${f.asset ? " asset" : ""}`}
+                            title="Toggle: draw this image in the film, or use it only as a style reference"
+                            onClick={() => setFiles((l) => l.map((x) => (x.id === f.id ? { ...x, asset: !x.asset } : x)))}
+                          >
+                            {f.asset ? "In the film" : "Reference"}
+                          </button>
+                          {f.note}
+                        </span>
+                      ) : f.kind === "audio" ? (
+                        <span className="att-row">
+                          <button
+                            className="chip-role asset"
+                            title="Toggle: the film's music (it's cut to this track's beat), or its voiceover (it's timed to the words)"
+                            onClick={() => setFiles((l) => l.map((x) => (x.id === f.id ? { ...x, voice: !x.voice } : x)))}
+                          >
+                            {f.voice ? "Voiceover" : "Music"}
+                          </button>
+                          {f.voice ? fmt(f.track!.duration) : `${Math.round(f.track!.bpm)} BPM · ${fmt(f.track!.duration)}`}
+                        </span>
                       ) : (
-                        <span>{f.kind === "pdf" ? "PDF" : "Text"}</span>
+                        <span>{f.note ?? "Text"}</span>
                       )}
                     </span>
                     <button className="chip-x" onClick={() => removeFile(f.id)} aria-label={`Remove ${f.name}`}>
@@ -2960,6 +3215,14 @@ export default function Studio() {
                     </button>
                   </div>
                 ))}
+                {taking > 0 && (
+                  <div className="att loading">
+                    <span className="dot" />
+                    <span className="att-text">
+                      <b>Reading what you dropped…</b>
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             <textarea
@@ -2975,7 +3238,7 @@ export default function Studio() {
               style={enhanced ? { minHeight: 300 } : undefined}
               placeholder={
                 mode === "new"
-                  ? "Describe a film, paste a link, or drop in a video to recreate…"
+                  ? "Describe a film, paste a link, or drop in any file: a video to recreate, a song to cut to, a deck, a font…"
                   : "Make the intro slower, swap the accent to olive, add our logo at the end…"
               }
             />
@@ -3000,7 +3263,7 @@ export default function Studio() {
                   </svg>
                 </summary>
                 <div className="plus-items" onClick={() => plusMenu.current?.removeAttribute("open")}>
-                  <button onClick={() => fileInput.current?.click()}>Add files, a video or a PDF</button>
+                  <button onClick={() => fileInput.current?.click()}>Add files: images, video, sound, documents, fonts</button>
                   {mode === "new" && (
                     <button onClick={() => setExplainer(explainer ? null : { audience: "", believe: "", outcome: "" })}>
                       {explainer ? "Remove explainer brief" : "Make it an explainer"}
@@ -3079,7 +3342,6 @@ export default function Studio() {
                 type="file"
                 multiple
                 hidden
-                accept="image/*,video/*,application/pdf,text/*,.md,.json,.csv"
                 onChange={(e) => {
                   if (e.target.files) addFiles(e.target.files);
                   e.target.value = "";
@@ -3094,6 +3356,24 @@ export default function Studio() {
               reference instead. Make sure you have the rights to publish a copy.
             </p>
           )}
+
+          {/* A soundtrack plays from its start for as long as the film runs: say so when the two don't match. */}
+          {files.map((f) => {
+            const T = filmFor(recreate || !!enhanced?.recreate).duration;
+            const hint = f.track ? lengthHint(f.file.name, f.track.duration, T) : null;
+            const whole = f.track ? Math.round(f.track.duration) : 0;
+            if (!hint) return null;
+            return (
+              <p className="hint recreate-hint" key={f.id}>
+                {hint}{" "}
+                {!(recreate || enhanced?.recreate) && whole >= 5 && whole <= 90 && whole !== T && (
+                  <button className="linkish" onClick={() => (ownNew ? setNewLength({ film: project.id, duration: whole }) : setDuration(whole))}>
+                    Make the film {whole} s
+                  </button>
+                )}
+              </p>
+            );
+          })}
 
           <div className="film-actions">
             <button className="export" onClick={doExport} disabled={exporting !== null || !compiled.fn || isBuilding}>
@@ -3159,7 +3439,7 @@ export default function Studio() {
                     const latest = sceneCodeOf(project);
                     if (latest !== draftBase && latest !== draftCode) {
                       setDraftBase(latest);
-                      setError("This film's scene code was changed in the editor since you opened it. Apply again to replace it with yours, or reopen “View scene code” to start from the latest.");
+                      setError("This film's scene code was changed in the editor since you opened it. Apply again to replace it with yours, or reopen “Code” to start from the latest.");
                       return;
                     }
                     // A doc film plays its doc, so the code goes into the doc's code layer.

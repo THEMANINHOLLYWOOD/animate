@@ -12,7 +12,7 @@ import { ownsPath, requireUser, unauthorized } from "@/lib/store";
 export async function POST(req: Request) {
   const userId = await requireUser();
   if (!userId) return unauthorized();
-  const b = await req.json();
+  const b = await req.json().catch(() => null);
   if (typeof b?.pathname !== "string" || !ownsPath(userId, b.pathname) || !/\/videos\//.test(b.pathname)) {
     return Response.json({ error: "Only your saved videos can be shared." }, { status: 400 });
   }

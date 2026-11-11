@@ -25,8 +25,8 @@ const SUGGESTIONS = [
   "Make the headline 20% bigger",
   "Slow down the intro by a second",
   "Change the accent colour to olive #788C5D",
-  "Add a fade-out to the URL on the end card",
-  "Move the Facts section 2 seconds later",
+  "Fade the last line out at the end",
+  "Move everything after 5 seconds one second later",
 ];
 
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;

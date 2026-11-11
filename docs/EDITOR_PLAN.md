@@ -1,5 +1,12 @@
 # animate Studio — Editor implementation plan
 
+> **Historical.** This is the plan the editor was started from (October 2026), kept for its reasoning.
+> What was built differs: the renderer is Canvas 2D (`src/editor/render/renderDoc.ts`), not PixiJS;
+> films are still written as code, with text split into layers (`src/editor/extract/splitText.ts`),
+> each object a `lib.layer` part (`extract/parts.ts`) and each film's own controls (`src/lib/controls.ts`);
+> the agent edits through tools replayed as operations (`src/editor/ai/tools.ts`), not JSON Patch; the
+> doc is saved on the film. Guests can create without an account. See `README.md` for how things are now.
+
 Goal: turn animate from "generate and export" into a full editor. It should feel like **Figma** on the canvas (select, move, edit text in place, layers) and **Premiere / After Effects** on the timeline (tracks, trims, keyframes, curves, effects, audio, video). Any animation, whether Claude made it or a person built it, can be broken down and edited down to the last keyframe. Claude can generate the audio for every film: voiceover, music and sound effects.
 
 ## Status (updated 2026-10-07)

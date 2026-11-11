@@ -17,11 +17,12 @@ import type { Doc, Layer, Value } from "../doc/schema";
 import { linkedLayers, splitChildren, splitOwner, splitStatus } from "../doc/split";
 import { renderDoc, type Bounds } from "../render/renderDoc";
 import { createEditorStore } from "../store/store";
-import { splitLive } from "../extract/codeHash";
+import { splitLive, withKeyedControls } from "../extract/codeHash";
 import { fromUnchecked } from "../extract/legacy";
 import { invert, partsOp, partsStale, type Mat } from "../extract/parts";
 import { applySplit, splitCodeLayer } from "../extract/splitText";
 import AgentPanel from "./AgentPanel";
+import Controls, { controlled, PointHandles } from "./Controls";
 import { dropLegacy, dropSaved, forkOf, openFilm, rememberFork, showFilmUrl, SPLIT_VERSION, writeSaved, type Session } from "./open";
 import { createSaver, type SaveStatus } from "./saver";
 import { isTextField, liveKeys, liveSelection, ownsKey, spanTime, unlocked, unlockedKeys, wordsOf, type KeySel } from "./session";
@@ -170,7 +171,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   const [keySel, setKeySel] = useState<KeySel[]>([]);
   const [exporting, setExporting] = useState<number | null>(null);
   const [fit, setFit] = useState<{ w: number; h: number } | null>(null);
-  const [panel, setPanel] = useState<"inspect" | "agent">("inspect");
+  const [panel, setPanel] = useState<"controls" | "inspect" | "agent">("controls");
   const [notice, setNotice] = useState<string | null>(note ?? null);
   const [resplitting, setResplitting] = useState<number | null>(null);
   const [earlier, setEarlier] = useState(session.earlier);
@@ -195,6 +196,16 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   const { assets } = session;
   const kit = useMemo(() => (fonts ? makeKit(W, H, fonts) : null), [fonts, W, H]);
   const selected = doc.layers.find((l) => l.id === selection[0]) ?? null;
+  const hasControls = useMemo(() => controlled(doc).length > 0, [doc]);
+  // Picking a layer shows its inspector; letting go of it brings the film's own controls back.
+  const hadSelection = useRef(false);
+  useEffect(() => {
+    const has = selection.length > 0;
+    if (has !== hadSelection.current) {
+      hadSelection.current = has;
+      setPanel((p) => (p === "agent" ? p : has ? "inspect" : "controls"));
+    }
+  }, [selection]);
   // The keyframe selection, short of keys an undo, the agent or a re-split took away.
   const keys = useMemo(() => liveKeys(doc, keySel), [doc, keySel]);
   const keysRef = useRef(keys);
@@ -365,7 +376,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
 
   // ── Code layers whose code changed after their text was split: the code paints all its own text
   // again and their text layers stand down, until the text is split anew ──
-  const stale = useMemo(() => doc.layers.filter((l) => l.type === "code" && l.props.skipText && !splitLive(l.props)), [doc.layers]);
+  const stale = useMemo(() => doc.layers.filter((l) => l.type === "code" && l.props.skipText && !splitLive(withKeyedControls(l.props, l.anim))), [doc.layers]);
   useEffect(() => () => resplitAbort.current?.abort(), []);
   const resplit = async (ids: string[]) => {
     if (!kit || resplitting !== null || !ids.length) return;
@@ -432,6 +443,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
       el.style.width = `${b.w * s}px`;
       el.style.height = `${b.h * s}px`;
     };
+    let painted: { doc: Doc | null; t: number } = { doc: null, t: -1 };
     const frame = (now: number) => {
       const st = store.getState();
       const dt = Math.min(0.1, (now - last) / 1000);
@@ -447,15 +459,19 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         mixerRef.current?.stop();
         heard = null;
       }
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      const spaces: Record<string, Mat> = {};
-      boundsRef.current = renderDoc(ctx, st.doc, t, kit, assets, { onError, partBounds: true, onPart: (l, s) => (spaces[l.id] = s.entry) });
-      spacesRef.current = spaces;
-      for (const lid of Object.keys(boundsRef.current)) failing.delete(lid);
-      const sig = [...failing].join("|");
-      if (sig !== shown) {
-        shown = sig;
-        setErrors(Object.fromEntries(failing));
+      // A frame is a pure function of the doc and the time: paused on an unchanged one, it's already painted.
+      if (st.doc !== painted.doc || t !== painted.t) {
+        painted = { doc: st.doc, t };
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        const spaces: Record<string, Mat> = {};
+        boundsRef.current = renderDoc(ctx, st.doc, t, kit, assets, { onError, partBounds: true, onPart: (l, s) => (spaces[l.id] = s.entry) });
+        spacesRef.current = spaces;
+        for (const lid of Object.keys(boundsRef.current)) failing.delete(lid);
+        const sig = [...failing].join("|");
+        if (sig !== shown) {
+          shown = sig;
+          setErrors(Object.fromEntries(failing));
+        }
       }
       place(selBoxRef.current, st.selection[0] ? boundsRef.current[st.selection[0]] : undefined);
       const one = st.selection.length === 1 ? st.doc.layers.find((l) => l.id === st.selection[0]) : undefined;
@@ -498,7 +514,8 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
       const b = boundsRef.current[l.id];
       if (!b || l.locked || l.type === "code") continue;
       if (!(x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h)) continue;
-      if (l.type !== "part") return { layer: l.id, parts: [] };
+      // A plain layer under a code layer's objects: the objects are in front of it.
+      if (l.type !== "part") return parts.length ? { layer: null, parts: parts.sort((a, b) => a.area - b.area).map((p) => p.id) } : { layer: l.id, parts: [] };
       parts.push({ id: l.id, area: b.w * b.h });
     }
     return { layer: null, parts: parts.sort((a, b) => a.area - b.area).map((p) => p.id) };
@@ -506,8 +523,21 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
   // Which of several objects is the one seen at a point: the one the picture there changes most
   // without (a sun in front of a sky is the sun; a faint vignette over everything is never it).
   const pickRef = useRef<HTMLCanvasElement | null>(null);
+  const seenCache = useRef<{ doc: Doc | null; t: number; at: Map<string, string | null> }>({ doc: null, t: -1, at: new Map() });
   const seenAt = (ids: string[], x: number, y: number): string | null => {
     if (ids.length < 2 || !kit) return ids[0] ?? null;
+    const now = store.getState();
+    const cache = seenCache.current;
+    if (cache.doc !== now.doc || cache.t !== now.time) seenCache.current = { doc: now.doc, t: now.time, at: new Map() };
+    const spot = `${Math.round(x / 12)},${Math.round(y / 12)}|${ids.join()}`;
+    const known = seenCache.current.at.get(spot);
+    if (known !== undefined) return known;
+    const found = lookAt(ids, x, y);
+    seenCache.current.at.set(spot, found);
+    return found;
+  };
+  const lookAt = (ids: string[], x: number, y: number): string | null => {
+    if (!kit) return ids[0] ?? null;
     const N = 9;
     const c = (pickRef.current ??= Object.assign(document.createElement("canvas"), { width: N, height: N }));
     const g = c.getContext("2d", { willReadFrequently: true })!;
@@ -908,6 +938,7 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
         <div className="ed-stage" ref={stageRef}>
           <div className="ed-canvas-wrap" style={fit ? { width: fit.w, height: fit.h } : { visibility: "hidden" }}>
             <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerLeave={() => (hoverRef.current = null)} />
+            <PointHandles store={store} doc={doc} onEdit={pause} />
             <div ref={hoverBoxRef} className="ed-box hover" />
             <div ref={selBoxRef} className="ed-box sel">
               <span className="ed-handle" onPointerDown={onResize} title="Drag to resize" />
@@ -917,7 +948,12 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
 
         <aside className={`ed-inspector${selected || panel === "agent" ? " open" : ""}`}>
           <div className="ed-tabs">
-            <button className={panel === "inspect" ? "on" : ""} onClick={() => setPanel("inspect")}>
+            {hasControls && (
+              <button className={panel === "controls" ? "on" : ""} onClick={() => setPanel("controls")} title="This film's own controls">
+                Controls
+              </button>
+            )}
+            <button className={panel === "inspect" || (panel === "controls" && !hasControls) ? "on" : ""} onClick={() => setPanel("inspect")}>
               Inspect
             </button>
             <button className={panel === "agent" ? "on" : ""} onClick={() => setPanel("agent")}>
@@ -936,8 +972,14 @@ function EditorInner({ store, session, note, onReopen }: { store: Store; session
           <div className="ed-panel-body" hidden={panel !== "agent"}>
             {agent}
           </div>
+          {/* The film's own panel, built from the controls its scene declares. */}
+          {hasControls && (
+            <div className="ed-panel-body" hidden={panel !== "controls"}>
+              <Controls store={store} doc={doc} onEdit={pause} />
+            </div>
+          )}
           {/* Editing a field pauses playback first, so the edit lands on the frame you see. */}
-          <div className="ed-panel-body" hidden={panel !== "inspect"} onFocusCapture={pause}>
+          <div className="ed-panel-body" hidden={!(panel === "inspect" || (panel === "controls" && !hasControls))} onFocusCapture={pause}>
             {selected ? (
               <Inspector
                 store={store}
@@ -1020,7 +1062,7 @@ function Timecode({ store }: { store: Store }) {
 
 // How a code layer's text stands: split into layers, drawn by changed code, or kept in code.
 function SplitNote({ doc, layer, resplitting, onResplit }: { doc: Doc; layer: Layer; resplitting: number | null; onResplit: (ids: string[]) => void }) {
-  if (layer.props.skipText && splitLive(layer.props))
+  if (layer.props.skipText && splitLive(withKeyedControls(layer.props, layer.anim)))
     return <p className="ed-note">Its text is in {splitChildren(doc, layer.id).length} editable text layers. Changing the code draws the text from the code again.</p>;
   if (layer.props.skipText)
     return (

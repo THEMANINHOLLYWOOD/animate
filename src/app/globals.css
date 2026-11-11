@@ -73,27 +73,6 @@ button {
   letter-spacing: -0.01em;
 }
 
-.brand-mark {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1.5px solid var(--ink);
-  position: relative;
-  overflow: hidden;
-}
-
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--clay);
-  animation: breathe 2.4s var(--ease) infinite;
-}
-
 @keyframes breathe {
   0%,
   100% {
@@ -164,20 +143,6 @@ button {
 
 .stage.busy canvas {
   opacity: 0.35;
-}
-
-.stream {
-  position: absolute;
-  inset: auto 24px 24px 24px;
-  font-family: var(--font-mono), monospace;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--slate);
-  white-space: pre;
-  overflow: hidden;
-  max-height: 46%;
-  mask-image: linear-gradient(to bottom, transparent, #000 60%);
-  pointer-events: none;
 }
 
 .status {
@@ -392,11 +357,6 @@ input[type="range"]:active::-webkit-slider-thumb {
   backdrop-filter: blur(6px);
 }
 
-.lib-meta {
-  font-size: 12px;
-  color: var(--stone);
-}
-
 .lib-del {
   position: absolute;
   top: 7px;
@@ -437,31 +397,6 @@ input[type="range"]:active::-webkit-slider-thumb {
 
 .headline em {
   color: var(--clay);
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.label {
-  font-family: var(--font-mono), monospace;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--stone);
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-}
-
-.label b {
-  font-weight: 400;
-  color: var(--ink);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  text-transform: none;
 }
 
 .composer {
@@ -509,68 +444,11 @@ input[type="range"]:active::-webkit-slider-thumb {
   gap: 6px;
 }
 
-.attach {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--slate);
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  transition: background 0.2s;
-}
-
-.attach:hover {
-  background: var(--paper);
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 12px 4px;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line);
-  background: var(--ivory);
-  border-radius: 10px;
-  padding: 4px 6px 4px 4px;
-  font-size: 12px;
-  max-width: 100%;
-  animation: rise 0.35s var(--ease);
-}
-
 @keyframes rise {
   from {
     opacity: 0;
     transform: translateY(4px);
   }
-}
-
-.chip img,
-.chip .ficon {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  object-fit: cover;
-  background: var(--paper);
-  display: grid;
-  place-items: center;
-  font-family: var(--font-mono), monospace;
-  font-size: 9px;
-  color: var(--stone);
-  flex: none;
-}
-
-.chip-name {
-  max-width: 120px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .chip-role {
@@ -594,99 +472,11 @@ input[type="range"]:active::-webkit-slider-thumb {
   padding: 0 4px;
 }
 
-.seg {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  background: var(--paper);
-  border-radius: 10px;
-  padding: 3px;
-  gap: 2px;
-}
-
-.seg button {
-  padding: 7px 8px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--slate);
-  transition:
-    background 0.25s var(--ease),
-    color 0.2s;
-}
-
-.seg button.on {
-  background: #fff;
-  color: var(--ink);
-  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.08);
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-.primary {
-  height: 46px;
-  border-radius: 12px;
-  background: var(--ink);
-  color: var(--ivory);
-  font-size: 15px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  transition:
-    transform 0.2s var(--ease),
-    background 0.2s;
-}
-
-.primary:hover {
-  background: #2a2a28;
-}
-
-.primary:active {
-  transform: scale(0.99);
-}
-
-.primary:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.secondary {
-  height: 42px;
-  border-radius: 12px;
-  border: 1px solid var(--line-strong);
-  background: #fff;
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  transition: border-color 0.2s;
-  position: relative;
-  overflow: hidden;
-}
-
-.secondary:hover {
-  border-color: var(--ink);
-}
-
-.secondary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .progress-fill {
   position: absolute;
   inset: 0 auto 0 0;
   background: color-mix(in srgb, var(--clay) 18%, transparent);
   transition: width 0.15s linear;
-}
-
-.secondary span {
-  position: relative;
 }
 
 .hint {
@@ -704,11 +494,6 @@ input[type="range"]:active::-webkit-slider-thumb {
 
 .linkish:hover {
   color: var(--ink);
-}
-
-.divider {
-  height: 1px;
-  background: var(--line);
 }
 
 /* ── Code drawer ───────────────────────────────────── */
@@ -843,16 +628,6 @@ input[type="range"]:active::-webkit-slider-thumb {
   color: var(--clay-deep);
 }
 
-.attach.enhance {
-  color: var(--clay-deep);
-  margin-left: auto;
-}
-
-.attach:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
 .pill.ghost {
   display: inline-flex;
   align-items: center;
@@ -862,69 +637,6 @@ input[type="range"]:active::-webkit-slider-thumb {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-/* ── Brand kits from links ─────────────────────────── */
-
-.brands {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0 12px 8px;
-}
-
-.brand-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--line);
-  background: var(--ivory);
-  border-radius: 10px;
-  padding: 8px 8px 8px 10px;
-  font-size: 12px;
-  animation: rise 0.35s var(--ease);
-}
-
-.brand-card.loading {
-  color: var(--stone);
-}
-
-.brand-swatches {
-  display: flex;
-  flex: none;
-}
-
-.brand-swatches span {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 1.5px solid var(--ivory);
-  margin-left: -5px;
-  box-shadow: 0 0 0 1px var(--line);
-}
-
-.brand-swatches span:first-child {
-  margin-left: 0;
-}
-
-.brand-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-  line-height: 1.3;
-}
-
-.brand-text b {
-  font-weight: 500;
-  font-size: 13px;
-}
-
-.brand-text span {
-  color: var(--stone);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 @media (max-width: 760px) {
@@ -951,10 +663,6 @@ input[type="range"]:active::-webkit-slider-thumb {
     display: none;
   }
 
-  .row {
-    grid-template-columns: 1fr;
-  }
-
   .status {
     max-width: calc(100% - 24px);
     white-space: normal;
@@ -964,20 +672,6 @@ input[type="range"]:active::-webkit-slider-thumb {
   .renders {
     grid-template-columns: 1fr;
   }
-}
-
-.brand-card.xref img {
-  width: 54px;
-  height: 34px;
-  object-fit: cover;
-  border-radius: 6px;
-  flex: none;
-  background: var(--paper);
-}
-
-.brand-card.xref b span {
-  font-weight: 400;
-  color: var(--stone);
 }
 
 /* ── Progress panel ────────────────────────────────── */
@@ -1309,23 +1003,6 @@ input[type="range"]:active::-webkit-slider-thumb {
   align-items: center;
 }
 
-.primary.stop {
-  background: #fff;
-  color: var(--ink);
-  border: 1px solid var(--ink);
-}
-
-.primary.stop:hover {
-  background: var(--paper);
-}
-
-.stop-square {
-  width: 10px;
-  height: 10px;
-  background: var(--clay-deep);
-  border-radius: 2px;
-}
-
 /* ── Sound strip ───────────────────────────────────── */
 
 .audio {
@@ -1370,6 +1047,20 @@ input[type="range"]:active::-webkit-slider-thumb {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* mute, in a clip's head (the editor styles its own timeline flags) */
+.audio-head .tl-flag {
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+  opacity: 0.55;
+}
+
+.audio-head .tl-flag:hover,
+.audio-head .tl-flag.on {
+  opacity: 1;
 }
 
 .audio-kind {
@@ -1846,6 +1537,15 @@ input[type="range"]:active::-webkit-slider-thumb {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 220px;
+}
+/* a role chip with a note beside it (a GIF's frames, a track's tempo) */
+.att-text > .att-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.att-row .chip-role {
+  flex: none;
 }
 .att-text a {
   color: inherit;

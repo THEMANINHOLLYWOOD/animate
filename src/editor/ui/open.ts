@@ -2,6 +2,7 @@
 // whether an example, a guest's film in this browser or a signed-in film in the cloud), with the
 // images it draws and its soundtrack, as a doc whose text is split into editable text layers.
 
+import { loadFontFiles } from "@/lib/intake";
 import { getFilm, loadGuestMedia, type FilmWhere, type LibraryFilm } from "@/lib/library";
 import { loadFonts, type Assets } from "@/lib/engine";
 import { makeKit } from "@/lib/kit";
@@ -130,6 +131,8 @@ async function loadMedia(film: LibraryFilm, where: FilmWhere): Promise<{ assets:
   if (where === "local") {
     const kept = await loadGuestMedia(film.id);
     audioBlobs = kept.audio;
+    // Its brand fonts, registered under their family names before anything is measured or drawn.
+    await loadFontFiles(Object.entries(kept.fonts).map(([name, blob]) => ({ name, blob })));
     await Promise.all(
       Object.entries(kept.images).map(async ([name, blob]) => {
         // A loaded image keeps drawing after its URL is let go.

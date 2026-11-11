@@ -2,10 +2,11 @@
 import type { Assets, SceneFn } from "@/lib/engine";
 import { compileScene } from "@/lib/engine";
 import type { Kit } from "@/lib/kit";
+import { controlsSet, withControls } from "@/lib/controls";
 import { propAt } from "../doc/interpolate";
 import type { Doc, Layer } from "../doc/schema";
 import { sceneClock, splitCovers, splitLive } from "../extract/codeHash";
-import { droppedParts, isPart, muted, pivoted, tapParts, type PartSeen, type PartState } from "../extract/parts";
+import { clipIsFound, droppedParts, isPart, muted, pivoted, tapParts, type PartSeen, type PartState } from "../extract/parts";
 import { skipRule, tapText, type TextDraw } from "../extract/textTap";
 
 export type Bounds = { x: number; y: number; w: number; h: number };
@@ -73,6 +74,8 @@ function codeFn(code: string) {
     } catch (e) {
       f = e as Error;
     }
+    // Typing in a code field compiles every keystroke's version: keep the recent ones.
+    if (codeCache.size >= 24) codeCache.delete(codeCache.keys().next().value!);
     codeCache.set(code, f);
   }
   return f;
@@ -185,18 +188,22 @@ function drawContent(ctx: CanvasRenderingContext2D, layer: Layer, p: Record<stri
       // the stretch of the scene it was made from (lengthened past it, the code paints its text there).
       let tap: ReturnType<typeof tapText> | null = null;
       const { w: W, h: H } = doc.meta.size;
-      const run = (lib: Kit, after?: () => void) => balanced(ctx, () => f(ctx, W, H, lt, T, T > 0 ? clamp01(lt / T) : 0, lib, assets), after);
+      // The film's own controls answer with what's set on this layer (static or keyed).
+      // (Untouched, the kit's own lib.controls answers with the defaults.)
+      const set = controlsSet(p);
+      const bound = Object.keys(set).length > 0;
+      const run = (lib: Kit, after?: () => void) => balanced(ctx, () => f(ctx, W, H, lt, T, T > 0 ? clamp01(lt / T) : 0, bound ? withControls(lib, set) : lib, assets), after);
       // The objects its code draws (lib.layer) that are layers of their own: each is drawn as its
       // part layer says (moved, scaled, faded), or not at all (hidden, outside its clip, deleted).
       const mine = new Map(doc.layers.filter((l) => isPart(l) && l.props.partOf === layer.id).map((l) => [String(l.props.part), l]));
       const dropped = new Set(droppedParts(p));
       let parts: ReturnType<typeof tapParts> | null = null;
-      if (mine.size || dropped.size || opts.partBounds) {
+      if (mine.size || dropped.size) {
         const state = (name: string): PartState | "mute" | null => {
           if (dropped.has(name)) return "mute";
           const pl = mine.get(name);
           if (!pl) return null;
-          if (pl.hidden || pl.id === opts.mutePart || t < pl.start || t >= pl.end + 1e-9) return "mute";
+          if (pl.hidden || pl.id === opts.mutePart || (!clipIsFound(pl) && (t < pl.start || t >= pl.end + 1e-9))) return "mute";
           const { tr } = resolved(pl, t);
           const s = Array.isArray(tr.scale) ? tr.scale : [1, 1];
           return { x: tr.x ?? 0, y: tr.y ?? 0, scale: [s[0] ?? 1, s[1] ?? s[0] ?? 1], rotation: tr.rotation ?? 0, opacity: tr.opacity ?? 1, blend: pl.blend };

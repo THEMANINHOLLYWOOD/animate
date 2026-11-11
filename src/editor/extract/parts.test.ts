@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { compileScene } from "@/lib/engine";
 import { makeKit } from "@/lib/kit";
 import { Doc } from "../doc/schema";
+import { moveLayerTime, retime, splitLayer } from "../doc/ops";
 import { renderDoc } from "../render/renderDoc";
-import { findParts, partsKey, partsOf, syncParts, tapParts } from "./parts";
+import { controlsOf, findParts, partsKey, partsOf, syncParts, tapParts } from "./parts";
 
 // A 2D canvas stand-in that keeps transform, alpha, clip and save depth, and records the rectangles
 // it paints as where they land on the canvas (nothing, while clipped to an empty path).
@@ -127,7 +128,8 @@ describe("findParts and syncParts", () => {
   it("finds a scene's parts in paint order, with when each is on screen", async () => {
     const { ctx } = spy();
     const doc = film();
-    const found = await findParts(doc.layers[0], doc, kit, NO_ASSETS, compileScene(CODE), ctx);
+    const { parts: found, controls } = await findParts(doc.layers[0], doc, kit, NO_ASSETS, compileScene(CODE), ctx);
+    expect(controls).toEqual([]);
     expect(found.map((f) => f.name)).toEqual(["Sun", "Bird"]);
     expect(found[0]).toMatchObject({ start: 0, end: 10 });
     expect(found[1].start).toBeCloseTo(3.9, 5);
@@ -149,5 +151,100 @@ describe("findParts and syncParts", () => {
     expect(parts[1]).toMatchObject({ type: "part", start: 3.9, end: 8 });
     expect(doc.layers[0].props.partsKey).toBe(key);
     expect(doc.layers.map((l) => l.id).slice(0, 2)).toEqual(["code", "p-Sun"]);
+  });
+});
+
+describe("a film's own controls", () => {
+  // The sun's size and whether there's a ground at all are the film's to set.
+  const CTL = `
+const P = lib.controls('Look', { 'Sun size': [200, 50, 400], Ground: true });
+lib.layer(ctx, 'Sun', () => { ctx.fillRect(100, 100, P['Sun size'], P['Sun size']); });
+if (P.Ground) ctx.fillRect(0, 1000, 1920, 80);
+`;
+  const ctlFilm = (props: object = {}, anim: object = {}) =>
+    Doc.parse({
+      meta: { id: "f", title: "F", size: { w: 1920, h: 1080 }, duration: 10 },
+      layers: [{ id: "code", name: "Scene (code)", type: "code", start: 0, end: 10, props: { code: CTL, ...props }, anim }],
+    });
+
+  it("draws with the defaults until something is set, then with what's set (static or keyed)", () => {
+    const a = spy(), b = spy(), c = spy();
+    renderDoc(a.ctx, ctlFilm(), 5, kit, NO_ASSETS);
+    expect(painted(a.o)).toEqual([{ x: 100, y: 100, w: 200, h: 200, alpha: 1 }, { x: 0, y: 1000, w: 1920, h: 80, alpha: 1 }]);
+    renderDoc(b.ctx, ctlFilm({ controls: { "Sun size": 300, Ground: 0 } }), 5, kit, NO_ASSETS);
+    expect(painted(b.o)).toEqual([{ x: 100, y: 100, w: 300, h: 300, alpha: 1 }]);
+    const keyed = { "props.controls.Sun size": [{ id: "k1", t: 0, v: 100, ease: "linear" }, { id: "k2", t: 10, v: 300, ease: "linear" }] };
+    renderDoc(c.ctx, ctlFilm({}, keyed), 5, kit, NO_ASSETS);
+    expect(painted(c.o)[0]).toEqual({ x: 100, y: 100, w: 200, h: 200, alpha: 1 });
+  });
+
+  it("finds what a scene declares and keeps it on the code layer", async () => {
+    const { ctx } = spy();
+    let doc = ctlFilm();
+    const found = await findParts(doc.layers[0], doc, kit, NO_ASSETS, compileScene(CTL), ctx);
+    expect(found.controls.map((d) => [d.name, d.kind, d.group])).toEqual([["Sun size", "number", "Look"], ["Ground", "toggle", "Look"]]);
+    doc = structuredClone(doc);
+    syncParts("code", partsKey(doc.layers[0]), found.parts, found.controls)(doc);
+    expect(controlsOf(doc.layers[0]).map((d) => d.name)).toEqual(["Sun size", "Ground"]);
+  });
+});
+
+describe("parts after the audit fixes", () => {
+  // A measureText for the stand-in canvas (the Spy has none of its own).
+  const measuring = () => {
+    const sp = spy();
+    Object.assign(sp.o, { font: "100px sans", textAlign: "left", textBaseline: "alphabetic", measureText: (str: string) => ({ width: String(str).length * 50 }), fillText() {} });
+    return sp;
+  };
+
+  it("gives a part that only draws text a box", () => {
+    const { ctx } = measuring();
+    const tap = tapParts(ctx, kit, { track: true });
+    compileScene("lib.layer(ctx, 'Title', () => { ctx.fillText('HELLO', 400, 300); });")(ctx, 1920, 1080, 0, 10, 0, tap.lib, NO_ASSETS);
+    tap.restore();
+    expect(tap.seen.get("Title")!.box).toEqual({ x0: 400, y0: 220, x1: 650, y1: 320 });
+  });
+
+  it("lets the code's own timing show a part whose clip nobody trimmed, and a trimmed clip window it", () => {
+    const found = [6, 8];
+    const untouched = spy(), trimmed = spy();
+    renderDoc(untouched.ctx, film([part("Bird", { start: 6, end: 8, props: { partOf: "code", part: "Bird", found } })]), 5, kit, NO_ASSETS);
+    expect(painted(untouched.o).some((r) => r.w === 40)).toBe(true);
+    renderDoc(trimmed.ctx, film([part("Bird", { start: 6, end: 7, props: { partOf: "code", part: "Bird", found } })]), 5, kit, NO_ASSETS);
+    expect(painted(trimmed.o).some((r) => r.w === 40)).toBe(false);
+  });
+
+  it("moves an untrimmed part's clip to where new code shows it, and leaves a trimmed one", () => {
+    const doc = structuredClone(
+      film([part("Sun", { start: 0, end: 10, props: { partOf: "code", part: "Sun", found: [0, 10] } }), part("Bird", { start: 5, end: 6, props: { partOf: "code", part: "Bird", found: [3.9, 8] } })]),
+    );
+    syncParts("code", partsKey(doc.layers[0]), [
+      { name: "Sun", start: 2, end: 9 },
+      { name: "Bird", start: 1, end: 4 },
+    ])(doc);
+    const [sun, bird] = partsOf(doc, "code");
+    expect([sun.start, sun.end, sun.props.found]).toEqual([2, 9, [2, 9]]);
+    expect([bird.start, bird.end, bird.props.found]).toEqual([5, 6, [1, 4]]);
+  });
+
+  it("takes a code layer's parts along when it moves in time or the film is retimed", () => {
+    const base = () => structuredClone(film([part("Bird", { start: 4, end: 8, props: { partOf: "code", part: "Bird", found: [4, 8] } })]));
+    const moved = base();
+    moveLayerTime(["code"], 1)(moved);
+    expect([moved.layers[1].start, moved.layers[1].end, moved.layers[1].props.found]).toEqual([5, 9, [5, 9]]);
+    const stretched = base();
+    retime(20)(stretched);
+    expect([stretched.layers[1].start, stretched.layers[1].end, stretched.layers[1].props.found]).toEqual([8, 16, [8, 16]]);
+  });
+
+  it("never cuts a part in two, and copies a code layer's parts when it is split", () => {
+    const doc = structuredClone(film([part("Sun", { transform: { x: 50 } })]));
+    splitLayer("p-Sun", 5)(doc);
+    expect(doc.layers).toHaveLength(2);
+    splitLayer("code", 5)(doc);
+    const copy = doc.layers.find((l) => l.type === "code" && l.id !== "code")!;
+    const copied = partsOf(doc, copy.id);
+    expect(copied.map((l) => [l.name, l.transform.x])).toEqual([["Sun", 50]]);
+    expect(partsOf(doc, "code")).toHaveLength(1);
   });
 });

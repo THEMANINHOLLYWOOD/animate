@@ -1,4 +1,4 @@
-// Beat detection in the browser: spectral-flux onsets → tempo by autocomplete
+// Beat detection in the browser: spectral-flux onsets → tempo by autocorrelation
 // of the onset envelope → beat times from the strongest phase. Good enough to
 // place cues on the grid of an uploaded track.
 

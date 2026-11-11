@@ -2,6 +2,7 @@
 // The animation kit exposed to every scene as `lib`.
 // Scenes are pure functions of time, so everything here is stateless.
 
+import { controlDefs, controlValues } from "./controls";
 import { makeFx } from "./fx";
 
 // display: a tall condensed poster face; heavy: a wide black grotesque; marker: a hand-drawn brush.
@@ -222,7 +223,7 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
       const size = o.size ?? 48 * u;
       ctx.globalAlpha *= o.alpha ?? 1;
       ctx.fillStyle = o.caretColor ?? PALETTE.clay;
-      const off = o.align === "center" ? w / 2 : 0;
+      const off = o.align === "center" ? w / 2 : o.align === "right" ? w : 0;
       ctx.fillRect(x + w - off + size * 0.08, y - size * 0.78, Math.max(2, size * 0.06), size * 0.9);
       ctx.restore();
     }
@@ -504,6 +505,10 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     }
   }
 
+  // The film's own controls (see controls.ts): declares them and returns their values. Here, their
+  // defaults; the editor's renderer answers with what's been set.
+  const controls = (a: unknown, b?: unknown) => controlValues(controlDefs(a, b), undefined);
+
   // Clip drawing to a path built by shape(ctx).
   function mask(ctx: CanvasRenderingContext2D, shape: (c: CanvasRenderingContext2D) => void, draw: () => void) {
     ctx.save();
@@ -526,6 +531,7 @@ export function makeKit(W: number, H: number, fonts: Fonts) {
     loopT,
     stagger,
     camera,
+    controls,
     layer,
     mask,
     count,

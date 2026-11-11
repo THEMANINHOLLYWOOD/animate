@@ -23,7 +23,7 @@ const prettyPath = (p: string) =>
     "transform.opacity": "Opacity",
     "transform.rotation": "Rotation",
     "transform.scale": "Scale",
-  })[p] ?? p.replace(/^props\./, "").replace(/^./, (c) => c.toUpperCase());
+  })[p] ?? p.replace(/^props\.(controls\.)?/, "").replace(/·/g, ".").replace(/^./, (c) => c.toUpperCase());
 
 const TYPE_GLYPH: Record<string, string> = { text: "T", shape: "◻", globe: "◍", waveform: "≋", image: "▣", video: "▶", code: "</>", part: "◆", group: "▤" };
 

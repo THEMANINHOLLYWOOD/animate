@@ -8,6 +8,7 @@
 // it), or the block runs with painting switched off (hidden, outside its clip, deleted).
 
 import { produce } from "immer";
+import { controlsSet, declaredControls, withControls, type ControlDef } from "@/lib/controls";
 import { compileScene, type Assets, type SceneFn } from "@/lib/engine";
 import type { Kit } from "@/lib/kit";
 import type { Op } from "../doc/ops";
@@ -145,6 +146,17 @@ export function tapParts(ctx: CanvasRenderingContext2D, kit: Kit, opts: PartsOpt
     // A Path2D's extent isn't known.
     wrap("fill", (p) => !(p && typeof p === "object") && add(path));
     wrap("stroke", (p) => !(p && typeof p === "object") && open.length && add(path, strokeGrow()));
+    // Text: its box from the font size and measured width, placed by alignment and baseline.
+    const textBox = (str: unknown, x: number, y: number, maxWidth?: number) => {
+      const size = Number(ctx.font.match(/(\d+(?:\.\d+)?)px/)?.[1] ?? 10);
+      const w = Math.min(ctx.measureText(String(str)).width, maxWidth ?? Infinity);
+      const al = ctx.textAlign, bl = ctx.textBaseline;
+      const ax = al === "center" ? -w / 2 : al === "right" || al === "end" ? -w : 0;
+      const top = (bl === "top" ? 0 : bl === "hanging" ? -0.1 : bl === "middle" ? -0.5 : bl === "bottom" || bl === "ideographic" ? -1 : -0.8) * size;
+      return boxOf(rectPts(x + ax, y + top, w, size));
+    };
+    wrap("fillText", (str, x, y, mw) => open.length && add(textBox(str, x, y, mw)));
+    wrap("strokeText", (str, x, y, mw) => open.length && add(textBox(str, x, y, mw), strokeGrow()));
     wrap("drawImage", (img, ...n: number[]) => {
       if (!open.length) return;
       const iw = Number(img?.videoWidth || img?.naturalWidth || img?.width) || 0, ih = Number(img?.videoHeight || img?.naturalHeight || img?.height) || 0;
@@ -221,9 +233,14 @@ export const partsOf = (doc: Doc, codeId: string) => doc.layers.filter((l) => is
 export const droppedParts = (props: Record<string, unknown>): string[] => (Array.isArray(props.dropParts) ? props.dropParts.filter((x): x is string => typeof x === "string") : []);
 
 export type FoundPart = { name: string; start: number; end: number };
+// How parts are found. Raised when finding changes, so films are looked at again.
+const PARTS_VERSION = 2;
+// What a code layer's scene declares: its objects, and its own controls (lib.controls).
+export type Found = { parts: FoundPart[]; controls: ControlDef[] };
 
 // Which parts a code layer's scene draws, in paint order, and when each is on screen (doc time),
-// from running the scene across its clip with painting off. Throws what the scene throws.
+// and the controls it declares, from running the scene across its clip with painting off. Throws
+// what the scene throws.
 export async function findParts(
   layer: Layer,
   doc: Doc,
@@ -232,7 +249,7 @@ export async function findParts(
   scene: SceneFn,
   ctx: CanvasRenderingContext2D,
   opts: { signal?: AbortSignal; onProgress?: (k: number) => void } = {},
-): Promise<FoundPart[]> {
+): Promise<Found> {
   const { w: W, h: H } = doc.meta.size;
   const { sceneIn, sceneT: T } = sceneClock(layer.props, layer.start, layer.end);
   const len = Math.max(0.05, layer.end - layer.start);
@@ -242,13 +259,16 @@ export async function findParts(
   const pace = pacer(opts.signal);
   const order: string[] = [];
   const first = new Map<string, number>(), last = new Map<string, number>();
+  const controls = new Map<string, ControlDef>();
+  const set = controlsSet(layer.props);
   for (let i = 0; i <= n; i++) {
     await pace();
     const local = Math.min(len - 1e-4, i * step);
     const lt = local + sceneIn;
     const tap = tapParts(ctx, kit, { track: true });
     try {
-      muted(ctx, () => scene(ctx, W, H, lt, T, T > 0 ? Math.min(1, Math.max(0, lt / T)) : 0, tap.lib, assets));
+      const lib = withControls(tap.lib, set, (defs) => defs.forEach((d) => controls.has(d.name) || controls.set(d.name, d)));
+      muted(ctx, () => scene(ctx, W, H, lt, T, T > 0 ? Math.min(1, Math.max(0, lt / T)) : 0, lib, assets));
     } finally {
       tap.restore();
     }
@@ -267,23 +287,39 @@ export async function findParts(
     }
     opts.onProgress?.(i / n);
   }
-  return order.map((name) => {
+  const parts = order.map((name) => {
     const a = first.get(name), b = last.get(name);
     // Never seen painting (or only off the frame): the whole clip, so nothing it might do is cut.
     if (a === undefined || b === undefined) return { name, start: layer.start, end: layer.end };
     return { name, start: a === 0 ? layer.start : layer.start + (a - 1) * step, end: b === n ? layer.end : Math.min(layer.end, layer.start + (b + 1) * step) };
   });
+  return { parts, controls: [...controls.values()] };
 }
 
+// The controls a code layer's scene declares, as last found (see syncParts).
+export const controlsOf = (l: Layer): ControlDef[] => declaredControls(l.props);
+
+// When the code itself shows a part, as last found: [start, end] in doc time (props.found). While
+// a part's clip still equals it, the clip is only a picture of that on the timeline and the code's
+// own timing decides when the part shows; a clip that was trimmed or moved is a window on it.
+export const foundSpan = (l: Layer): [number, number] | null => {
+  const f = l.props.found;
+  return Array.isArray(f) && f.length === 2 && typeof f[0] === "number" && typeof f[1] === "number" ? [f[0], f[1]] : null;
+};
+export const clipIsFound = (l: Layer) => {
+  const f = foundSpan(l);
+  return !!f && f[0] === l.start && f[1] === l.end;
+};
+
 // What a code layer's parts were found for: its code and its clip.
-export const partsKey = (l: Layer) => `${codeHash(String(l.props.code ?? ""))}|${l.start}|${l.end}|${l.props.sceneIn ?? 0}|${l.props.sceneT ?? ""}`;
+export const partsKey = (l: Layer) => `v${PARTS_VERSION}|${codeHash(String(l.props.code ?? ""))}|${l.start}|${l.end}|${l.props.sceneIn ?? 0}|${l.props.sceneT ?? ""}`;
 export const partsStale = (l: Layer) => l.type === "code" && l.props.partsKey !== partsKey(l);
 
 // Bring a code layer's part layers in line with what its code draws now: new parts get a layer
 // (just above the code layer, in paint order), parts the code no longer has lose theirs, and the
-// rest keep every edit made to them.
+// rest keep every edit made to them. A part whose clip nobody trimmed follows when its code shows it.
 export const syncParts =
-  (codeId: string, key: string, found: FoundPart[]): Op =>
+  (codeId: string, key: string, found: FoundPart[], controls: ControlDef[] = []): Op =>
   (doc) => {
     const owner = doc.layers.find((l) => l.id === codeId);
     if (!owner || owner.type !== "code" || partsKey(owner) !== key) return;
@@ -294,15 +330,18 @@ export const syncParts =
     for (const f of found) {
       if (dropped.has(f.name)) continue;
       const have = old.get(f.name);
-      if (have) next.push(have);
-      else
-        next.push(
-          LayerSchema.parse({ id: newId("part"), name: f.name, type: "part", start: Math.max(0, f.start), end: Math.max(f.start + 0.05, f.end), props: { partOf: codeId, part: f.name } }),
-        );
+      const span: [number, number] = [Math.max(0, f.start), Math.max(f.start + 0.05, f.end)];
+      if (have) {
+        if (!foundSpan(have) || clipIsFound(have)) [have.start, have.end] = span;
+        have.props.found = span;
+        next.push(have);
+      } else next.push(LayerSchema.parse({ id: newId("part"), name: f.name, type: "part", start: span[0], end: span[1], props: { partOf: codeId, part: f.name, found: span } }));
     }
     const kept = [...dropped].filter((n) => names.has(n));
     owner.props = { ...owner.props, partsKey: key, ...(kept.length ? { dropParts: kept } : {}) };
     if (!kept.length) delete owner.props.dropParts;
+    if (controls.length) owner.props.controlDefs = controls;
+    else delete owner.props.controlDefs;
     doc.layers = doc.layers.filter((l) => !(isPart(l) && l.props.partOf === codeId));
     doc.layers.splice(doc.layers.findIndex((l) => l.id === codeId) + 1, 0, ...next);
   };
@@ -323,7 +362,8 @@ export async function partsOp(layer: Layer, doc: Doc, kit: Kit, assets: Assets, 
     const c = document.createElement("canvas");
     c.width = doc.meta.size.w;
     c.height = doc.meta.size.h;
-    return syncParts(layer.id, key, await findParts(layer, doc, kit, assets, compileScene(String(layer.props.code ?? "")), c.getContext("2d")!, { signal }));
+    const found = await findParts(layer, doc, kit, assets, compileScene(String(layer.props.code ?? "")), c.getContext("2d")!, { signal });
+    return syncParts(layer.id, key, found.parts, found.controls);
   } catch (e) {
     if (signal?.aborted) throw e;
     return markParts(layer.id, key);

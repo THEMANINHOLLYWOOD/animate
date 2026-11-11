@@ -199,26 +199,36 @@ export const trimLayer =
     l.end = Math.max(s, end);
   };
 
-// Move layers in time. Text split out of a code layer moves with it.
+// The code layer a layer belongs to: text split out of it, or an object (part) it draws.
+const ownerId = (l: Layer) => (typeof l.props.splitFrom === "string" ? l.props.splitFrom : l.type === "part" && typeof l.props.partOf === "string" ? l.props.partOf : null);
+// When a part's code shows it (props.found, see extract/parts.ts), moved or stretched with it.
+const shiftFound = (l: Layer, d: number, scale = 1) => {
+  const f = l.props.found;
+  if (l.type === "part" && Array.isArray(f) && f.length === 2 && f.every((x) => typeof x === "number")) l.props.found = [(f[0] as number) * scale + d, (f[1] as number) * scale + d];
+};
+
+// Move layers in time. Text split out of a code layer, and the objects it draws, move with it.
 export const moveLayerTime =
   (ids: string[], dt: number): Op =>
   (doc) => {
     if (!Number.isFinite(dt)) return;
     const asked = new Set(ids);
     const moved = new Set<string>();
-    const shift = (l: Layer, d: number) => {
+    const shift = (l: Layer, d: number, withOwner = false) => {
       if (moved.has(l.id)) return;
       moved.add(l.id);
       l.start += d;
       l.end += d;
+      // Moved with its code layer, a part's code shows it that much later too.
+      if (withOwner) shiftFound(l, d);
     };
     for (const id of ids) {
       const l = layerById(doc, id);
-      const owner = typeof l.props.splitFrom === "string" ? l.props.splitFrom : null;
+      const owner = ownerId(l);
       if (owner && asked.has(owner) && doc.layers.some((o) => o.id === owner && o.type === "code")) continue; // goes with its code layer
       const d = Math.max(dt, -l.start);
       shift(l, d);
-      if (l.type === "code") for (const c of splitChildren(doc, l.id)) shift(c, Math.max(d, -c.start));
+      if (l.type === "code") for (const c of doc.layers) if (ownerId(c) === l.id) shift(c, Math.max(d, -c.start), true);
     }
   };
 
@@ -244,7 +254,8 @@ export const splitLayer =
   (doc) => {
     const idx = doc.layers.findIndex((l) => l.id === id);
     const l = doc.layers[idx];
-    if (!l || !(t > l.start && t < l.end)) return;
+    // A part is one object of its code layer: there is no second one to give the other half to.
+    if (!l || l.type === "part" || !(t > l.start && t < l.end)) return;
     pinScene(l);
     const local = t - l.start;
     const children = l.type === "code" ? splitChildren(doc, l.id) : [];
@@ -267,6 +278,10 @@ export const splitLayer =
       if (c.start >= t) take(c);
       else if (c.end > t) take(cut(doc, doc.layers.indexOf(c), t, c.name));
     }
+    // The copy draws the same objects: each part's layer is copied for it, with what was done to it.
+    const parts = doc.layers.filter((c) => c.type === "part" && c.props.partOf === l.id);
+    const mine: Layer[] = parts.map((c) => ({ ...JSON.parse(JSON.stringify(c)), id: newId("part"), props: { ...JSON.parse(JSON.stringify(c.props)), partOf: copy.id } }));
+    doc.layers.splice(doc.layers.indexOf(copy) + 1, 0, ...mine);
     // Text all on one side of the cut may have left a link of one behind: it links nothing.
     pruneLinks(doc);
   };
@@ -387,16 +402,6 @@ function offsetTrack(l: Layer, path: string, d: number | number[]) {
     if (typeof cur === "number" || Array.isArray(cur)) setStatic(l, path, add(cur as Value, d));
   }
 }
-
-// Move a property's whole track by `delta` (added to every key, or to the static value), keeping its
-// motion: how a recorded shake or slide is moved instead of bent at one frame. Size and face move on
-// linked copies too.
-export const offsetProp =
-  (id: string, path: string, delta: number | number[]): Op =>
-  (doc) => {
-    if (!finite(delta)) return;
-    for (const l of LINKED_PATHS.has(path) ? linkedLayers(doc, id) : [layerById(doc, id)]) offsetTrack(l, path, delta);
-  };
 
 // Move a property's whole track so it reads `value` at doc time t (what a drag or a typed number
 // means on a recorded track; opacity scales, so a fade keeps its shape). Repeated within one gesture,
@@ -529,6 +534,7 @@ export const retime =
       for (const l of doc.layers) {
         l.start *= s;
         l.end *= s;
+        shiftFound(l, 0, s);
         for (const keys of Object.values(l.anim)) for (const k of keys) k.t *= s;
         // The scene's clock stretches too (by itself while the clip is the scene), and with it the
         // stretch of it the text was split from.
@@ -547,7 +553,7 @@ export const retime =
     } else {
       const d = duration - old;
       const code = new Map(doc.layers.filter((l) => l.type === "code").map((l) => [l.id, l]));
-      const ownerOf = (l: Layer) => (typeof l.props.splitFrom === "string" ? code.get(l.props.splitFrom) : undefined);
+      const ownerOf = (l: Layer) => code.get(ownerId(l) ?? "");
       const shifted = new Map<string, number>();
       for (const l of doc.layers) {
         if (ownerOf(l)) continue;
@@ -566,6 +572,7 @@ export const retime =
         const sd = o && shifted.get(o.id);
         if (!sd) continue;
         const s = Math.max(0, l.start + sd);
+        shiftFound(l, s - l.start);
         l.end += s - l.start;
         l.start = s;
       }

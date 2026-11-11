@@ -176,13 +176,19 @@ export class Mixer {
     this.master = audioContext().createGain();
     this.master.connect(audioContext().destination);
   }
+  // While playing: the film time that play() was given, and the audio clock then.
+  private since: { t: number; at: number } | null = null;
+  // New clips (another film opened, a clip muted, moved, added or scored) are heard at once: while
+  // playing, the mix is scheduled again from where the film is now.
   update(loaded: Loaded[]) {
     this.loaded = loaded;
+    if (this.since) this.play(this.since.t + (audioContext().currentTime - this.since.at));
   }
   // (Re)schedule every clip so that film time `t` plays now.
   play(t: number) {
-    this.stop();
+    this.halt();
     const ac = audioContext();
+    this.since = { t, at: ac.currentTime };
     if (ac.state === "suspended") ac.resume();
     const now = ac.currentTime + 0.02;
     const ducks = duckWindows(this.loaded.map((l) => l.clip));
@@ -204,6 +210,10 @@ export class Mixer {
     }
   }
   stop() {
+    this.since = null;
+    this.halt();
+  }
+  private halt() {
     for (const n of this.nodes) {
       try {
         n.stop();
@@ -212,8 +222,6 @@ export class Mixer {
     this.nodes = [];
   }
 }
-
-// ── Offline mix for export ──────────────────────────────────────────────
 
 // ── Ducking: the bed (music / background) dips under the voice ──────────
 
@@ -303,12 +311,3 @@ function normalizeLoudness(mix: AudioBuffer) {
     for (let i = 0; i < n; i++) d[i] *= k;
   }
 }
-
-export const canEncodeAac = async () => {
-  if (typeof AudioEncoder === "undefined") return false;
-  try {
-    return !!(await AudioEncoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2, bitrate: 160_000 })).supported;
-  } catch {
-    return false;
-  }
-};

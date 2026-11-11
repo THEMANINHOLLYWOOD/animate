@@ -27,7 +27,8 @@ export async function POST(req: Request) {
   if (!key()) return Response.json({ error: "Stem separation isn't set up (FAL_KEY is missing)." }, { status: 503 });
   const limited = await limit(req, "separate");
   if (limited) return limited;
-  const form = await req.formData();
+  const form = await req.formData().catch(() => null);
+  if (!form) return Response.json({ error: "Couldn't read the upload." }, { status: 400 });
   const audio = form.get("audio");
   if (!(audio instanceof Blob)) return Response.json({ error: "No audio attached." }, { status: 400 });
   let prompts: string[] = [];

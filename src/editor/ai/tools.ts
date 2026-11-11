@@ -1,6 +1,7 @@
 import { produce } from "immer";
 import type Anthropic from "@anthropic-ai/sdk";
-import { splitLive } from "../extract/codeHash";
+import { splitLive, withKeyedControls } from "../extract/codeHash";
+import { controlKey, controlPath, controlValue, declaredControls } from "@/lib/controls";
 import {
   addKeyframe,
   addLayer,
@@ -22,7 +23,7 @@ import {
   type Op,
 } from "../doc/ops";
 import { propAt } from "../doc/interpolate";
-import { Doc, type Ease, type Keyframe, type Layer, LayerType, type Value } from "../doc/schema";
+import { Doc, type Ease, type Keyframe, type Layer, type Value } from "../doc/schema";
 import { isStoodDown, linkedLayers, splitChildren, splitOwner, splitStatus } from "../doc/split";
 import type { EditorState } from "../store/store";
 
@@ -119,7 +120,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     "add_layer",
     "Create a layer. Types: text (props: text, size, family serif|sans|mono, weight, italic, color, align left|center|right, maxWidth, revealMode words|chars|none, reveal 0..1), shape (props: kind rect|ellipse|line, w, h, radius, fill, stroke, lineWidth, points, trim 0..1), waveform (props: w, h, bars, color), globe (props: R, rot, tilt, draw). x/y are canvas pixels (text: x is the alignment point, y is the baseline). Returns the new layer id.",
     {
-      type: { type: "string", enum: LayerType.options.filter((t) => t !== "code" && t !== "group" && t !== "video") },
+      type: { type: "string", enum: ["text", "shape", "image", "globe", "waveform"] },
       name: { type: "string" },
       start: { type: "number" },
       end: { type: "number" },
@@ -168,6 +169,17 @@ const LONG_PROP = 4000;
 const MAX_CODE = 400_000;
 const CUT_CODE = "…[cut]";
 
+// A property path as it is kept: a film control is named in full by the agent ("props.controls.Fire
+// height") and kept under its key; one the code layer doesn't declare is refused.
+function pathOf(l: Layer, path: unknown): string {
+  const p = String(path);
+  if (!p.startsWith("props.controls.")) return p;
+  const name = p.slice("props.controls.".length);
+  const d = declaredControls(l.props).find((c) => c.name === name || controlKey(c.name) === name);
+  if (!d) throw new Error(`${l.name} has no control named "${name}". Its controls: ${declaredControls(l.props).map((c) => c.name).join(", ") || "none"}.`);
+  return controlPath(d.name);
+}
+
 export function summarizeDoc(doc: Doc, time: number) {
   const links = new Map<string, string[]>();
   for (const l of doc.layers) if (typeof l.props.linkId === "string") links.set(l.props.linkId, [...(links.get(l.props.linkId) ?? []), l.id]);
@@ -182,7 +194,14 @@ export function summarizeDoc(doc: Doc, time: number) {
     if (l.type === "code") {
       const n = splitChildren(doc, l.id).length;
       notes.push(`code artwork (${String(l.props.code ?? "").length} chars of code)`);
-      if (n) notes.push(`${n} split text layer${n === 1 ? "" : "s"}${splitLive(l.props) ? "" : ", stood down (code changed since the split)"}`);
+      const ctl = declaredControls(l.props);
+      if (ctl.length)
+        notes.push(
+          `controls: ${ctl
+            .map((d) => `${d.name} (${d.kind}${d.kind === "number" ? ` ${d.min}..${d.max}` : d.kind === "select" ? ` ${d.options.join("/")}` : ""}) = ${short(JSON.stringify(round(controlValue(d, propAt(l, controlPath(d.name), time)))), 40)}`)
+            .join("; ")}`,
+        );
+      if (n) notes.push(`${n} split text layer${n === 1 ? "" : "s"}${splitLive(withKeyedControls(l.props, l.anim)) ? "" : ", stood down (code changed since the split)"}`);
     }
     const owner = splitOwner(doc, l);
     if (owner) notes.push(`split text of ${owner.id}${isStoodDown(doc, l) ? " (stood down)" : ""}`);
@@ -288,7 +307,7 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
       }
       case "get_keyframes": {
         const l = layer(input.layer_id);
-        const path = String(input.path);
+        const path = pathOf(l, input.path);
         const from = typeof input.from === "number" ? input.from : -Infinity;
         const to = typeof input.to === "number" ? input.to : Infinity;
         const keys = (l.anim[path] ?? []).filter((k) => l.start + k.t >= from - 1e-6 && l.start + k.t <= to + 1e-6);
@@ -303,11 +322,14 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
         const t = (input.time as number | null) ?? playhead;
         if (input.path === "props.code" && typeof input.value === "string" && input.value.includes(CUT_CODE))
           throw new Error("That is the cut-short code get_layer showed, not the whole of it. The code is too long to rewrite here.");
-        const next = apply(setProp(l.id, String(input.path), input.value as Value, t));
+        const path = pathOf(l, input.path);
+        if (!/^(transform|props)\.[^.]/.test(path)) throw new Error(`"${input.path}" is not a property path. Paths start with "transform." or "props." (for example transform.opacity, props.size, props.controls.<Name>).`);
+        const next = apply(setProp(l.id, path, input.value as Value, t));
+        if (next === doc) throw new Error(`Nothing changed: ${l.name} already has that value at ${path}, or the value isn't one that property takes.`);
         // New code stands its split text down: the code paints all its words again.
         const after = next.layers.find((x) => x.id === l.id);
         const text = splitChildren(next, l.id).length;
-        if (l.type === "code" && text && splitLive(l.props) && after && !splitLive(after.props))
+        if (l.type === "code" && text && splitLive(withKeyedControls(l.props, l.anim)) && after && !splitLive(withKeyedControls(after.props, after.anim)))
           return ok(next, `Set ${l.name} · ${input.path}`, `ok. The code changed, so its ${text} split text layer${text === 1 ? "" : "s"} stood down: the code paints all its words again, and they show once the user splits the text again in the editor.`);
         return ok(next, `Set ${l.name} · ${input.path}`, shows(l));
       }
@@ -322,11 +344,11 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
       case "add_keyframe": {
         const l = layer(input.layer_id);
         const ease = EASES[String(input.ease)] ?? EASES.ease_out;
-        return ok(apply(addKeyframe(l.id, String(input.path), (input.time as number) - l.start, input.value as Value, ease)), `Keyframed ${l.name} · ${input.path} @ ${(input.time as number).toFixed(2)}s`, shows(l));
+        return ok(apply(addKeyframe(l.id, pathOf(l, input.path), (input.time as number) - l.start, input.value as Value, ease)), `Keyframed ${l.name} · ${input.path} @ ${(input.time as number).toFixed(2)}s`, shows(l));
       }
       case "remove_keyframes": {
         const l = layer(input.layer_id);
-        const path = String(input.path);
+        const path = pathOf(l, input.path);
         const times = input.times as number[] | null;
         const keys = (l.anim[path] ?? []).filter((k) => !times || times.some((t) => Math.abs(l.start + k.t - t) <= 1 / fps(doc)));
         return ok(apply(removeKeyframes(keys.map((k) => ({ layerId: l.id, path, keyId: k.id })), playhead)), `Removed ${keys.length} keyframe${keys.length === 1 ? "" : "s"} on ${l.name}`, `removed ${keys.length}`);
@@ -349,6 +371,7 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
       }
       case "split_layer": {
         const l = layer(input.layer_id);
+        if (l.type === "part") throw new Error(`${l.name} is one object its code layer draws, so it can't be split. Trim it, or keyframe its opacity, to change when it shows.`);
         return ok(apply(splitLayer(l.id, input.time as number)), `Split ${l.name}`);
       }
       case "add_layer": {
@@ -397,10 +420,14 @@ export function runTool(doc: Doc, name: string, input: In, playhead: number): To
       }
       case "reorder_layer": {
         const l = layer(input.layer_id);
+        if (l.type === "part") throw new Error(`${l.name} is drawn by its code layer, which decides what paints over what: it can't be reordered.`);
         return ok(apply(reorderLayer(l.id, input.index as number)), `Reordered ${l.name}`);
       }
       case "group_layers": {
-        const ids = (input.layer_ids as string[]).map((id) => layer(id).id);
+        const members = (input.layer_ids as string[]).map((id) => layer(id));
+        const part = members.find((m) => m.type === "part");
+        if (part) throw new Error(`${part.name} is drawn by its code layer and can't be grouped. Move or keyframe the objects one by one.`);
+        const ids = members.map((m) => m.id);
         return ok(apply(groupLayers(ids, String(input.name))), `Grouped ${ids.length} layers`);
       }
       case "retime_film":
@@ -598,6 +625,10 @@ Objects a code layer draws (parts):
 - A "part" layer is one named object its code layer draws (the code wraps it in lib.layer(ctx, 'Name', …); props.partOf is the code layer's id, props.part the name). The code still draws it; the part layer says how: transform.x / transform.y move it (0, 0 is where the code puts it), transform.scale and transform.rotation resize and turn it about its own centre, transform.opacity fades it, hidden removes it, and its start/end are when it's allowed to show. All of these can be keyframed like any layer.
 - To move, resize, fade, hide or re-time an object, change its part layer, not the code. Deleting a part layer stops the code painting that object. Part layers can't be reordered: the code decides what paints over what.
 - If the user wants an object that isn't its own layer to be one, edit the code layer's code and wrap that object's drawing in lib.layer(ctx, 'Name', () => { … }) without changing what it draws; its layer appears on its own.
+
+A film's own controls:
+- A code layer may declare controls made for that film (get_layer shows them as props.controlDefs: each has a name, a kind and, by kind, a range, options or a default). They are the first thing to reach for: to change the film's words, colours, intensity, counts or where a key thing sits, set the control, not the code. Set one with set_property on the code layer at path "props.controls.<Name>" (a number within its range, a "#rrggbb" colour, the new words, 1 or 0 for a switch, one of its options, or [x, y] in fractions of the frame for a point). Controls of kind number, color and point can be keyframed at that path like any property.
+- Only edit the code when no control or part layer can do what was asked.
 
 How to work:
 - Act; don't ask, unless the request is genuinely ambiguous. Resolve "the headline", "the globe", "the end card" etc. from layer names, types, words and timing; "this" or "it" usually means the selected layers. Call get_layer before changing a layer's animation so you preserve what's there.

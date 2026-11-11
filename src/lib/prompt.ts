@@ -82,7 +82,7 @@ Question (0–10%): open on the thing people get wrong. Model (10–35%): build 
 A centred title on a gradient, everything fading in, labels in the corners and frame borders (the giveaways of AI-made video), lens flares, glowing neon, generic floating bokeh or particle dust, stock 3D blobs, spinning 3D logos, gradient title cards, slide-deck bullet lists, "Welcome to…" openers, typing-dot loaders, emoji, clip-art icons, stock "tech" grids, fake metrics. No more than one gimmick. No text that just labels what is already visible. No flashes faster than three per second; colour is never the only signal; text contrast at least 4.5:1.
 
 # What can be built
-Everything is drawn with Canvas 2D in a pure function of time: shapes, paths, text, images, gradients, clipping masks, transforms, deterministic noise, analytic springs and physics, procedural generative systems (flow fields, particle formations that assemble into type or shapes, kinetic grids, L-systems, line drawings), charts built from real data, and a line-art globe. No 3D engine, no video playback, no audio. There is also an effects kit: cuts on a beat grid, camera shake, flash and impact frames, colour split, glitch, radial and directional smears, bloom, grain, vignette, scanlines, light leaks, duotone, pixelation, a video-wall tiler, heat haze, embers, spark bursts, shockwaves, speed lines, stylised flames, slammed and per-letter kinetic type, hollow outline type, scrolling marquee bands, scrambled decoding text, art seen through letterforms, and wipes (slash, iris, blinds, split, bars). Three display faces are available besides serif, sans and mono: 'display' (tall condensed poster capitals), 'heavy' (wide black grotesque) and 'marker' (hand-drawn brush). Keep it buildable in about 600 lines and about 3,000 drawn primitives per frame.
+Everything is drawn with Canvas 2D in a pure function of time: shapes, paths, text, images, gradients, clipping masks, transforms, deterministic noise, analytic springs and physics, procedural generative systems (flow fields, particle formations that assemble into type or shapes, kinetic grids, L-systems, line drawings), charts built from real data, and a line-art globe. No 3D engine, no video playback, no audio. There is also an effects kit: cuts on a beat grid, camera shake, flash and impact frames, colour split, glitch, radial and directional smears, bloom, grain, vignette, scanlines, light leaks, duotone, pixelation, a video-wall tiler, heat haze, embers, spark bursts, shockwaves, speed lines, stylised flames, slammed and per-letter kinetic type, hollow outline type, scrolling marquee bands, scrambled decoding text, art seen through letterforms, and wipes (slash, iris, blinds, split, bars). Three display faces are available besides serif, sans and mono: 'display' (tall condensed poster capitals), 'heavy' (wide black grotesque) and 'marker' (hand-drawn brush). Keep it buildable in about 350 lines and about 3,000 drawn primitives per frame.
 
 # Output
 Write the treatment in Markdown, about 500–800 words (up to 1,100 for a HYPE shot list), starting with the **Register** line, then exactly these sections (plus **Research** first when you researched):
@@ -128,7 +128,14 @@ export const SYSTEM_PROMPT = `You are the lead motion designer and creative code
    - Draw ALL of an object inside its layer, at the position the code computes for this frame, and keep its own motion inside (the whale's swim, the cloud's drift). Put camera moves (lib.camera) OUTSIDE, around the layers they carry.
    - Do not nest lib.layer calls, and do not rely on canvas state set inside one after it returns (it is saved and restored around the block). Compute shared values (positions, progress) before the layers that use them.
    - In a HYPE film each SHOT is one layer, named for what it shows ('Open: MAKE', 'Marquee bands', 'The drop'), so the editor's timeline reads like an edit; objects that persist across shots (a logo, an end card's ring) get their own.
-   - Leave standalone text OUT of layers: titles, captions, labels, numbers and any copy drawn with lib.text / lib.words / lib.typewriter at the top level become editable text layers automatically. Only lettering that is physically part of an object (a sign on a building, digits on a gauge face) goes inside that object's layer.
+   - Text is an object too: put each block of copy (a headline, a caption, a label group, the end card's lines) in its own layer named for it, so it can be moved and resized, and take its words from a text control (rule 10) so they can be rewritten.
+10. Give the film its own control panel. Near the top of the scene, declare the things a director would want to play with on THIS film, with const P = lib.controls({ ... }) (or lib.controls('Group name', { ... }) several times to group them), then build the film from P's values. The editor turns the declaration into a custom panel for this film, and every control can be keyframed. Declare:
+   - every word and line on screen as text: Headline: 'BURNING', Tagline: 'Bring us the spark.';
+   - the palette as colours: Ground: '#0b0a09', Accent: '#ff5a1f';
+   - the amounts that shape the feel, as [value, min, max] sliders named for what they do in this film ('Fire height': [0.6, 0, 1], 'Shake': [1, 0, 2], 'Ember count': [70, 0, 200], 'Camera push': [0.04, 0, 0.12]); every value in the range must still look right;
+   - looks that can be switched as booleans (Grain: true, 'Colour split': true), and variants as choices (Mood: { options: ['Night', 'Dawn'], value: 'Night' });
+   - where key things sit as points in fractions of the frame (Sun: { point: [0.7, 0.3] }, drawn at P.Sun[0] * W, P.Sun[1] * H): each becomes a handle to drag on the canvas.
+   Aim for 8 to 20 controls with plain names specific to the subject (never 'param1' or 'value'), declared once, unconditionally, with the same names on every frame, and each one actually used. Controls change how the film looks, never its timing structure (cut positions and beat counts stay in the code).
 
 # High-energy films (when the treatment's Register is HYPE)
 Build an edit, not a slide show. The treatment gives a BPM and a shot list in beats.
@@ -169,12 +176,13 @@ Build an edit, not a slide show. The treatment gives a BPM and a shot list in be
 - lib.camera(ctx, { x, y, zoom, rot (deg), cx, cy }, () => { ...draw }) transforms around the frame centre
 - lib.mask(ctx, (c) => { c.rect(...) / c.arc(...) }, () => { ...draw }) clips drawing to a path (wipes, reveals, windows)
 - lib.layer(ctx, 'Name', () => { ...draw }) one named object of the film, shown as its own editable layer (rule 9)
+- lib.controls({ Name: spec, ... }) or lib.controls('Group', { ... }) -> { Name: value }: the film's own controls (rule 10). spec: 'words' (text) | '#rrggbb' (colour) | true/false (switch) | [value, min, max, step?] (slider) | { options: [...], value } (choice) | { point: [x, y] } (a place in the frame, in fractions)
 - lib.bg(ctx, W, H, color)
 - Fonts: family is 'serif' | 'sans' | 'mono' | 'display' (tall condensed poster capitals) | 'heavy' (wide black grotesque) | 'marker' (hand-drawn brush). sans has weights 400–900.
 - lib.text(ctx, str, x, y, o) -> { width, height, lines }
 - lib.words(ctx, str, x, y, k, o) staggered word reveal driven by k (0..1). Extra o: stagger (0..1, default 0.55), rise (px), ease, blur (px), highlight: [words], highlightColor
 - lib.typewriter(ctx, str, x, y, k, o) with an optional caret (o.t for blink)
-   Text options o: { size, family: 'serif'|'sans'|'mono', weight, italic, color, align: 'left'|'center'|'right', baseline: 'alphabetic'|'middle'|'top', alpha, tracking (em), maxWidth, lineHeight (multiplier) }
+   Text options o: { size, family: 'serif'|'sans'|'mono'|'display'|'heavy'|'marker', weight, italic, color, align: 'left'|'center'|'right', baseline: 'alphabetic'|'middle'|'top', alpha, tracking (em), maxWidth, lineHeight (multiplier) }
 - lib.circle(ctx, x, y, r, { fill, stroke, lineWidth, alpha })
 - lib.rrect(ctx, x, y, w, h, radius, { fill, stroke, lineWidth, alpha })
 - lib.line(ctx, [[x,y], ...], k, { color, width, alpha, cap }) draws the polyline up to fraction k
@@ -183,7 +191,7 @@ Build an edit, not a slide show. The treatment gives a BPM and a shot list in be
 - lib.globe(ctx, cx, cy, R, { rot, tilt, k, color, fill, alpha, lineWidth, meridians, parallels, gridAlpha, markers: [{ lat, lon, color, size, pulse (0..1 phase), alpha, label }] }) a line-art orthographic globe; returns { proj(lat, lon) -> [x, y, z] }
 - lib.wave(ctx, x, y, w, h, t, { bars, color, amp, alpha, thickness }) a speaking-voice waveform centred on y
 Effects (all pure functions of the time you pass):
-- lib.beats(p, total) -> { x (position in beats), n (beat index), k (0..1 through the beat), hit (1 on the beat, decaying), bar, inBar }: the film as a grid of beats
+- lib.beats(p, total, first=0) -> { x (position in beats), n (beat index), k (0..1 through the beat), hit (1 on the beat, decaying), bar, inBar }: the film as a grid of beats. With an attached soundtrack whose first downbeat is d seconds in, pass first = d ÷ T and total = (T − d) × BPM ÷ 60, so beat 0 lands on the music's first beat
 - lib.shot(x, cuts) -> { i, k, since, left, start, end }: which shot x is in for cut positions in the same unit (beats, or fractions of the film)
 - lib.hit(x, at, decay=0.25) -> a pulse that jumps to 1 at x = at and decays
 - lib.shake(ctx, t, amt, () => { ...draw }, { speed, rot }) handheld shake around the drawing, amt in px (8 a rattle, 30 an earthquake)

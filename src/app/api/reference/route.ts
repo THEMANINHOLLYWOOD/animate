@@ -26,7 +26,16 @@ export async function GET(req: Request) {
     let url = media;
     let r: Response | null = null;
     for (let hop = 0; hop < 3; hop++) {
-      r = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30000) });
+      // 30 s to answer; the download itself may take longer (a signal passed to fetch also aborts the body).
+      const answer = new AbortController();
+      const timer = setTimeout(() => answer.abort(), 30000);
+      try {
+        r = await fetch(url, { redirect: "manual", signal: answer.signal });
+      } catch {
+        return Response.json({ error: "X didn't answer in time." }, { status: 504 });
+      } finally {
+        clearTimeout(timer);
+      }
       const next = r.status >= 300 && r.status < 400 ? r.headers.get("location") : null;
       if (!next) break;
       await r.body?.cancel();

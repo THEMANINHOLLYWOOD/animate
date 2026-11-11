@@ -98,9 +98,13 @@ export function makeFx(d: FxDeps) {
 
   // The film as `total` beats (total = length in seconds × BPM / 60): x is the position in beats,
   // n the beat it's on, k the progress through that beat, hit a pulse that's 1 on each beat and
-  // decays through it, and bar/inBar count in fours.
-  function beats(p: number, total: number) {
-    const x = clamp(p) * total;
+  // decays through it, and bar/inBar count in fours. `first` is where beat 0 falls, as a fraction of
+  // the film (a soundtrack whose first downbeat comes 0.4 s into a 20 s film: 0.02), with `total`
+  // beats from there to the end; before it, x is negative and nothing hits.
+  function beats(p: number, total: number, first = 0) {
+    const f = clamp(first, 0, 0.95);
+    const x = ((clamp(p) - f) / (1 - f)) * total;
+    if (x < 0) return { x, n: 0, k: 0, hit: 0, bar: 0, inBar: 0, total };
     const n = Math.min(Math.max(0, total - 1), Math.floor(x));
     const k = x - n;
     return { x, n, k, hit: Math.exp(-k * 5), bar: Math.floor(n / 4), inBar: n % 4, total };

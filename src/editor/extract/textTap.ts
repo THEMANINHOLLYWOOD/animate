@@ -140,7 +140,8 @@ const PATH_FNS = ["beginPath", "moveTo", "lineTo", "rect", "roundRect", "arc", "
 const PAINT_FNS = ["fillRect", "strokeRect", "clearRect", "fill", "stroke", "drawImage", "putImageData", "strokeText"] as const;
 
 // Where a call came from in the scene: every frame of the stack inside the compiled scene.
-function siteOf() {
+function siteOf(wanted: boolean) {
+  if (!wanted) return "";
   const stack = new Error().stack ?? "";
   const m = stack.match(/(?:<anonymous>|> Function|anonymous):\d+:\d+/g);
   return m ? m.join(">") : "?";
@@ -152,6 +153,8 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
   const proto = Object.getPrototypeOf(ctx);
   const t0 = ctx.getTransform();
   const base: M = { a: t0.a, b: t0.b, c: t0.c, d: t0.d, e: t0.e, f: t0.f };
+  // Where each draw came from is asked for only by extraction (it costs a stack trace per draw).
+  const sited = !!(hooks.drawn || hooks.paint);
   let inKit = 0;
   // Inside a lib.layer block: its text belongs to that object (it moves, scales and hides with it), so
   // it stays in code.
@@ -166,7 +169,14 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
   let op: string | null = null;
   const states: { clip: boolean; op: string | null }[] = [];
   const saved: Record<string, unknown> = { fillText: ctx.fillText, save: ctx.save, restore: ctx.restore, clip: ctx.clip };
-  const own = (name: keyof typeof saved, fn: (...a: any[]) => any) => Object.defineProperty(ctx, name, { value: fn, configurable: true, writable: true });
+  // Text is painted through the fillText the canvas had when the tap went on (another tap's, when
+  // one is watching what a scene's objects paint), and that one is put back afterwards.
+  const fill0 = ctx.fillText as (...a: any[]) => any;
+  const before: Record<string, PropertyDescriptor | undefined> = {};
+  const own = (name: keyof typeof saved, fn: (...a: any[]) => any) => {
+    if (!(name in before)) before[name] = Object.getOwnPropertyDescriptor(ctx, name);
+    Object.defineProperty(ctx, name, { value: fn, configurable: true, writable: true });
+  };
 
   own("save", function (this: any) {
     states.push({ clip, op });
@@ -341,13 +351,13 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
         },
         m,
         alpha: ctx.globalAlpha,
-        site: siteOf(),
+        site: siteOf(sited),
       };
       const verdict = onDraw(d, movable);
       if (movable && verdict === "skip") return;
       if (movable) mine = d;
     }
-    const r = maxWidth === undefined ? proto.fillText.call(ctx, str, x, y) : proto.fillText.call(ctx, str, x, y, maxWidth);
+    const r = maxWidth === undefined ? fill0.call(ctx, str, x, y) : fill0.call(ctx, str, x, y, maxWidth);
     if (mine) hooks.drawn?.(mine, textBox(str, x, y));
     else report("fillText", () => textBox(str, x, y, maxWidth));
     return r;
@@ -386,7 +396,7 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
               if (key === "ease" && ease) opts.ease = ease;
             } else if (v !== undefined) opts[key] = v;
           }
-          const d: TextDraw = { kind: name as TextDraw["kind"], str: String(str), k, o: opts, m, alpha: appliedAlpha(o.alpha, ctx.globalAlpha), site: siteOf() };
+          const d: TextDraw = { kind: name as TextDraw["kind"], str: String(str), k, o: opts, m, alpha: appliedAlpha(o.alpha, ctx.globalAlpha), site: siteOf(sited) };
           verdict = onDraw(d, movable);
           if (!movable) verdict = "draw";
           else mine = { d, size: Number(o.size ?? 48 * ((kit as any).u ?? 1)) };
@@ -428,7 +438,11 @@ export function tapText(ctx: CanvasRenderingContext2D, kit: Kit, onDraw: (d: Tex
   }
 
   const restore = () => {
-    for (const name of Object.keys(saved)) delete (ctx as any)[name];
+    for (const name of Object.keys(saved)) {
+      const d = before[name];
+      if (d) Object.defineProperty(ctx, name, d);
+      else delete (ctx as any)[name];
+    }
     if (field) Object.defineProperty(ctx, OP, { ...field, value: held });
     else if (ownOp) Object.defineProperty(ctx, OP, ownOp);
     else if (accessor?.set) delete (ctx as any)[OP];

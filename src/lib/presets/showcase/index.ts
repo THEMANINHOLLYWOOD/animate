@@ -1,4 +1,4 @@
-// The example films everyone starts with: ten deliberately opposite styles, to show the range.
+// The example films everyone starts with: deliberately opposite styles, to show the range.
 import { film as launch } from "./launch";
 import { film as noiseLab } from "./noise-lab";
 import { film as waterCycle } from "./water-cycle";

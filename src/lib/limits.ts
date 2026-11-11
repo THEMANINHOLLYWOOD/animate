@@ -261,6 +261,10 @@ const inTime = (ms: number) => {
 
 // A JSON error that is also a valid NDJSON stream line, so both the plain fetch
 // callers (failure() reads `error`) and the streaming readers (`type: "error"`) show it.
+// A request's own signal plus a deadline, for model and provider calls: stopping a build stops the
+// spend, and a slow call ends as an error the client can show, not a platform timeout.
+export const within = (req: Request, ms: number) => AbortSignal.any([req.signal, AbortSignal.timeout(ms)]);
+
 export function errorResponse(message: string, status: number, headers?: HeadersInit) {
   return new Response(JSON.stringify({ error: message, type: "error", message }) + "\n", {
     status,

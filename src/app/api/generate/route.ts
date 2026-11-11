@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient, MODEL } from "@/lib/anthropic";
+import { anthropicClient, MODEL, modelError } from "@/lib/anthropic";
 import { clip, errorResponse, meterStage, over } from "@/lib/limits";
 import { styleById, styleNote } from "@/lib/styles";
 import { DIRECTOR_PROMPT, RECREATE_ANIMATOR, RECREATE_DIRECTOR, SYSTEM_PROMPT } from "@/lib/prompt";
@@ -125,15 +125,17 @@ function readBody(raw: unknown): Body | string {
   return body;
 }
 
-// Hobby functions stop at 300s; Pro allows more (set ANIMATE_FUNCTION_SECONDS=780 there).
-const LIMIT_MS = (Number(process.env.ANIMATE_FUNCTION_SECONDS) || 285) * 1000;
+// How long one request may run before it hands back what it has. The platform stops the function at
+// maxDuration (above), so the limit always ends before that: ANIMATE_FUNCTION_SECONDS only takes
+// effect up to it. For a longer limit (Vercel Pro allows 800 s), raise maxDuration in the same edit.
+const LIMIT_MS = Math.min(Number(process.env.ANIMATE_FUNCTION_SECONDS) || 285, maxDuration - 15) * 1000;
 
 // How hard the animator thinks has to fit the function limit: on a 5-minute limit a
 // 10 s film at medium effort takes ~2.5 min, a 20 s film doesn't fit at all.
 // ANIMATE_EFFORT overrides (set it with a longer limit on Pro).
 function animatorEffort(duration: number): "low" | "medium" | "high" {
   const forced = process.env.ANIMATE_EFFORT as "low" | "medium" | "high" | undefined;
-  if (forced) return forced;
+  if (forced && EFFORTS.includes(forced)) return forced;
   if (LIMIT_MS >= 600_000) return "high";
   return duration > 12 ? "low" : "medium";
 }
@@ -352,7 +354,7 @@ export async function POST(req: Request) {
           messages.splice(1, 1, { role: "assistant", content: [...(Array.isArray(prior) ? prior : []), ...msg.content] as Anthropic.Beta.BetaContentBlockParam[] });
         }
         if (msg.stop_reason === "refusal") {
-          send(controller, { type: "error", message: "Claude declined this request." });
+          send(controller, { type: "error", message: "The model declined this request." });
         } else if (msg.stop_reason === "max_tokens") {
           // One answer's output cap is no more the end of a long film than the time limit is.
           await cutShort();
@@ -376,21 +378,7 @@ export async function POST(req: Request) {
         // The client went away: its one retry of this part may come back. Any other failure
         // ends the stage (the client shows it rather than retrying), so it leaves no pass.
         if (req.signal.aborted) await stage.leave(body.continuation ?? "", true);
-        const message = deadline.signal.aborted
-          ? `This one took longer than the ${Math.round(LIMIT_MS / 60000)}-minute limit this plan allows. Try a shorter film (under 15 s works reliably), a simpler brief, or a longer limit (Vercel Pro).`
-          : e instanceof Anthropic.AuthenticationError || (e instanceof Error && /authentication method/i.test(e.message))
-            ? process.env.VERCEL
-              ? "The server's Anthropic API key was rejected. Replace ANTHROPIC_API_KEY in the Vercel project settings and redeploy."
-              : "No valid Anthropic credentials. Add ANTHROPIC_API_KEY to .env.local and restart the dev server."
-            : e instanceof Anthropic.RateLimitError
-              ? "Rate limited. Try again in a moment."
-              : e instanceof Anthropic.APIError && /credit balance/i.test(e.message)
-                ? "The Anthropic account is out of credits. Add credits under Plans & Billing at console.anthropic.com."
-                : e instanceof Anthropic.APIError
-                  ? `API error ${e.status ?? ""}: ${e.message}`
-                  : e instanceof Error
-                    ? e.message
-                    : String(e);
+        const message = modelError(e);
         send(controller, { type: "error", message });
       } finally {
         clearTimeout(timer);
