@@ -41,3 +41,14 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .playwright-mcp/
+node_modules/
+.next/
+.vercel/
+.wrangler/
+.env
+.env.*
+!.env.example
+.claude/
+dist/
+* [2-9].*
+* [2-9]
