@@ -4,7 +4,7 @@ Describe a film, drop in your files, get a film. A brief (plus images, a video, 
 font…) becomes a short motion-graphics film drawn with Canvas 2D, which you can then edit on a
 timeline and export as MP4.
 
-Live: https://animate-navy.vercel.app
+Live: https://animate.inchipala.com
 
 ## How it works
 

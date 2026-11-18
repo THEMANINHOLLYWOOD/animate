@@ -16,6 +16,7 @@ const TEAL = '#17505D', PEACH = '#F2A65A', CREAM = '#F4ECDD', ROSE = '#DE664E'; 
 lib.bg(ctx, W, H, IV);
 const wide = W / H >= 1.2, tall = W / H < 0.8;
 const s = p * 30, ts = (x) => (x * T) / 30;          // choreography clock: 30 units across the film, re-times with T
+const fin = lib.clamp(s / 0.45), fout = lib.seg(s, 29.3, 29.9, lib.ease.inOut);   // the film loops: it opens from the bare page and closes back to it
 const S = (a, b, e) => seg(s, a, b, e || ease.out);
 const SPR = (k, d, f) => lib.spring(k, { damping: d || 0.62, freq: f || 1.8 });
 const M = Math.min(W, H) * 0.08;
@@ -245,13 +246,13 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
   // ════ STATION A: prompt → build → brand ════
   ctx.save(); ctx.translate(stX, stY + dyA); ctx.scale(stS, stS);
   if (dyA > -H) {
-    const k0 = S(0, 0.8, ease.linear), cs = lerp(0.97, 1, SPR(k0, 0.7, 1.4)), ca = 1;
+    const k0 = S(0, 0.8, ease.linear), cs = lerp(0.97, 1, SPR(k0, 0.7, 1.4)), ca = fin;
     const mk = S(4.15, 5.05, ease.linear), m = SPR(mk, 0.68, 1.5);
     const fcy = lib.track(t, [[0, -48], [ts(4.15), -150], [ts(10.95), 40]], 120, 22);
     const fw = lerp(860, 960, m), fh = lerp(296, 540, m), drag = S(2.95, 3.15) * (1 - S(3.25, 3.5));
     ctx.save(); ctx.globalAlpha *= ca; ctx.translate(0, fcy); ctx.scale(cs, cs); ctx.translate(0, -fcy);
     lib.layer(ctx, 'Composer frame', () => {
-    shadow(-fw / 2, fcy - fh / 2, fw, fh, lerp(30, 10, m), 1);
+    shadow(-fw / 2, fcy - fh / 2, fw, fh, lerp(30, 10, m), fin * fin);
     R(-fw / 2, fcy - fh / 2, fw, fh, lerp(30, 10, m), { fill: WH, stroke: mix(LS, CLAY, drag), lineWidth: 1.5 + drag });
     if (drag > 0) R(-fw / 2 - 7, fcy - fh / 2 - 7, fw + 14, fh + 14, 36, { stroke: CLAY, lineWidth: 6, alpha: 0.14 * drag });
     });
@@ -429,7 +430,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     const bp0 = L0(-386, -130), bY = HY - (wide || tall ? 80 : 40) * u, bp1 = [HX + 26 * u, bY], sc = lerp(1, BS / bsz, bm);
     const lh = bsz * 1.4, bo = F(bsz, 'sans', mix(INK, SL, bm), { lineHeight: 1.4 });
     if (bm > 0) R(HX, bY - BS * 0.9, 3 * u, BS * 2.55 * S(4.7, 5.2, ease.inOut), 1.5 * u, { fill: CLAY, alpha: bm * (1 - bOut) });
-    ctx.save(); ctx.globalAlpha *= 1 - bOut; ctx.translate(lerp(bp0[0], bp1[0], bm), lerp(bp0[1], bp1[1], bm) - bOut * 30 * u); ctx.scale(sc, sc);
+    ctx.save(); ctx.globalAlpha *= (1 - bOut) * fin; ctx.translate(lerp(bp0[0], bp1[0], bm), lerp(bp0[1], bp1[1], bm) - bOut * 30 * u); ctx.scale(sc, sc);
     lib.typewriter(ctx, BRIEF, 0, 0, Math.min(1, (nC + 0.5) / BRIEF.length), Object.assign({ caret: false }, bo));
     const typing = s > 1.0 && s < 2.8, lines = BRIEF.slice(0, nC).split('\n');
     if (s < 4.2 && (typing || (s % 0.9) < 0.5)) R(mw(lines[lines.length - 1], bo) + 3 * S0, (lines.length - 1) * lh - bsz * 0.82, 3 * S0, bsz * 1.0, 1, { fill: CLAY });
@@ -466,7 +467,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
     if (tg > 0) lib.layer(ctx, 'Tagline', () => lib.words(ctx, 'Describe it. Drop in your files. Get a film.', W / 2, ly + (wide ? 150 : 170) * u, tg, { size: TS, family: 'serif', color: SL, align: 'center', highlight: ['Get', 'a', 'film.'], highlightColor: CLAYD, maxWidth: W - 2 * M, lineHeight: 1.25, stagger: 0.6 }));
     const sm = S(25.7, 26.2), uy = ly + (wide ? 262 : tall ? 360 : 330) * u;
     if (sm > 0) {
-      const url = 'animate-navy.vercel.app', uo = F(24 * u, 'mono', INK, { align: 'center', tracking: 0.02 }), w2 = mw(url, uo);
+      const url = 'animate.inchipala.com', uo = F(24 * u, 'mono', INK, { align: 'center', tracking: 0.02 }), w2 = mw(url, uo);
       ctx.save(); ctx.globalAlpha *= sm; ctx.translate(0, (1 - sm) * 16 * u);
       lib.layer(ctx, 'URL pill', () => { R(W / 2 - w2 / 2 - 26 * u, uy - 36 * u, w2 + 52 * u, 54 * u, 27 * u, { fill: WH, stroke: LS, lineWidth: 1.5 * u }); TX(url, W / 2, uy, uo); });
       lib.layer(ctx, 'Sign-in note', () => TX('No sign-in needed to start.', W / 2, uy + 74 * u, F(24 * u, 'sans', ST, { align: 'center' })));
@@ -480,5 +481,7 @@ lib.camera(ctx, { zoom: lerp(ZI, 1, zIn) * lerp(1, 1.03, p), y: 40 * S0 * (1 - z
   ripple(cur[0], cur[1], S(23.3, 23.7, ease.linear), 34 * u);
   });
 });
+// back to the bare page, so the last frame meets the first
+if (fout > 0) lib.layer(ctx, 'Loop fade', () => lib.rrect(ctx, 0, 0, W, H, 0, { fill: IV, alpha: fout }));
 `,
 };
